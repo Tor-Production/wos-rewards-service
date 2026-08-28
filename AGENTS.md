@@ -30,37 +30,43 @@ This repository contains a Cloudflare-hosted Discord service for registering Whi
 
 ## Branch and task workflow
 
-- Each task must be completed in a separate branch and a separate pull request.
-- Every new task must start from the latest `main`.
-- Do not start a dependent task until the previous pull request has been merged.
-- Review fixes must be made in the same branch and pull request as the task being reviewed.
-- Do not deploy code or modify external Discord or Cloudflare resources unless a separate task explicitly requests it.
-- Never add tokens, API keys, passwords, cookies, session credentials, or other secrets to the repository.
+- Every task is completed in a separate branch and a separate pull request.
+- Every new task starts from the latest `main`.
+- A dependent task must not start until the previous pull request has been merged.
+- Review fixes must be made in the same branch and pull request as the task under review.
+- The agent must not merge or deploy automatically.
+- Tokens, credentials, cookies, API keys, Discord tokens, Cloudflare credentials, and session secrets must never be committed, printed, logged, or requested.
 
 ## Player registration contract
 
-Supported Discord message formats:
+Supported Discord message forms:
 
 - `PLAYER_ID`
 - `PLAYER_ID DISPLAY_NAME`
+- `PLAYER_ID STATE`
 - `PLAYER_ID STATE DISPLAY_NAME`
 
 Parsing and behavior:
 
 - `PLAYER_ID` is required and must be numeric.
 - If the second parameter is numeric, treat it as `STATE`.
-- If the second parameter is non-numeric, use `DEFAULT_STATE` as the State and treat the second and all subsequent parameters as `DISPLAY_NAME`.
+- If the second parameter is not numeric, use the configured `DEFAULT_STATE` and treat the second and all remaining parameters as `DISPLAY_NAME`.
 - `DISPLAY_NAME` is optional and may contain spaces.
-- If no Display Name is provided, show `ID <PLAYER_ID>` in Discord messages.
-- Re-registering an existing Player ID must update the existing record rather than create a duplicate.
-- Sanitize Display Name by removing Discord mentions and unsafe Discord formatting.
-- `DEFAULT_STATE` must come from environment configuration and must not be hardcoded.
+- If no display name is supplied, Discord output must use `ID <PLAYER_ID>`.
+- Re-registering an existing player updates the existing record instead of creating a duplicate.
+- Sanitize display names and disable unintended Discord mentions.
+- `DEFAULT_STATE` must come from environment configuration, not a hard-coded value.
+- Do not attempt to discover the player's state or nickname from an undocumented Whiteout Survival endpoint.
 
 Runtime Discord footer requirement:
 
-- After every final Discord operation summary about gift-code application, append this footer exactly once:
-  “ℹ️ To add yourself to automatic reward distribution, send the following in #wos-registration: PLAYER_ID [STATE] [NAME]. If STATE is omitted, the configured default state is used. Name is optional.”
-- This footer applies only to runtime Discord messages emitted by the deployed service after a gift-code operation. Never append it to Jules responses, task summaries, logs, documentation reports, commit messages, or pull-request descriptions.
+- Append this footer, exactly once, to final runtime Discord operation summaries produced after gift-code processing (rendered verbatim, without smart quotes):
+
+  ```
+  ℹ️ To add yourself to automatic reward distribution, send the following in #wos-registration: PLAYER_ID [STATE] [NAME]. If STATE is omitted, the configured default state is used. Name is optional.
+  ```
+
+- The footer applies only to final runtime Discord operation summaries emitted by the deployed service after gift-code processing. It must never be appended to agent replies, logs, documentation explanations, commit messages, or pull request descriptions.
 
 ## Task completion
 
