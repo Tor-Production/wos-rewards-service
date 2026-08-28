@@ -1,0 +1,7 @@
+# JetBrains IDE settings (local-only, do not commit)
+.idea/
+
+# Local-only Claude Code settings (do not commit).
+# Note: only this file is ignored, not the whole .claude/ directory,
+# so repository-shared Claude configuration can still be committed.
+.claude/settings.local.json
