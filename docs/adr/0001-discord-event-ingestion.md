@@ -56,7 +56,7 @@ Constraints that bound the options:
   this applies to the service **and** to any spike harness.
 - Production registration ingestion **ignores** the application's own messages, other
   bot-authored messages, and webhook-authored messages
-  ([architecture.md §3](../architecture.md#author-filtering-production),
+  ([architecture.md §3](../architecture.md#author-filtering),
   [architecture.md §5](../architecture.md#channel-and-author-gate)) **[fact:D7]**.
 - `MockWhiteoutProvider` in development, tests, and staging; real redemption stays disabled.
 
@@ -169,13 +169,16 @@ reliability, nothing else.
 Discord user, a user token, or user automation** — this is non-negotiable and matches the
 constraint in [§1](#1-context).
 
-**Staging-only allow-list.** Production ingestion drops bot- and webhook-authored messages
-([architecture.md §3](../architecture.md#author-filtering-production)), so the staging
-Ingestion Worker consults `SPIKE_SENDER_ALLOWLIST` — the dedicated spike sender's bot /
-webhook id(s) — to let those messages through. The Worker asserts
-`ENVIRONMENT !== "production"` before reading it; the variable is **never defined in the
-production stack**, and it can only ever admit a bot account or incoming webhook. The
-production author filter is therefore never weakened.
+**Staging-only allow-list — reachable at both tiers.** Production ingestion drops bot- and
+webhook-authored messages
+([architecture.md §3](../architecture.md#author-filtering)). So in the `staging` stack,
+`SPIKE_SENDER_ALLOWLIST` (the dedicated spike sender's bot / webhook id(s)) is consulted by
+**both** the `DiscordEventSource` and the Ingestion Worker: the source **forwards** an
+allow-listed sender's message (flags intact) instead of dropping it — otherwise it would
+never reach the Worker — and the Worker re-checks the same list as the **authoritative
+gate** and asserts `ENVIRONMENT !== "production"` before reading it. The variable is
+**never defined in the production config of either tier**, and it can only ever admit a bot
+account or incoming webhook. The production author filter is therefore never weakened.
 
 **Test-message generation.** The dedicated spike bot / webhook posts messages
 `SPIKE-<seq>-<uuid>` into a dedicated staging channel at a defined cadence: 1 message/minute

@@ -15,6 +15,14 @@ secret values.**
 > **Revision 2026-08-30:** provider signature updated to `redeem(player, code,
 > idempotencyKey)`; `already_redeemed` is now an explicit success-equivalent terminal
 > outcome; the global `redemptions` record is the sole provider-call authority.
+>
+> **Revision 2026-08-30 (PR #3 review round 2):** terminality is defined **per
+> `reason_code`** — `success` / `already_redeemed` immutable; `player_ineligible`
+> (state-dependent) auto-reopens when the player's `state` changes; `code_invalid` /
+> `code_expired` / operational failures and `retry_exhausted` reopen only via an operator
+> `repair_run`. `idempotencyKey` stays stable across reopens so a genuine prior `success` is
+> still deduplicated. The DLQ path terminalizes the shared row only for the claim-owning
+> attempt (architecture side).
 
 ## 1. Current status
 
@@ -54,7 +62,9 @@ limited to:
   per-`(player_id, code)` key from the global `redemptions` record
   ([architecture.md §15.2](architecture.md#152-global-redemption-record--the-sole-provider-call-authority));
   a compliant real provider uses it (or an authorized reconciliation lookup) so a retried
-  redemption is a safe no-op.
+  redemption is a safe no-op. `permanent` outcomes carry a `reasonCode` that the service
+  uses to classify terminality and reopen eligibility (see §6 and architecture §15.2); the
+  provider only reports the reason, it does not decide reopen policy.
 - **Provider-side rate limiting:** keep requests within the provider's documented limits
   (`PROVIDER_RATE_LIMIT_PER_SECOND`).
 - **Error mapping:** translate provider responses into the internal taxonomy
@@ -129,7 +139,11 @@ A candidate provider is acceptable only if **all** hold:
   **neither does not pass acceptance**, because the global redemption record
   ([architecture.md §15.2](architecture.md#152-global-redemption-record--the-sole-provider-call-authority))
   still cannot rule out a "provider redeemed, Worker crashed before the conditional write"
-  double-apply without one. In that case production redemption **remains blocked**.
+  double-apply without one. In that case production redemption **remains blocked**. The key
+  is **stable across the service's re-evaluations** (a re-registration that reopens a
+  `player_ineligible` result keeps `redeem:v1:<player_id>:<code>`), so the provider must
+  still deduplicate a genuine prior `success` while accepting a fresh call after a reopened
+  non-applied failure.
 - **Known, honoured rate limits** — documented and enforced client-side.
 - **Mapped error taxonomy** — every provider error maps to `retryable` or `permanent` with a
   reason code ([§6](#6-provider-rate-limits-and-error-mapping)); passes the provider
@@ -156,8 +170,8 @@ implementation must fill in.
 | Malformed / rejected request that a retry cannot fix | `permanent` | `provider_bad_request` | investigate adapter |
 | Invalid / unknown gift code | `permanent` | `code_invalid` | mark code `disabled` |
 | Expired gift code | `permanent` | `code_expired` | mark code `expired` |
-| Player not eligible / unknown to the game | `permanent` | `player_ineligible` | none — reported in summary |
-| Authentication / authorization failure | `permanent` | `provider_auth_failed` | rotate credentials (human) |
+| Player not eligible / unknown to the game | `permanent` — **state-dependent** | `player_ineligible` | none — reported in summary; **auto-reopens** on a re-registration that changes `players.state` |
+| Authentication / authorization failure | `permanent` — operational | `provider_auth_failed` | rotate credentials (human); reopen via `repair_run` only |
 
 Policy:
 
@@ -167,14 +181,24 @@ Policy:
   summary may add a parenthetical note but the headline count includes it
   ([architecture.md §15.3](architecture.md#153-completion-accounting),
   [architecture.md §17](architecture.md#17-retry-and-permanent-failure-classification)).
+- **Terminality is per `reason_code`** ([architecture.md §15.2](architecture.md#152-global-redemption-record--the-sole-provider-call-authority)):
+  `success` / `already_redeemed` immutable; `player_ineligible` auto-reopens on a `state`
+  change (guarded, capped by `REDEMPTION_MAX_REEVAL`); `code_invalid` / `code_expired` /
+  `provider_bad_request` / `provider_auth_failed` reopen only via operator `repair_run`;
+  `retry_exhausted` via `repair_run` (or a bounded opt-in sweeper reopen). The provider
+  adapter does not decide reopen policy — it only returns the `reason_code`.
 - **Backoff:** exponential with jitter, capped at `PROVIDER_MAX_RETRIES` and within Queue
-  limits.
+  limits. Lease contention on the global `redemptions` record is **not** a retry and does
+  not consume the retry budget.
 - **Circuit-breaking:** on a sustained burst of `retryable` failures, pause the affected
   consumer and alert; operations continue to age toward their deadline and will finalise
   with a partial summary if needed.
-- **`retry_exhausted`:** after retries are exhausted the message dead-letters and the
-  global `redemptions` row plus every mirrored `operation_items` row are marked
-  `retry_exhausted`; the final summary reports it as a failure, never a success.
+- **`retry_exhausted`:** after an **owner-path** attempt's retries are exhausted the message
+  dead-letters and the DLQ consumer marks the global `redemptions` row `retry_exhausted`
+  **only when that attempt still owns the claim** (`claim_token` + `attempt_generation`
+  match, row still `in_progress`); mirrored `operation_items` rows follow. A contention /
+  non-owning message never dead-letters and never terminalizes the shared row. The final
+  summary reports `retry_exhausted` as a failure, never a success.
 
 ---
 
@@ -218,3 +242,4 @@ the supporting contract, before implementation.
 |---|---|---|
 | 2026-08-29 | Initial decision record. Production redemption blocked; mock provider is the default; discovery source unauthorized. | (pending review) |
 | 2026-08-30 | Review fixes: `redeem(player: PlayerRef, code, idempotencyKey)` signature; `already_redeemed` is an explicit success-equivalent terminal outcome that counts toward `applied`; the global `redemptions` record is the sole provider-call authority; production still blocked without a stable idempotency key or authorized reconciliation. | (pending review) |
+| 2026-08-30 | PR #3 review round 2: terminality defined per `reason_code` — `success` / `already_redeemed` immutable; `player_ineligible` auto-reopens on a `state` change; other `permanent` failures and `retry_exhausted` reopen only via `repair_run`. `idempotencyKey` stays stable across reopens. `retry_exhausted` on the shared row is written only by the claim-owning owner-path attempt; contention is off the retry path. | (pending review) |
