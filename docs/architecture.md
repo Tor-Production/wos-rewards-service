@@ -257,7 +257,7 @@ stack via Wrangler vars (non-secret) and Wrangler secrets (secret).
 | `DISCORD_MESSAGE_MAX_LENGTH` | output builder | chunking threshold (defaults to the Discord limit) |
 | `OPERATION_DEADLINE_SECONDS` | consumers, sweeper | max wall time before an operation is force-closed with a partial summary |
 | `ITEM_CLAIM_LEASE_SECONDS` | consumers, sweeper | `operation_items` lease TTL |
-| `REDEMPTION_CLAIM_LEASE_SECONDS` | consumers, sweeper | `attempt_expires_at` TTL; bounds only when a *different* attempt may steal (T3) or the sweeper re-drives (T11) — an owner resumes its own `attempt_id` (T2) regardless; set above a few provider-retry `delaySeconds` cycles |
+| `REDEMPTION_CLAIM_LEASE_SECONDS` | consumers, sweeper | **invocation** lease TTL (`redemptions.invocation_expires_at`); also the `retry_wait` "must be re-picked-up by" grace. **Set above the provider call timeout** so a lease does not expire mid-call ([§15.2](#152-global-redemption-record--the-sole-provider-call-authority)) |
 | `OUTPUT_CLAIM_LEASE_SECONDS` | output dispatcher, sweeper | `discord_output_deliveries` claim lease TTL |
 | `FANOUT_EXPANSION_PAGE_SIZE` | fan-out expansion worker | rows per bounded expansion page |
 | `SWEEPER_REDRIVE_BATCH` | operation sweeper | max stuck `(player_id, code)` pairs re-driven per sweeper run |
@@ -348,11 +348,12 @@ A primary-key conflict rolls the whole batch back atomically and is interpreted 
      active-code snapshot size;
   4. one `operation_items` row per snapshotted active code;
   5. one per-item `outbox_jobs` row;
-  6. **if the accepted registration changed `players.state`**, the guarded **T12** reopen of
-     any state-dependent (`player_ineligible`) `redemptions` failures for this `player_id`
-     ([§15.2](#152-global-redemption-record--the-sole-provider-call-authority)) — never
-     touching `success` / `already_redeemed` rows. (An old-state attempt still `in_progress`
-     is handled at terminalization by **T8**, not here.)
+  6. **if the accepted registration changed `players.state`**, the guarded **T13** reopen of
+     any state-dependent (`player_ineligible`, under cap) `redemptions` failures for this
+     `player_id` ([§15.2](#152-global-redemption-record--the-sole-provider-call-authority)) —
+     never touching `success` / `already_redeemed` / `state_reevaluation_limit` rows. (An
+     old-state attempt still `in_progress` is handled at terminalization by **T7** / **T8**,
+     not here.)
 
 A registration write set is bounded by the number of currently-active gift codes, which is
 small in practice. **If that count ever exceeds a safe single-batch size**, acceptance
@@ -399,23 +400,21 @@ sequenceDiagram
   X->>Q: one registration job per code
   loop each code
     Q->>C: job {operation_id, item_key=code, job_id, player_id, code, attempt_id}
-    C->>DB: claim-or-resume operation_items lease by attempt_id
-    C->>R: claim-or-resume redemptions(player_id, code) by attempt_id (T1/T2/T3)
-    alt redemption already terminal (T15/terminal)
-      R-->>C: terminal outcome (success | already_redeemed | permanent_failure | retry_exhausted)
-      C->>DB: mirror outcome onto operation_items
-    else current_attempt_id = my attempt_id (T1/T2/T3)
+    C->>DB: claim operation_items lease (coarse); acquire-invocation on redemptions (T1/T2)
+    alt redemption already terminal (T16 / terminal)
+      R-->>C: terminal outcome
+      C->>DB: mirror onto operation_items (only while summary_state='none', else operation_late_results)
+    else invocation acquired: current_attempt_id=aid AND current_invocation_token=itok (T1/T2)
       C->>P: redeem(PlayerRef{playerId,state}, code, idempotencyKey)
       P-->>C: success | already_redeemed | retryable | permanent
-      C->>DB: terminal write WHERE current_attempt_id = attempt_id AND status='in_progress' (T5/T6); player_ineligible => compare attempt_state vs players.state (T7 terminal / T8 back to pending); mirror
-      Note over C,Q: retryable => message.retry (same body/attempt_id) => redelivery resumes as T2
-    else different live attempt (T4 contention)
-      C->>DB: release operation_items lease (back to pending)
-      C->>Q: ack (no message.retry, no max_retries consumed, no redemptions write)
-      Note over R: sweeper re-drives the pair with a fresh attempt_id
+      C->>DB: guarded write WHERE current_invocation_token=itok — T4 success / T5 code+op / T6 state matches / T7 state differs -> pending / T8 cap -> state_reevaluation_limit; mirror
+      Note over C,Q: retryable => T9 (clear invocation, set retry_due_at) THEN message.retry; redelivery resumes as T2
+    else live invocation / not due / different attempt / terminal (T3)
+      C->>Q: ack (no provider call, no message.retry, no writes)
+      Note over R: sweeper (T12) re-drives with a fresh attempt_id
     end
   end
-  C->>DB: finalisable? seal summary_item_snapshot (none->sealing->building), then paged layout + render
+  C->>DB: finalisable? freeze + seal summary_item_snapshot (none->sealing->building), then paged layout + render
   OD->>DB: claim next pending delivery chunk (in chunk_index order)
   OD->>U: Create Message (per-chunk deterministic nonce, enforce_nonce); footer only in final chunk
   OD->>DB: record discord_message_id, sent_at WHERE claim_token matches
@@ -437,27 +436,27 @@ finalisable and produces a **single-chunk** zero-result summary
    ([§14](#14-transactional-outbox)).
 3. **Consume:** each job carries `{operation_id, item_key: code, job_id, player_id, code,
    attempt_id}`. The consumer:
-   - claim-or-resumes the `operation_items` lease by `attempt_id`
+   - claims the `operation_items` lease (coarse dedupe)
      ([§15.1](#151-operation-item-lease-queue-dedup--accounting));
-   - **claim-or-resumes the global `redemptions` record** for `(player_id, code)` by
-     `attempt_id` ([§15.2](#152-global-redemption-record--the-sole-provider-call-authority),
-     T1/T2/T3); if the row is already terminal it reuses that outcome without calling the
-     provider; if `current_attempt_id` is a **different live attempt** (T4) it **releases
-     its `operation_items` lease, `ack`s, and stops** — the sweeper re-drives with a fresh
-     `attempt_id`;
-   - when `current_attempt_id` is its own `attempt_id`, calls
+   - **acquires a per-invocation claim** on the global `redemptions` record
+     ([§15.2](#152-global-redemption-record--the-sole-provider-call-authority), **T1/T2**);
+     if the row is already terminal it reuses that outcome; if a **live invocation** already
+     holds it, the `retry_wait` is not yet due, or a different `attempt_id` owns it (**T3**),
+     it `ack`s and stops — the sweeper (**T12**) re-drives with a fresh `attempt_id`;
+   - once it holds `current_invocation_token`, calls
      `WhiteoutProvider.redeem({ playerId, state }, code, idempotencyKey)`, honouring
-     `PROVIDER_RATE_LIMIT_PER_SECOND`; a `retryable` outcome ⇒ `message.retry({ delaySeconds
-     })` (same body/`attempt_id` ⇒ redelivery resumes as **T2**)
+     `PROVIDER_RATE_LIMIT_PER_SECOND`; a `retryable` outcome ⇒ **T9** (atomically →
+     `retry_wait`, clear the invocation, record `retry_due_at`) **then** `message.retry`
      ([§17](#17-retry-and-permanent-failure-classification));
-   - writes the `redemptions` terminal row **guarded on `current_attempt_id = :attempt_id
-     AND status = 'in_progress'`** (T5/T6; `player_ineligible` ⇒ **T7** if
-     `attempt_state = players.state`, else **T8** back to `pending`), then mirrors the
-     outcome onto its `operation_items` row.
+   - writes the outcome **guarded on `current_invocation_token = :itok AND status =
+     'in_progress'`** — **T4** success, **T5** code/operational, **T6** `player_ineligible`
+     with `attempt_state = players.state`, **T7** state differs & under cap (→ `pending`),
+     **T8** state differs & cap reached (→ `state_reevaluation_limit`) — then mirrors onto
+     `operation_items` (only while `summary_state = 'none'`).
 4. **Aggregate & summarize:** when every item is terminal
-   ([§15.3](#153-completion-accounting)), the operation's summary is sealed into an
-   immutable `summary_item_snapshot` and then built by the **paged, cursor-driven,
-   idempotent** process
+   ([§15.3](#153-completion-accounting-and-the-source-freeze)), the operation freezes its
+   `operation_items` and seals an immutable `summary_item_snapshot`, then builds the summary
+   by the **paged, cursor-driven, idempotent** process
    ([§15.4](#154-deterministic-bounded-crash-resumable-summary-build-and-per-chunk-delivery)):
    how many codes were applied (`success` + `already_redeemed`) and which, identifying the
    player by display name or `ID <PLAYER_ID>`. The runtime footer from `AGENTS.md` appears
@@ -481,13 +480,11 @@ finalisable and produces a **single-chunk** zero-result summary
    advanced `expansion_cursor`. `expansion_state` moves `pending → expanding → expanded`.
    After a crash it resumes from the persisted cursor; already-written pages are skipped by
    primary-key conflict.
-5. **Consume** (`code-fanout-jobs`): claim-or-resume the `operation_items` lease and the
-   global `redemptions` record by `attempt_id` exactly as in
-   [§6](#6-existing-code-processing-after-registration) — reuse a terminal outcome; on a
-   **different live attempt** (T4) **release the item lease and `ack`** (sweeper re-drive
-   with a fresh `attempt_id`, no retry budget consumed); or call the provider when
-   `current_attempt_id` is your own `attempt_id`, with `attempt_id`-guarded terminal writes
-   (T5–T8).
+5. **Consume** (`code-fanout-jobs`): the item lease + the per-invocation `redemptions` claim
+   exactly as in [§6](#6-existing-code-processing-after-registration) — reuse a terminal
+   outcome; on **T3** (live invocation / not due / different attempt) `ack` (sweeper T12
+   re-drives with a fresh `attempt_id`); or call the provider under
+   `current_invocation_token`, with invocation-guarded writes (**T4–T9**).
 6. **Aggregate & summarize:** when `expansion_state = expanded` **and** all items are
    terminal, the operation's summary is sealed into `summary_item_snapshot` and built by the
    **paged, cursor-driven, idempotent** process ([§15.4](#154-deterministic-bounded-crash-resumable-summary-build-and-per-chunk-delivery)):
@@ -515,13 +512,13 @@ independently **[inference]**.
 | Component | Responsibility | Notes |
 |---|---|---|
 | `DiscordEventSource` | Hold the Gateway connection; filter to guild+channel; drop bot/system/webhook/own-app messages (production) — forward `SPIKE_SENDER_ALLOWLIST` senders unchanged (staging); POST `RegistrationMessageEvent` | Companion **or** DO, per ADR 0001; no business logic |
-| Ingestion Worker (`/ingest`) | Authenticate the source; re-apply the author filter (authoritative staging gate, asserts non-production); parse; **atomically** persist `processed_events` + (validation-reply delivery row **or** registration work + outbox rows) + guarded reopen of state-dependent `redemptions` failures on a `state` change, or the resumable state-machine shell | Stateless Worker; PK conflict ⇒ duplicate no-op |
-| Fan-out expansion worker | Paginate the player snapshot into `operation_items` + outbox rows | Cursor-driven, bounded, restartable |
-| Outbox dispatcher | Enqueue `pending` outbox rows; back off; mark `dead`; **atomic-reopen** pre-summary or flag a repair after finalization ([§14](#14-transactional-outbox)) | Cron (every minute, [fact:C4]) + inline best-effort |
-| Registration consumer | Claim-or-resume the item lease **and** the global redemption by the body's `attempt_id` (T1/T2/T3); reuse a terminal outcome; **release + `ack`** on a different live attempt (T4); redeem when `current_attempt_id` is its own; `attempt_id`-guarded terminal writes (T5–T8, incl. `attempt_state` vs `players.state`); mirror; trigger the seal + summary build | Queue consumer; contention (T4) never uses `message.retry` |
-| Fan-out consumer | Same as the registration consumer, for one `(player_id, code)` per job; triggers the seal + summary build when expansion done | Queue consumer |
-| DLQ inspection consumer | Terminalize the global `redemptions` row `retry_exhausted` **only** on an exact `current_attempt_id = message.attempt_id` match while `status='in_progress'` (T9); otherwise (T10) record `dlq_stale_attempt` and change nothing — a stale `attempt_id` never terminalizes a newer one, even if the newer lease has since expired; mirror to non-terminal `operation_items` | Consumer of `redemption-dlq`; each DLQ message is one specific `attempt_id` |
-| Operation sweeper | Force-close operations past `OPERATION_DEADLINE_SECONDS` (and **seal the snapshot then**); reset expired redemption / item / output leases (`in_progress → pending`, T11); mirror terminal redemptions onto waiting items; **re-drive** up to `SWEEPER_REDRIVE_BATCH` stuck non-terminal pairs whose global redemption is non-terminal and unclaimed — **fresh `attempt_id`**, fresh budget; **T14** guarded `state`-mismatch reopen of already-terminal `player_ineligible` rows; atomic-reopen outbox-dead items pre-seal; optional bounded `retry_exhausted` reopen | Cron |
+| Ingestion Worker (`/ingest`) | Authenticate the source; re-apply the author filter (authoritative staging gate, asserts non-production); parse; **atomically** persist `processed_events` + (validation-reply delivery row **or** registration work + outbox rows) + the guarded **T13** reopen of state-dependent `redemptions` failures on a `state` change, or the resumable state-machine shell | Stateless Worker; PK conflict ⇒ duplicate no-op |
+| Fan-out expansion worker | Paginate the player snapshot into `operation_items` (with `display_label`) + outbox rows | Cursor-driven, bounded, restartable |
+| Outbox dispatcher | Enqueue `pending` outbox rows; back off; mark `dead`; **atomic-reopen** (fresh `attempt_id`) while `summary_state='none'`, else flag a `repair_run` ([§14](#14-transactional-outbox)) | Cron (every minute, [fact:C4]) + inline best-effort |
+| Registration consumer | Claim the coarse item lease; **acquire the per-invocation `redemptions` claim** (T1/T2); reuse a terminal outcome; **`ack`** on T3 (live invocation / not due / different attempt); redeem under `current_invocation_token`; invocation-guarded writes (T4–T9, incl. `attempt_state` vs `players.state` and the T8 cap); mirror while `summary_state='none'`; trigger the freeze + seal + build | Queue consumer; T3 never uses `message.retry`; `retryable` ⇒ T9 then `message.retry` |
+| Fan-out consumer | Same as the registration consumer, for one `(player_id, code)` per job; triggers the freeze + seal + build when expansion done | Queue consumer |
+| DLQ inspection consumer | Set the global row `retry_exhausted` **only** on an exact `current_attempt_id = message.attempt_id` match, `status IN ('in_progress','retry_wait')`, **and no live invocation** (T10); otherwise (T11) record `dlq_stale_attempt` / `dlq_invocation_active` and change nothing; mirror to non-terminal `operation_items` (subject to the §15.3 freeze) | Consumer of `redemption-dlq`; each DLQ message is one specific `attempt_id` |
+| Operation sweeper | Force-close operations past `OPERATION_DEADLINE_SECONDS` (then **freeze + seal**); **T12** reset `redemptions` rows with an expired invocation (`in_progress`/`retry_wait` → `pending`); mirror terminal redemptions onto waiting items (freeze-guarded); **re-drive** up to `SWEEPER_REDRIVE_BATCH` stuck non-terminal, unclaimed pairs with a **fresh `attempt_id`**; **T15** guarded `state`-mismatch reopen of already-terminal `player_ineligible` rows; atomic-reopen outbox-dead items pre-seal; optional bounded `retry_exhausted` reopen | Cron |
 | Discord output builder | **Paged, cursor-driven, idempotent**: **seal** `summary_item_snapshot` (once), then a layout pass assigns snapshot `sort_key` ranges to chunks (`summary_chunk_layout`, persisting the open-chunk accumulator with the cursor) and a render pass persists `discord_output_deliveries` rows; every pass reads **only** the immutable snapshot; footer only in the final chunk; capped at `SUMMARY_MAX_CHUNKS` | Cron (shared `scheduled()` handler) + inline best-effort |
 | Output delivery dispatcher | Claim `pending` (or lease-expired) `discord_output_deliveries` chunks in `chunk_index` order; send via Create Message with per-chunk nonce + `enforce_nonce`; record `discord_message_id`; resume at the first unsent chunk | Cron (every minute) + inline best-effort |
 | `WhiteoutProvider` adapter | `redeem(PlayerRef, code, idempotencyKey)` → structured result; provider-side rate limiting; error mapping | `MockWhiteoutProvider` by default |
@@ -544,7 +541,7 @@ dispatches by current UTC minute.
 | Outbox dispatcher | every minute | enqueue `pending` `outbox_jobs`; back off; mark `dead`; atomic-reopen pre-summary or flag a repair after finalization ([§14](#14-transactional-outbox)) |
 | Summary builder | every minute | advance the seal / layout / render cursors (`snapshot_cursor`, `summary_layout_cursor` + `summary_layout_open`, `summary_build_cursor`) for operations that are finalisable or in `summary_state ∈ {sealing, building}` ([§15.4](#154-deterministic-bounded-crash-resumable-summary-build-and-per-chunk-delivery)); shares the `scheduled()` handler |
 | Output delivery dispatcher | every minute | claim and send `pending` / lease-expired `discord_output_deliveries` chunks in `chunk_index` order; resume at the first unsent chunk |
-| Operation sweeper | every minute | force-close operations past `deadline_at` (seal the snapshot then); reset expired redemption / item / output leases (`in_progress → pending`, T11); mirror terminal `redemptions` onto waiting `operation_items`; re-drive up to `SWEEPER_REDRIVE_BATCH` stuck non-terminal, unclaimed pairs with a fresh `attempt_id`; T14 `state`-mismatch reopen; optional bounded `retry_exhausted` reopen |
+| Operation sweeper | every minute | force-close operations past `deadline_at` (freeze + seal then); **T12** reset `redemptions` rows with an expired invocation (`in_progress`/`retry_wait` → `pending`); mirror terminal `redemptions` onto waiting `operation_items` (freeze-guarded); re-drive up to `SWEEPER_REDRIVE_BATCH` stuck non-terminal, unclaimed pairs with a fresh `attempt_id`; **T15** `state`-mismatch reopen; optional bounded `retry_exhausted` reopen |
 | Retention | hourly | delete fully-accounted `enqueued` outbox rows, `sent` delivery rows, and `summary_chunk_layout` / `summary_item_snapshot` rows for delivered operations past the retention window |
 | Code-discovery scheduler | configurable | poll the authorized `GiftCodeSource` when `CODE_DISCOVERY_ENABLED=true`; **no-op until a source is authorized** |
 
@@ -587,9 +584,10 @@ type RedeemResult =
   | { outcome: 'success'; providerReceipt?: string }          // terminal, IMMUTABLE, counts as applied
   | { outcome: 'already_redeemed'; providerReceipt?: string } // terminal, IMMUTABLE, success-equivalent, counts as applied
   | { outcome: 'retryable'; reasonCode: string }              // 429 / 5xx / network / provider "rate limited"
-  | { outcome: 'permanent'; reasonCode: string };             // reasonCode classifies terminality/reopen:
-                                                             //   code-dependent  : code_invalid | code_expired  (repair_run only)
-                                                             //   state-dependent : player_ineligible            (auto-reopen when players.state changes)
+  | { outcome: 'permanent'; reasonCode: string };             // reasonCode classifies terminality/reopen (§15.2):
+                                                             //   code-dependent  : code_invalid | code_expired            (repair_run only)
+                                                             //   state-dependent : player_ineligible -> T7 re-drive under cap;
+                                                             //                     T8 -> reason_code 'state_reevaluation_limit' at the cap (repair_run only)
                                                              //   operational     : provider_bad_request | provider_auth_failed (repair_run only)
 
 interface WhiteoutProvider {
@@ -622,7 +620,7 @@ interface GiftCodeSource {
 - `already_redeemed` is a **success-equivalent terminal outcome**, not a failure. It counts
   toward "codes applied" / "players" in operation totals and user-facing summaries; a
   summary may render a parenthetical note but never lists it as a failure
-  ([§15.3](#153-completion-accounting), [§17](#17-retry-and-permanent-failure-classification)).
+  ([§15.3](#153-completion-accounting-and-the-source-freeze), [§17](#17-retry-and-permanent-failure-classification)).
 - Error mapping is a table owned by the adapter (provider signal → outcome + `reasonCode`);
   see [whiteout-provider-decision.md §6](whiteout-provider-decision.md#6-provider-rate-limits-and-error-mapping).
 - All Whiteout Survival access goes through `WhiteoutProvider`, serialized per
@@ -685,20 +683,24 @@ no-op. In state-machine mode, `status` stays non-terminal (`accepted_valid`) unt
 | `player_id` | TEXT | PK part |
 | `code` | TEXT | PK part |
 | `idempotency_key` | TEXT | deterministic, stable per pair — e.g. `redeem:v1:<player_id>:<code>`; **kept stable across re-evaluations** so a compliant provider still dedupes a genuine prior `success` |
-| `status` | TEXT | `pending` / `in_progress` / `success` / `already_redeemed` / `permanent_failure` / `retry_exhausted`; may transition `permanent_failure → pending` (guarded state reopen) or `permanent_failure` / `retry_exhausted → pending` (operator `repair_run`); **`success` / `already_redeemed` never transition** — see the state-transition table in [§15.2](#152-global-redemption-record--the-sole-provider-call-authority) |
-| `current_attempt_id` | TEXT NULL | the durable `attempt_id` currently authorised to call the provider for this pair (from the queue message body); every terminal write is guarded on `current_attempt_id = :attempt_id` |
-| `attempt_expires_at` | TEXT NULL | lease for `current_attempt_id` (`REDEMPTION_CLAIM_LEASE_SECONDS`); the **same** owner re-stamps it on every redelivery of its message |
-| `attempt_state` | TEXT NULL | the `PlayerRef.state` the `current_attempt_id` is using; compared against the current `players.state` before a state-dependent terminal (T7/T8) and on reopen |
-| `attempt_generation` | INTEGER | audit counter, `+1` only when a **new** `attempt_id` is granted (not on same-attempt resume); not a guard |
-| `attempts` | INTEGER | provider-call attempts made under `current_attempt_id` (`+1` on each resume; reset when a new attempt is granted or on reopen) |
-| `reeval_count` | INTEGER | number of guarded reopens; capped by `REDEMPTION_MAX_REEVAL` |
+| `status` | TEXT | `pending` / `in_progress` / `retry_wait` / `success` / `already_redeemed` / `permanent_failure` / `retry_exhausted`; transitions only via the state-transition table in [§15.2](#152-global-redemption-record--the-sole-provider-call-authority); **`success` / `already_redeemed` never transition** |
+| `current_attempt_id` | TEXT NULL | the durable **retry-budget identity** from the queue message body (preserved across `message.retry`); one `attempt_id` may run many sequential invocations |
+| `current_invocation_token` | TEXT NULL | the **per-invocation execution claim** minted by the consumer for one delivery; set while an invocation is active, cleared before `message.retry` (T9) and on any terminal; every terminal / `retry_wait` write is guarded on `current_invocation_token = :itok` |
+| `invocation_expires_at` | TEXT NULL | lease deadline for the live invocation (`REDEMPTION_CLAIM_LEASE_SECONDS`); in `retry_wait` it is `retry_due_at + REDEMPTION_CLAIM_LEASE_SECONDS` (the "must be re-picked-up by" deadline for the sweeper) |
+| `retry_due_at` | TEXT NULL | set atomically with `status='retry_wait'` before `message.retry`; a redelivery may acquire a new invocation (T2) only when `now ≥ retry_due_at` |
+| `attempt_state` | TEXT NULL | the `PlayerRef.state` the `current_attempt_id` is using; compared against the current `players.state` before a state-dependent terminal (T6/T7/T8) and on reopen |
+| `attempt_generation` | INTEGER | audit counter, `+1` only when a **new** `attempt_id` becomes `current_attempt_id`; not a guard |
+| `attempts` | INTEGER | provider-call invocations under `current_attempt_id` (`+1` per invocation granted; reset when a new `attempt_id` is granted or on reopen) |
+| `reeval_count` | INTEGER | number of guarded state re-evaluations; capped by `REDEMPTION_MAX_REEVAL` |
 | `provider_receipt` | TEXT NULL | optional reconciliation reference from a real provider |
-| `reason_code` | TEXT NULL | for `permanent_failure` / `retry_exhausted`; classifies reopen eligibility ([§15.2](#152-global-redemption-record--the-sole-provider-call-authority)) |
+| `reason_code` | TEXT NULL | for `permanent_failure` / `retry_exhausted` — incl. `state_reevaluation_limit` (T8); classifies reopen eligibility ([§15.2](#152-global-redemption-record--the-sole-provider-call-authority)) |
 | `first_claimed_at`, `terminal_at`, `updated_at` | TEXT NULL | |
 
 PK `(player_id, code)`. This row — **not** `operation_items` — is the sole authority for
-whether `WhiteoutProvider.redeem` may be called for the pair. A message that only ever
-**contended** (never became `current_attempt_id`) can never write any status here.
+whether `WhiteoutProvider.redeem` may be called for the pair. The `attempt_id` is the retry
+budget; the `current_invocation_token` serializes provider calls so **two overlapping
+deliveries of the same `attempt_id` cannot both call the provider** during normal lease
+operation ([§15.2](#152-global-redemption-record--the-sole-provider-call-authority)).
 
 ### `operations`
 
@@ -722,7 +724,7 @@ whether `WhiteoutProvider.redeem` may be called for the pair. A message that onl
 | `summary_layout_cursor` | TEXT NULL | the last `summary_item_snapshot.sort_key` folded by the layout pass (resumable; the snapshot is immutable so the keyset is stable) |
 | `summary_layout_open` | TEXT NULL | JSON accumulator for the not-yet-sealed chunk — `{first_sort_key, bytes, chunk_index}` — persisted **in the same `db.batch()`** as `summary_layout_cursor` and any newly-sealed `summary_chunk_layout` rows |
 | `summary_build_cursor` | INTEGER | last `chunk_index` persisted by the render pass (default `0`, resumable) |
-| `success_count` / `already_redeemed_count` / `permanent_failure_count` / `retry_exhausted_count` / `completed_count` | INTEGER NULL | **cache only**, recomputed from `operation_items` at build time |
+| `success_count` / `already_redeemed_count` / `permanent_failure_count` / `retry_exhausted_count` / `completed_count` | INTEGER NULL | **cache only**; recomputed from **`summary_item_snapshot`** once `summary_state ≠ 'none'` (from live `operation_items` only while deciding to seal) |
 | `created_at`, `updated_at` | TEXT | |
 
 ### `operation_items`
@@ -734,16 +736,18 @@ whether `WhiteoutProvider.redeem` may be called for the pair. A message that onl
 | `player_id` | TEXT | resolved pair member |
 | `code` | TEXT | resolved pair member |
 | `job_id` | TEXT | `registration:<operation_id>:<code>` / `distribution:<operation_id>:<player_id>` |
-| `status` | TEXT | `pending` / `in_progress` / `success` / `already_redeemed` / `permanent_failure` / `retry_exhausted` (mirrors the global `redemptions` outcome) |
-| `claim_token` | TEXT NULL | holds the owning `attempt_id`; a redelivered owner message resumes the lease via `claim_token = :attempt_id` |
+| `status` | TEXT | `pending` / `in_progress` / `success` / `already_redeemed` / `permanent_failure` / `retry_exhausted` (mirrors the global `redemptions` outcome) — **frozen once `operations.summary_state ≠ 'none'`** (later outcomes go to `operation_late_results`) |
+| `display_label` | TEXT | the **sanitised** rendered label, captured when this row is created (`players.display_name` sanitised then, or `ID <player_id>`); **immutable** — a later `players.display_name` edit never changes it |
+| `claim_token` | TEXT NULL | coarse dedupe: holds the owning `attempt_id`; a redelivered owner message resumes the lease via `claim_token = :attempt_id` |
 | `claim_expires_at` | TEXT NULL | lease expiry (`ITEM_CLAIM_LEASE_SECONDS`) |
 | `reason_code` | TEXT NULL | |
 | `attempts` | INTEGER | |
 | `updated_at` | TEXT | |
 
-PK `(operation_id, item_key)`. The item lease dedupes queue redeliveries and drives
-completion accounting; it does **not** authorize a provider call. It is keyed by the same
-`attempt_id` as the global claim so one owner resumes **both** gates on redelivery.
+PK `(operation_id, item_key)`. The item lease is a **coarse** redelivery filter; the global
+`redemptions.current_invocation_token` is the authoritative serializer for provider calls
+([§15.2](#152-global-redemption-record--the-sole-provider-call-authority)). It does **not**
+authorize a provider call.
 
 ### `operation_players_snapshot` (distribution runs only; optional)
 
@@ -754,24 +758,39 @@ completion accounting; it does **not** authorize a provider call. It is keyed by
 
 Point-in-time player boundary when a monotonic cursor filter is not used.
 
+### `operation_late_results` (audit / history — outcomes observed after freeze)
+
+| Column | Type | Notes |
+|---|---|---|
+| `operation_id` | TEXT | PK part |
+| `player_id`, `code` | TEXT | PK parts |
+| `observed_at` | TEXT | PK part |
+| `status` | TEXT | the terminal `redemptions` outcome that landed **after** `operations.summary_state` left `none` |
+| `reason_code` | TEXT NULL | |
+
+PK `(operation_id, player_id, code, observed_at)`. Once an operation's `summary_state ≠
+'none'`, the mirror write ([§15.2](#152-global-redemption-record--the-sole-provider-call-authority))
+appends here **instead of** mutating the now-frozen `operation_items` row, so the summary
+source cannot change under a paged seal. Not read by the summary build; available to
+operators and a `repair_run`.
+
 ### `summary_item_snapshot` (immutable rendered inputs, sealed once)
 
 | Column | Type | Notes |
 |---|---|---|
 | `operation_id` | TEXT | PK part |
 | `player_id`, `code` | TEXT | PK parts — the **stable keyset** (never reordered by status changes) |
-| `status` | TEXT | the `operation_items` status **at seal time** (`still_pending` for a partial/`stale_closed` summary) |
-| `reason_code` | TEXT NULL | captured at seal time |
-| `display_label` | TEXT | the **already-sanitised** rendered label (`players.display_name` sanitised, or `ID <player_id>`), captured at seal time |
+| `status` | TEXT | the **frozen** `operation_items.status` (`still_pending` for a partial/`stale_closed` summary) |
+| `reason_code` | TEXT NULL | frozen `operation_items.reason_code` |
+| `display_label` | TEXT | copied verbatim from the **immutable** `operation_items.display_label` (captured at item creation) — the seal never reads `players` |
 | `sort_key` | TEXT | sortable rendering order, `printf('%d\|%s\|%s', status_rank(status), player_id, code)` (`status_rank`: `success`,`already_redeemed`,`permanent_failure`,`retry_exhausted`,`still_pending`); fixed at seal time |
 | `created_at` | TEXT | |
 
 PK `(operation_id, player_id, code)`. Written by the paged **seal** pass
 ([§15.4](#154-deterministic-bounded-crash-resumable-summary-build-and-per-chunk-delivery))
-reading `operation_items` in `(player_id, code)` order (each row sealed exactly once, so a
-mid-seal status change cannot reorder or duplicate it); `ON CONFLICT DO NOTHING`.
-**Immutable after seal** — later `operation_items` status changes and `players.display_name`
-edits never touch it. Both the layout and render passes read **only** this table,
+from **already-frozen** `operation_items` rows (frozen the instant `summary_state` left
+`none`), in `(player_id, code)` order, `ON CONFLICT DO NOTHING`. **Immutable after seal.**
+Both the layout and render passes — **and the summary counters** — read **only** this table,
 `ORDER BY sort_key`.
 
 ### `summary_chunk_layout` (deterministic item→chunk assignment)
@@ -842,39 +861,38 @@ dispatcher sends them in `chunk_index` order and resumes at the first non-`sent`
   idempotency key** — deduplication is entirely consumer-side **[fact:C7]**. Delivery is
   at-least-once, so consumers must be safely re-runnable.
 - **Batching / limits:** batch size ≤ 100 messages / 256 KB, batch wait ≤ 60 s, message
-  ≤ 128 KB, `delaySeconds` ≤ 24 h, `max_retries` up to 100 **[fact:C8]**. `message.retry({
-  delaySeconds })` with backoff up to `PROVIDER_MAX_RETRIES` is used **only** on the owner
-  path for provider `retryable` outcomes; on each redelivery the owner re-acquires its own
-  `attempt_id` (T2) and re-stamps `attempt_expires_at`, so the retry budget and the
-  eventual DLQ ownership stay attached to that one durable attempt.
-- **Contention is never a retry.** When a consumer's `attempt_id` is **not** the global
-  row's `current_attempt_id` and that incumbent lease is live (T4), the consumer
-  **releases its `operation_items` lease, `ack`s the message, and stops**. It never calls
-  the provider, never calls `message.retry`, and never touches the global row. The pair is
-  re-driven later by the Operation sweeper as a **fresh job with a fresh `attempt_id` and a
-  fresh `max_retries` budget**. Consequence: **every message that reaches `redemption-dlq`
-  is a specific `attempt_id`'s owner-path attempt that had spent its retries** — a
-  contention message can never reach the DLQ.
-- **DLQ:** `redemption-dlq` receives a message only after its owner-path attempt exhausts
-  `max_retries` **[fact:C6]** — so a DLQ message unambiguously means "the attempt named by
-  its `attempt_id` is gone with its retries spent". The inspection consumer terminalizes on
-  an **exact `attempt_id` match** (T9), with **no lease or generation check**:
+  ≤ 128 KB, `delaySeconds` ≤ 24 h, `max_retries` up to 100 **[fact:C8]**. On a provider
+  `retryable` result the consumer executes **T9** — atomically move the global row to
+  `retry_wait`, clear `current_invocation_token`, record `retry_due_at`, **then**
+  `message.retry({ delaySeconds })`. The redelivered body (same `attempt_id`) re-acquires an
+  **invocation** via T2, so the retry budget and eventual DLQ ownership stay attached to
+  that one durable `attempt_id`.
+- **Contention is never a retry.** A delivery that finds a **live invocation** (any
+  `attempt_id`), a `retry_wait` not yet due, a different `attempt_id`, or a terminal row is
+  **T3**: it makes no provider call, `ack`s, and writes nothing. The pair is re-driven by
+  the Operation sweeper (**T12**) with a **fresh `attempt_id`**. A **T3** message can never
+  reach the DLQ.
+- **DLQ:** `redemption-dlq` receives a message only after that `attempt_id`'s deliveries
+  exhaust `max_retries` **[fact:C6]**. The inspection consumer terminalizes only on an
+  **exact `attempt_id` match with no live invocation** (**T10**):
   ```sql
   UPDATE redemptions
      SET status = 'retry_exhausted', reason_code = 'provider_retry_exhausted',
-         current_attempt_id = NULL, attempt_expires_at = NULL,
+         current_attempt_id = NULL, current_invocation_token = NULL,
+         invocation_expires_at = NULL, retry_due_at = NULL,
          terminal_at = :now, updated_at = :now
    WHERE (player_id, code) = (:pid, :code)
-     AND status = 'in_progress'
-     AND current_attempt_id = :msg_attempt_id;      -- the exact attempt whose budget was spent
+     AND status IN ('in_progress', 'retry_wait')
+     AND current_attempt_id = :msg_attempt_id
+     AND (invocation_expires_at IS NULL OR invocation_expires_at < :now);
   ```
-  If `current_attempt_id <> :msg_attempt_id` (a newer attempt has taken over — **whether or
-  not its lease has since expired**, T10), the write matches nothing: the DLQ message is
-  **audit-only**, records a `dlq_stale_attempt` diagnostic, and changes nothing. If the row
-  is already terminal or `pending`, it does nothing. When it does terminalize it mirrors
-  `retry_exhausted` onto every non-terminal `operation_items` row for the pair. A stale DLQ
-  message therefore can never terminalize a newer attempt. **Business-rule (`permanent`)
-  failures never enter the DLQ** — they are recorded as terminal outcomes directly.
+  If a newer attempt has taken over (`current_attempt_id <> :msg_attempt_id` — **even if
+  that newer lease has since expired**) **or** an invocation for this attempt is still live
+  (`invocation_expires_at >= :now`), the write matches nothing: the DLQ message is
+  **audit-only** (`dlq_stale_attempt` or `dlq_invocation_active`), changes nothing, and
+  `ack`s — the active invocation drives the outcome (**T11**). When it does terminalize it
+  mirrors `retry_exhausted` onto every non-terminal `operation_items` row (subject to the
+  §15.3 freeze guard). **Business-rule (`permanent`) failures never enter the DLQ.**
 - Discord output delivery does **not** use a queue or DLQ: it is a Cron + inline dispatcher
   over `discord_output_deliveries` rows, with `attempts` and an alert after
   `OUTPUT_DISPATCH_MAX_ATTEMPTS`.
@@ -918,9 +936,10 @@ recovery process below** — it is not an absolute "no loss" claim.
     below.)
   - **Human-triggered repair (summary already sealed / building / done).** If
     `operations.summary_state <> 'none'` **or** `operations.state IN
-    ('summarized','stale_closed')`, the dispatcher records the `operation_items` row as
-    `retry_exhausted` (reason `outbox_dead`) so accounting is closed, raises an alert, and
-    creates a `repair_run` operation stub (`type = 'repair_run'`, `trigger_ref` = origin
+    ('summarized','stale_closed')`, the `operation_items` row is already frozen
+    ([§15.3](#153-completion-accounting-and-the-source-freeze)): the dispatcher records the
+    outcome in `operation_late_results` (reason `outbox_dead`), raises an alert, and creates
+    a `repair_run` operation stub (`type = 'repair_run'`, `trigger_ref` = origin
     `operation_id`) listing the affected `(player_id, code)` pairs. A human triggers the
     repair, which reuses the global `redemptions` records and produces its own summary
     (its own snapshot). A finalized operation and its snapshot are **never** mutated in
@@ -935,11 +954,13 @@ recovery process below** — it is not an absolute "no loss" claim.
 
 ### 15.1 Operation-item lease (queue-dedup + accounting)
 
-Each `operation_items` row carries a short lease so a redelivered or duplicated queue
-message does not run the same item body twice, and so completion accounting is stable.
+The `operation_items` lease is a **coarse** first filter for redelivered/duplicated queue
+messages and the driver of completion accounting. It does **not** serialize provider calls —
+that is the global `current_invocation_token` (§15.2).
 
 - **States:** `pending` → `in_progress` (`claim_token = attempt_id`, `claim_expires_at`) →
-  `success` | `already_redeemed` | `permanent_failure` | `retry_exhausted`.
+  `success` | `already_redeemed` | `permanent_failure` | `retry_exhausted`; **`status`
+  frozen once `operations.summary_state ≠ 'none'`** (later outcomes → `operation_late_results`).
 - **Atomic claim-or-resume** (the message body's `attempt_id` is `:aid`):
   ```sql
   UPDATE operation_items
@@ -949,12 +970,9 @@ message does not run the same item body twice, and so completion accounting is s
           OR (status = 'in_progress' AND claim_token = :aid)          -- my own attempt resuming
           OR (status = 'in_progress' AND claim_expires_at < :now));   -- an expired lease, steal
   ```
-  Proceed only if one row changed. A redelivery whose `attempt_id` **matches** `claim_token`
-  resumes (re-stamps the lease) and proceeds to §15.2; a redelivery that finds the item
-  terminal, or `in_progress` held by a **different** live `attempt_id`, is acked as a no-op.
-- The item lease **does not authorize a provider call** — that is §15.2. It only guards the
-  local item body (claim/resume the global redemption, mirror the outcome), keyed by the
-  same `attempt_id` so one owner passes **both** gates.
+  Proceed only if one row changed, then go to §15.2 for the **authoritative** invocation
+  claim. Two deliveries of the same `attempt_id` may both pass this coarse gate; §15.2's
+  `current_invocation_token` (T3) then ensures only one calls the provider.
 
 ### 15.2 Global redemption record — the sole provider-call authority
 
@@ -968,168 +986,190 @@ cannot do on its own **[inference]**.
   passed to the provider. Keeping it stable is deliberate: a compliant provider still
   dedupes a genuine prior `success`, while a reopened *non-applied* failure (e.g.
   `player_ineligible`) can safely be re-attempted.
-- **Durable attempt identity:** the message body carries `attempt_id` (`:aid`), minted by
-  the outbox layer and **unchanged by `message.retry`** ([§13](#13-cloudflare-queue-and-dead-letter-queue-boundaries)).
-  The `redemptions` row's `current_attempt_id` names the one attempt currently authorised to
-  call the provider. `attempt_generation` is an audit counter only.
-- **Claim-or-resume** (one upsert; grants a new attempt **or** resumes the caller's own):
+- **Two identities:**
+  - **`attempt_id`** — the durable **retry-budget** identity, minted by the outbox layer,
+    carried in the queue body, **unchanged by `message.retry`**
+    ([§13](#13-cloudflare-queue-and-dead-letter-queue-boundaries)). One `attempt_id` runs
+    one or more sequential **invocations**.
+  - **`current_invocation_token`** — a **per-invocation execution claim** (`:itok`) the
+    consumer mints for one delivery and holds while it calls the provider. It, plus
+    `invocation_expires_at`, is what stops two overlapping deliveries of the same
+    `attempt_id` from both calling the provider. `attempt_generation` is an audit counter
+    only.
+- **Acquire-invocation** (one upsert; grants the first invocation of a new `attempt_id`, or
+  the next invocation of a due `retry_wait`, or steals a crashed invocation of the same
+  `attempt_id`):
   ```sql
   INSERT INTO redemptions (player_id, code, idempotency_key, status,
-                           current_attempt_id, attempt_expires_at, attempt_state,
-                           attempt_generation, attempts, first_claimed_at, updated_at)
-       VALUES (:pid, :code, :idk, 'in_progress', :aid, :exp, :state, 1, 1, :now, :now)
+                           current_attempt_id, current_invocation_token, invocation_expires_at,
+                           attempt_state, attempt_generation, attempts, first_claimed_at, updated_at)
+       VALUES (:pid, :code, :idk, 'in_progress', :aid, :itok, :exp, :state, 1, 1, :now, :now)
   ON CONFLICT (player_id, code) DO UPDATE SET
        status = 'in_progress',
        current_attempt_id = :aid,
-       attempt_expires_at = :exp,
+       current_invocation_token = :itok,
+       invocation_expires_at = :exp,
+       retry_due_at = NULL,
        attempt_state = :state,
        attempt_generation = redemptions.attempt_generation
                             + (CASE WHEN redemptions.current_attempt_id = :aid THEN 0 ELSE 1 END),
        attempts = (CASE WHEN redemptions.current_attempt_id = :aid
-                        THEN redemptions.attempts + 1 ELSE 1 END),
+                        THEN redemptions.attempts + 1 ELSE 1 END),  -- +1 on same-attempt resume; reset for a fresh attempt after a reopen
        updated_at = :now
-     WHERE redemptions.status = 'pending'                                            -- T1: free
-        OR (redemptions.status = 'in_progress' AND redemptions.current_attempt_id = :aid)   -- T2: my own attempt resuming (lease live OR expired)
-        OR (redemptions.status = 'in_progress' AND redemptions.attempt_expires_at < :now);  -- T3: a different attempt whose lease expired — steal
+     WHERE redemptions.status = 'pending'                                                     -- T1
+        OR (redemptions.status = 'retry_wait'  AND redemptions.current_attempt_id = :aid
+            AND redemptions.retry_due_at <= :now AND redemptions.current_invocation_token IS NULL)  -- T2: next invocation, retry due
+        OR (redemptions.status = 'in_progress' AND redemptions.current_attempt_id = :aid
+            AND redemptions.invocation_expires_at < :now);                                     -- T2: previous invocation crashed
   ```
+  If **no** row changes, the delivery is **T3** (a live invocation holds it, or a
+  `retry_wait` is not yet due, or a different `attempt_id` owns it, or the row is terminal):
+  the consumer **does not call the provider**, writes nothing, and `message.ack()`s.
 
 #### State-transition table (the single source of truth)
 
-Every SQL guard, Queue-message field, DLQ rule, sweeper rule, and scenario below conforms
-to this table. `A` = the caller's `attempt_id`; all rows require `PK = (:pid, :code)`.
+Every SQL guard, Queue-message field, DLQ rule, sweeper rule, scenario, and test below
+conforms to this table. `A` = the caller's `attempt_id`; `X` = its fresh
+`current_invocation_token`; all rows require `PK = (:pid, :code)`.
 
-| # | From (`status`, attempt) | Trigger | Guard | To | Attempt-field effect |
+| # | From (`status`, invocation) | Trigger | Guard | To | Effect |
 |---|---|---|---|---|---|
-| T1 | `pending` | job for `A` | `status='pending'` | `in_progress` | `current_attempt_id=A`, `attempt_generation+=1`, `attempt_expires_at`, `attempt_state`, `attempts=1` |
-| T2 | `in_progress` (`A`) | **redelivery of `A`** (owner retry) | `status='in_progress' AND current_attempt_id=A` | `in_progress` | keep `A` + `attempt_generation`; `attempts+=1`; re-stamp `attempt_expires_at`, `attempt_state` |
-| T3 | `in_progress` (`B`, lease expired) | job for `A≠B` | `status='in_progress' AND current_attempt_id<>A AND attempt_expires_at<:now` | `in_progress` | `current_attempt_id=A`, `attempt_generation+=1`, …, `attempts=1` |
-| T4 | `in_progress` (`B`, lease live) | job for `A≠B` | none of T1–T3 match | *(unchanged)* | `A` releases its `operation_items` lease and `ack`s — **contention** |
-| T5 | `in_progress` (`A`) | provider `success` / `already_redeemed` | `status='in_progress' AND current_attempt_id=A` | `success` / `already_redeemed` | `current_attempt_id=NULL`, `attempt_expires_at=NULL`, `terminal_at` |
-| T6 | `in_progress` (`A`) | provider `permanent`, reason ∈ {`code_invalid`,`code_expired`,`provider_bad_request`,`provider_auth_failed`} | `status='in_progress' AND current_attempt_id=A` | `permanent_failure` | `current_attempt_id=NULL`, `reason_code`, `terminal_at` |
-| T7 | `in_progress` (`A`) | provider `permanent` = `player_ineligible`, **`attempt_state = players.state`** | `status='in_progress' AND current_attempt_id=A AND attempt_state=(SELECT state FROM players WHERE player_id=:pid)` | `permanent_failure` (`player_ineligible`) | `current_attempt_id=NULL`, `terminal_at` |
-| T8 | `in_progress` (`A`) | provider `permanent` = `player_ineligible`, **`attempt_state <> players.state`** (obsolete-state result) | `status='in_progress' AND current_attempt_id=A AND attempt_state<>(…players.state) AND reeval_count<:max` | `pending` | `current_attempt_id=NULL`, `attempt_generation+=1`, `reeval_count+=1`, `reason_code=NULL`, `attempts=0` |
-| T9 | `in_progress` (`A`) | **DLQ message whose `attempt_id`=`A`** (retries spent) | `status='in_progress' AND current_attempt_id=A` | `retry_exhausted` | `current_attempt_id=NULL`, `reason_code='provider_retry_exhausted'`, `terminal_at` |
-| T10 | `in_progress` (`X`) | **DLQ message whose `attempt_id`=`A≠X`** | `current_attempt_id<>A` (write matches nothing) | *(unchanged)* | audit-only `dlq_stale_attempt`; never terminalizes — even if `X`'s lease has since expired |
-| T11 | `in_progress` (`A`, lease expired) | Operation sweeper | `status='in_progress' AND attempt_expires_at<:now` | `pending` | `current_attempt_id=NULL`; sweeper re-enqueues a fresh `attempt_id` |
-| T12 | `permanent_failure`/`player_ineligible` | valid re-registration changes `players.state` | atomic acceptance batch, `attempt_state<>:new_state AND reeval_count<:max` | `pending` | `attempt_generation+=1`, `reeval_count+=1`, `reason_code=NULL`, `terminal_at=NULL`, `attempts=0` |
-| T13 | `permanent_failure` (code/operational) / `retry_exhausted` | operator `repair_run` | — | `pending` | `attempt_generation+=1`, `reeval_count+=1` |
-| T14 | `permanent_failure`/`player_ineligible` (already terminal, predates T8) | Operation sweeper, `attempt_state<>players.state AND reeval_count<:max AND` a non-terminal `operation_items` waits | sweeper | `pending` | as T12 |
-| T15 | `success` / `already_redeemed` | anything | — | *(immutable)* | — |
+| T1 | `pending` | delivery for `A` | `status='pending'` | `in_progress` | `current_attempt_id=A` (`attempt_generation+=1` if `A` is new), `current_invocation_token=X`, `invocation_expires_at`, `attempt_state`, `attempts=1`, `retry_due_at=NULL` |
+| T2 | `retry_wait` (`A`, due, no live invocation) **or** `in_progress` (`A`, invocation crashed) | redelivery of `A`'s body | `(status='retry_wait' AND current_attempt_id=A AND retry_due_at<=:now AND current_invocation_token IS NULL)` **or** `(status='in_progress' AND current_attempt_id=A AND invocation_expires_at<:now)` | `in_progress` | new `current_invocation_token=X`, `invocation_expires_at`, `attempts+=1` |
+| T3 | any: **live invocation present** (any `attempt_id`), **or** `retry_wait` not yet due, **or** different `attempt_id`, **or** terminal | any delivery | none of T1/T2 match | *(unchanged)* | delivery makes **no provider call**, no writes, `message.ack()`s — **contention / duplicate suppression** |
+| T4 | `in_progress` (`A`, `X`) | provider `success` / `already_redeemed` | `status='in_progress' AND current_attempt_id=A AND current_invocation_token=X` | `success` / `already_redeemed` | clear `current_attempt_id`, `current_invocation_token`, `invocation_expires_at`; `terminal_at` |
+| T5 | `in_progress` (`A`, `X`) | provider `permanent`, reason ∈ {`code_invalid`,`code_expired`,`provider_bad_request`,`provider_auth_failed`} | `… AND current_invocation_token=X` | `permanent_failure` | clear attempt + invocation; `reason_code`; `terminal_at` |
+| T6 | `in_progress` (`A`, `X`) | provider `permanent` = `player_ineligible`, **`attempt_state = players.state`** | `… AND current_invocation_token=X AND attempt_state=(SELECT state FROM players WHERE player_id=:pid)` | `permanent_failure` (`player_ineligible`) | clear attempt + invocation; `terminal_at` |
+| T7 | `in_progress` (`A`, `X`) | provider `permanent` = `player_ineligible`, **`attempt_state ≠ players.state`**, **`reeval_count < REDEMPTION_MAX_REEVAL`** | `… AND current_invocation_token=X AND attempt_state<>(…) AND reeval_count<:max` | `pending` | clear attempt + invocation; `attempt_generation+=1`; `reeval_count+=1`; `reason_code=NULL`; `attempts=0` |
+| T8 | `in_progress` (`A`, `X`) | provider `permanent` = `player_ineligible`, **`attempt_state ≠ players.state`**, **`reeval_count ≥ REDEMPTION_MAX_REEVAL`** | `… AND current_invocation_token=X AND attempt_state<>(…) AND reeval_count>=:max` | **`permanent_failure`** | clear attempt + invocation; **`reason_code='state_reevaluation_limit'`**; `terminal_at`; **operator alert**; counts as a **terminal failure**; reopen **only** via `repair_run` (T14); the obsolete `player_ineligible` result is **never** reported as applying to the current `state` |
+| T9 | `in_progress` (`A`, `X`) | provider `retryable` | `… AND current_invocation_token=X` | **`retry_wait`** | **atomically** `current_invocation_token=NULL`, `retry_due_at=:now+backoff`, `invocation_expires_at=:retry_due_at + REDEMPTION_CLAIM_LEASE_SECONDS`; `attempts` unchanged. **Then** `message.retry({ delaySeconds = backoff })` |
+| T10 | `in_progress` / `retry_wait` (`A`) | **DLQ message whose `attempt_id` = `A`**, **no live invocation** | `status IN ('in_progress','retry_wait') AND current_attempt_id=A AND (invocation_expires_at IS NULL OR invocation_expires_at<:now)` | `retry_exhausted` | clear attempt + invocation; `reason_code='provider_retry_exhausted'`; `terminal_at` |
+| T11 | any | **DLQ message whose `attempt_id` = `A`**, but `current_attempt_id ≠ A` **or** a **live invocation** exists | `current_attempt_id<>A` **or** `invocation_expires_at>=:now` | *(unchanged)* | audit-only — `dlq_stale_attempt` (different attempt) or `dlq_invocation_active` (live invocation); **never terminalizes**; `message.ack()`s. The live invocation drives the outcome. |
+| T12 | `in_progress` / `retry_wait` (`A`), no live invocation, stuck | Operation sweeper | `status IN ('in_progress','retry_wait') AND (invocation_expires_at IS NULL OR invocation_expires_at<:now)` | `pending` | clear attempt + invocation; sweeper re-enqueues a **fresh `attempt_id`** |
+| T13 | `permanent_failure`/`player_ineligible` | valid re-registration changes `players.state` | atomic acceptance batch, `attempt_state<>:new_state AND reeval_count<:max` | `pending` | `attempt_generation+=1`; `reeval_count+=1`; `reason_code=NULL`; `terminal_at=NULL`; `attempts=0` |
+| T14 | `permanent_failure` (**any** reason, incl. `state_reevaluation_limit`) / `retry_exhausted` | operator `repair_run` | — | `pending` | `attempt_generation+=1`; operator may reset `reeval_count` |
+| T15 | `permanent_failure`/`player_ineligible` (already terminal, predates T7) | Operation sweeper, `attempt_state<>players.state AND reeval_count<:max AND` a non-terminal `operation_items` waits | sweeper | `pending` | as T13 |
+| T16 | `success` / `already_redeemed` | anything | — | *(immutable)* | — |
 
-#### Consumer path
+#### The six required behaviours
 
-1. **Terminal already** (T15, or T5–T9/T13 already applied): the claim-or-resume `WHERE`
-   does not match; the consumer **does not call the provider**, reads the terminal row, and
-   mirrors the outcome onto its `operation_items` row.
-2. **Claim granted or resumed** (T1 / T2 / T3): `current_attempt_id = A`. Call
-   `redeem({ playerId, state }, code, idempotency_key)`. Then:
-   - `success` / `already_redeemed` → **T5**, guarded `WHERE status='in_progress' AND
-     current_attempt_id=:aid`; mirror onto `operation_items`.
-   - `permanent` (code/operational reason) → **T6**, same guard; mirror.
-   - `permanent` = `player_ineligible` → compare `attempt_state` with the current
-     `players.state`: equal → **T7** terminal; different → **T8** back to `pending`
-     (bounded by `REDEMPTION_MAX_REEVAL`) so a fresh attempt runs with the current state.
-     A stale in-flight attempt can therefore never write the terminal result for a
-     re-registered player.
-   - `retryable` → `message.retry({ delaySeconds })`. The body (and `attempt_id`) is
-     redelivered unchanged; on redelivery the consumer re-runs claim-or-resume → **T2**
-     (`attempts+=1`, lease re-stamped) and calls the provider again. The retry budget stays
-     attached to `A`.
-3. **Contention** (T4): `current_attempt_id` is a **different** live attempt. The consumer
-   releases its `operation_items` lease (`status='pending'`, `claim_token=NULL`) and
-   `message.ack()`s. It never calls the provider, never `message.retry`, never writes to
-   `redemptions`. Forward progress comes from the sweeper re-drive. A T4 message can never
-   reach the DLQ and can never terminalize the shared row.
+| Situation | Path | Result |
+|---|---|---|
+| **Two concurrent deliveries, same `attempt_id`** | D1 wins T1/T2 (token `X`, `in_progress`). D2 finds a live invocation → **T3**: no provider call, `ack`. | Exactly one provider call. |
+| **Legitimate sequential owner retry** | Provider `retryable` → **T9**: release invocation + record `retry_due_at`, *then* `message.retry`. The redelivered body (same `attempt_id`) arrives ≥ `retry_due_at` → **T2** (`attempts+=1`) → calls the provider. | Retry budget stays on `attempt_id`; no premature retry (T3 blocks any early duplicate until `retry_due_at`). |
+| **Invocation crash** | `invocation_expires_at` passes with token still set. Next redelivery → **T2** (`in_progress AND invocation_expires_at<:now`). If none arrives, **T12** → `pending` + fresh `attempt_id`. | Re-driven exactly once. |
+| **Execution lease expires during a provider call** | D2 steals via **T2** (token `Y`). D1's `redeem` returns; its terminal write is guarded `current_invocation_token=X` → matches nothing → **discarded**; D2's result wins. | During *normal* (non-expired) lease operation T3 prevents any second call. On the abnormal expiry case the production-provider **idempotency key** prevents double-apply; tune `REDEMPTION_CLAIM_LEASE_SECONDS` above the provider timeout. |
+| **DLQ message arrives while an invocation is active** | **T11** (`invocation_expires_at>=:now`) → `dlq_invocation_active`, audit-only, `ack`. The active invocation drives `success` / `permanent` / `retry_wait`; if it later exhausts, *its* DLQ message hits **T10**. | Never terminalizes under an active invocation. |
+| **Stale attempt after a newer attempt took ownership** | `current_attempt_id = B ≠ A`. A's DLQ message → **T11** `dlq_stale_attempt`. A's late provider result → terminal write guarded `current_attempt_id = A` → discarded. | The newer attempt `B` owns the outcome. |
 
 #### Terminal-write guards
 
-Every terminal write to the global row — from a **consumer** (T5–T8) or the **DLQ
-inspection consumer** (T9/T10) — carries `WHERE status = 'in_progress' AND
-current_attempt_id = :attempt_id` (T7/T8 add the `attempt_state` vs `players.state`
-comparison). There is **no** lease-time or `attempt_generation` check on a terminal write:
-the exact `attempt_id` is the ownership proof. The sweeper's lease recovery (T11) moves the
-row **only `in_progress → pending`** and never writes a terminal status.
+Every terminal (or `retry_wait`) write from a **consumer** (T4–T9) carries
+`WHERE status = 'in_progress' AND current_attempt_id = :aid AND current_invocation_token =
+:itok` (T6/T7/T8 add the `attempt_state` vs `players.state` comparison). The **DLQ**
+terminal write (T10) carries `WHERE status IN ('in_progress','retry_wait') AND
+current_attempt_id = :msg_attempt_id AND (invocation_expires_at IS NULL OR
+invocation_expires_at < :now)` — an exact `attempt_id` match **and** no live invocation. The
+sweeper (T12) moves the row **only → `pending`** and never writes a terminal status.
 
 #### Crash-safe re-drive (Operation sweeper)
 
 Every minute, bounded by `SWEEPER_REDRIVE_BATCH`, the sweeper:
 
-- **T11:** resets `redemptions` rows stuck `in_progress` past `attempt_expires_at` to
-  `pending` (`current_attempt_id = NULL`);
-- re-enqueues **one fresh job per pair** — with a **fresh `attempt_id`** and a fresh
-  `max_retries` budget — where some `operation_items` row is non-terminal **and** the global
-  `redemptions` row is non-terminal **and** has `current_attempt_id IS NULL` (or the lease
-  just expired) — i.e. nobody is working it;
-- **T14:** reopens an already-terminal `permanent_failure`/`player_ineligible` row whose
+- **T12:** resets `redemptions` rows in `in_progress` / `retry_wait` whose
+  `invocation_expires_at` has passed (crashed invocation, or a `retry_wait` whose retried
+  message never arrived) to `pending` (`current_attempt_id = NULL`,
+  `current_invocation_token = NULL`);
+- re-enqueues **one fresh job per pair** — **fresh `attempt_id`**, fresh `max_retries` — for
+  every pair with a non-terminal `operation_items` row and a non-terminal `redemptions` row
+  that now has `current_attempt_id IS NULL`;
+- **T15:** reopens an already-terminal `permanent_failure`/`player_ineligible` row whose
   `attempt_state <> players.state` and `reeval_count < REDEMPTION_MAX_REEVAL` while a
-  non-terminal `operation_items` waits (catch-up for rows that turned terminal before T8);
+  non-terminal `operation_items` waits (catch-up for rows that turned terminal before T7);
 - mirrors any now-terminal `redemptions` outcome onto every non-terminal `operation_items`
-  row for the pair:
+  row for the pair (see [§15.3](#153-completion-accounting-and-the-source-freeze) for the freeze guard):
   ```sql
   UPDATE operation_items
      SET status = :mirror, reason_code = :rc, updated_at = :now
    WHERE (player_id, code) = (:pid, :code)
-     AND status IN ('pending', 'in_progress');
+     AND status IN ('pending', 'in_progress')
+     AND (SELECT summary_state FROM operations o WHERE o.operation_id = operation_items.operation_id) = 'none';
+  -- operations whose summary_state <> 'none': append to operation_late_results instead
   ```
 
-This single mechanism covers contention `ack`s, owner crashes mid-retry, obsolete-state
-terminals, and lost queue messages. While any `operation_items` for a pair is non-terminal
-and the operation is within its deadline, the pair keeps being re-driven.
+This single mechanism covers T3 `ack`s, invocation crashes, obsolete-state terminals, and
+lost queue messages. While any `operation_items` for a pair is non-terminal and the
+operation is within its deadline, the pair keeps being re-driven.
 
 #### Terminality is per `reason_code`
 
 | Outcome / `reason_code` | Terminality | Reopen path |
 |---|---|---|
-| `success`, `already_redeemed` | **immutable** (T15) | never |
-| `permanent_failure` / `player_ineligible` (**state-dependent**) | terminal until the player's `state` changes | **T8** (before an obsolete-state attempt terminalizes), **T12** (atomic acceptance batch of a re-registration that changes `players.state`), or **T14** (sweeper catch-up); each guarded, `reeval_count += 1`, capped by `REDEMPTION_MAX_REEVAL`, after which only a `repair_run` (T13) may reopen it |
-| `permanent_failure` / `code_invalid`, `code_expired` (**code-dependent**) | terminal | operator `repair_run` only (T13; e.g. after correcting `gift_codes.status`) |
-| `permanent_failure` / `provider_bad_request`, `provider_auth_failed` (**operational**) | terminal | operator `repair_run` only (T13), after the operational cause is fixed |
-| `retry_exhausted` (**operational**) | terminal for accounting | operator `repair_run` (T13); **or** a bounded sweeper auto-reopen after a cooldown when `REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED = true` (capped by `REDEMPTION_MAX_REEVAL`) |
+| `success`, `already_redeemed` | **immutable** (T16) | never |
+| `permanent_failure` / `player_ineligible` (**state-dependent, under cap**) | terminal until the player's `state` changes | **T7** (before an obsolete-state attempt terminalizes), **T13** (atomic acceptance batch of a re-registration that changes `players.state`), or **T15** (sweeper catch-up); each guarded, `reeval_count += 1`, capped by `REDEMPTION_MAX_REEVAL` |
+| `permanent_failure` / **`state_reevaluation_limit`** (state re-evaluation cap reached — **T8**) | **terminal failure** | **`repair_run` only (T14)** — never auto-reopened, never reported as the obsolete `player_ineligible` applying to the current `state`; raises an operator alert |
+| `permanent_failure` / `code_invalid`, `code_expired` (**code-dependent**) | terminal | operator `repair_run` only (T14; e.g. after correcting `gift_codes.status`) |
+| `permanent_failure` / `provider_bad_request`, `provider_auth_failed` (**operational**) | terminal | operator `repair_run` only (T14), after the operational cause is fixed |
+| `retry_exhausted` (**operational**) | terminal for accounting | operator `repair_run` (T14); **or** a bounded sweeper auto-reopen after a cooldown when `REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED = true` (capped by `REDEMPTION_MAX_REEVAL`) |
 
-**T12 — state-change reopen** (runs inside the same atomic acceptance `db.batch()` as the
+**T13 — state-change reopen** (runs inside the same atomic acceptance `db.batch()` as the
 re-registration, [§5](#atomic-acceptance)):
 
 ```sql
 UPDATE redemptions
-   SET status = 'pending', current_attempt_id = NULL, attempt_expires_at = NULL,
+   SET status = 'pending', current_attempt_id = NULL, current_invocation_token = NULL,
+       invocation_expires_at = NULL, retry_due_at = NULL,
        reason_code = NULL, terminal_at = NULL,
        attempts = 0, attempt_generation = attempt_generation + 1,
        reeval_count = reeval_count + 1, updated_at = :now
  WHERE player_id = :pid
    AND status = 'permanent_failure'
-   AND reason_code = 'player_ineligible'               -- explicitly state-dependent only
+   AND reason_code = 'player_ineligible'               -- state-dependent, under cap only
    AND reeval_count < :max_reeval
    AND (attempt_state IS NULL OR attempt_state <> :new_state);
 ```
 
-It never matches `success` / `already_redeemed` / code-dependent / operational rows. The
-new registration operation's own `operation_items` for the pair then drive a fresh claim →
-a fresh provider call (fresh `attempt_id`) with the new `state`. Already-`summarized`
-operations and their sealed `summary_item_snapshot` are **not** retroactively changed.
-`MockWhiteoutProvider` is idempotent by construction; a compliant production provider is
-required to be, or acceptance fails
+It never matches `success` / `already_redeemed` / `state_reevaluation_limit` /
+code-dependent / operational rows. The new registration operation's own `operation_items`
+for the pair then drive a fresh invocation (fresh `attempt_id`) with the new `state`.
+Already-`summarized` operations and their sealed `summary_item_snapshot` are **not**
+retroactively changed. `MockWhiteoutProvider` is idempotent by construction; a compliant
+production provider is required to be, or acceptance fails
 ([whiteout-provider-decision.md §5](whiteout-provider-decision.md#5-acceptance-criteria-for-a-production-provider)).
 
 #### Crash ambiguity
 
 If a real provider performs the redemption but the Worker crashes before the guarded
-terminal write, the redelivered message re-enters the consumer path as **T2** (same
-`attempt_id`) and calls the provider again. This is why a production `WhiteoutProvider`
-**must** support a stable redemption idempotency key or an authorized reconciliation lookup
+terminal write, the invocation lease expires and the redelivered message re-acquires an
+invocation for the same `attempt_id` (**T2**), then calls the provider again. This is why a
+production `WhiteoutProvider` **must** support a stable redemption idempotency key or an
+authorized reconciliation lookup
 ([whiteout-provider-decision.md §5](whiteout-provider-decision.md#5-acceptance-criteria-for-a-production-provider));
-without one, production redemption stays blocked.
+without one, production redemption stays blocked. During *normal* (non-expired) lease
+operation, T3 guarantees no two invocations of the same `attempt_id` call the provider.
 
-### 15.3 Completion accounting
+### 15.3 Completion accounting and the source freeze
 
-Counts are **derived on demand** from `operation_items`
-(`SELECT status, COUNT(*) ... GROUP BY status`) as the source of truth; the counter columns
-on `operations` are a recomputed cache. An operation is finalisable when
-`count(status IN ('success','already_redeemed','permanent_failure','retry_exhausted')) >= expected_count`
-(and, for distribution runs, `expansion_state = 'expanded'`).
+**While deciding whether to seal:** an operation is finalisable when
+`count(operation_items.status IN ('success','already_redeemed','permanent_failure','retry_exhausted')) >= expected_count`
+(and, for distribution runs, `expansion_state = 'expanded'`). `permanent_failure` here
+includes `reason_code = 'state_reevaluation_limit'` (T8) — a terminal failure that lets the
+operation finish.
 
-**`applied` in a summary = `success` + `already_redeemed`.** `already_redeemed` is never
-counted as a failure; a summary may append a parenthetical note (e.g. `"(already had 2)"`)
-but the headline count includes it.
+**Source freeze — the instant `summary_state` leaves `none`:** the mirror write from a
+consumer or the sweeper is guarded so it mutates `operation_items` **only while
+`operations.summary_state = 'none'`**; once it is `sealing`/`building`/… a later redemption
+outcome is appended to **`operation_late_results`** instead
+([§12](#operation_late_results-audit--history--outcomes-observed-after-freeze),
+[§15.2](#crash-safe-re-drive-operation-sweeper)). `operation_items.display_label` is
+immutable from creation. So every `operation_items` row that feeds the paged seal is frozen
+at one logical transition — no page can combine a status or a label from a different moment.
+
+**After sealing:** all summary-facing counts (`applied = success + already_redeemed`,
+failure counts) are recomputed **from `summary_item_snapshot`**, the same immutable version
+the rendered rows come from. `already_redeemed` counts toward `applied` and is never a
+failure; a `state_reevaluation_limit` row is a failure line, rendered truthfully (e.g.
+"state re-check limit — manual review"), never as "ineligible".
 
 ### 15.4 Deterministic, bounded, crash-resumable summary build and per-chunk delivery
 
@@ -1147,20 +1187,21 @@ chunk `k` is a pure function of `(operation_id, k)` and the **immutable
 after the seal.
 
 **Seal (the atomic transition that freezes every rendered input).** When an operation
-becomes finalisable ([§15.3](#153-completion-accounting)) **or** is force-closed at
-`deadline_at`, a single guarded statement moves `summary_state: 'none' → 'sealing'`
-(`WHERE summary_state = 'none'` — exactly one writer wins). Then a **paged seal pass** (page
-size `SUMMARY_BUILD_PAGE_SIZE`) reads `operation_items` for the operation in **`(player_id,
-code)` order** (the stable keyset — mid-seal `status` changes cannot reorder it), joins
-`players` for the label, and — in one **bounded** `db.batch()` per page —
-`INSERT … INTO summary_item_snapshot` (`status`/`reason_code`/**sanitised** `display_label`
-captured now, `sort_key` computed from `status_rank(status)`) `ON CONFLICT
+becomes finalisable ([§15.3](#153-completion-accounting-and-the-source-freeze)) **or** is
+force-closed at `deadline_at`, a single guarded statement moves
+`summary_state: 'none' → 'sealing'` (`WHERE summary_state = 'none'` — exactly one writer
+wins). **That same transition freezes the source:** from this instant, mirror writes for
+this operation go to `operation_late_results`, and `operation_items.display_label` was
+already immutable, so every source row is fixed as of one logical moment. Then a **paged
+seal pass** (page size `SUMMARY_BUILD_PAGE_SIZE`) reads those frozen `operation_items` rows
+in **`(player_id, code)` order** and — in one **bounded** `db.batch()` per page —
+`INSERT … INTO summary_item_snapshot` (frozen `status` / `reason_code`, `display_label`
+copied verbatim from `operation_items`, `sort_key` from `status_rank(status)`) `ON CONFLICT
 (operation_id, player_id, code) DO NOTHING`, advancing `operations.snapshot_cursor` (the last
-`(player_id, code)` sealed). When the last row is copied, `summary_state: 'sealing' →
-'building'` and `snapshot_sealed_at = now`. After the seal, **late `operation_items` status
-changes and `players.display_name` edits update those base rows only** (the live audit
-record) — the snapshot row already exists, so `ON CONFLICT DO NOTHING` leaves it untouched,
-and the seal is deterministic under a resumed crash (each `(player_id, code)` is read once).
+`(player_id, code)` sealed). The seal **never reads `players`**. When the last row is copied,
+`summary_state: 'sealing' → 'building'` and `snapshot_sealed_at = now`. A resumed crash
+re-reads only rows after `snapshot_cursor`; all inputs are already frozen, so the result is
+byte-identical.
 
 1a. **Layout pass (paged, resumable).** Read `summary_item_snapshot` `ORDER BY sort_key` in
     pages of `SUMMARY_BUILD_PAGE_SIZE`, resuming after `operations.summary_layout_cursor`.
@@ -1226,17 +1267,20 @@ delivered by the same dispatcher. The runtime footer is present in that one chun
 
 | Scenario | Handling |
 |---|---|
-| All items terminal | Seal `summary_item_snapshot` → layout pass → render pass → dispatcher delivers chunks in order → `summary_state = 'delivered'` |
-| Owner-path `retryable` result | Consumer `message.retry`s; the body (and `attempt_id`) is redelivered unchanged; on redelivery **T2** re-acquires the same attempt (`attempts += 1`, lease re-stamped) and calls the provider again. The retry budget stays attached to that `attempt_id`. |
-| A different attempt hits a **live** incumbent (T4) | The consumer releases its `operation_items` lease and `ack`s — no `message.retry`, no `max_retries` consumed, no write to `redemptions`; the sweeper re-drives the pair with a **fresh `attempt_id`** or mirrors the outcome once the incumbent terminalizes |
-| A DLQ message for `attempt_id` A (retries spent) | **T9** if `redemptions.current_attempt_id = A` → `retry_exhausted`; **T10** if a newer attempt has taken over (`current_attempt_id ≠ A`, **even if that newer lease has since expired**) → audit-only `dlq_stale_attempt`, no write. No lease/generation check. |
-| Owner crashes mid-retry | Its message stops re-stamping; `attempt_expires_at` passes → sweeper **T11** resets `in_progress → pending` (never terminal) and re-enqueues a **fresh `attempt_id`**. A late DLQ message for the old `attempt_id` is T10 (no-op). |
-| Player changes `state` while an old-state attempt is still `in_progress` | The old attempt's `player_ineligible` result hits **T8**: `attempt_state ≠ players.state` ⇒ the row goes back to `pending` (bounded by `REDEMPTION_MAX_REEVAL`) instead of terminalizing; a fresh `attempt_id` re-drives with the current `state`. **T14** (sweeper) is the catch-up for rows that turned terminal before T8 existed. |
-| Player re-registers with a corrected `state` after a terminal `player_ineligible` | **T12** inside the atomic acceptance batch: `permanent_failure → pending`, guarded on `attempt_state ≠ new state`, `reeval_count += 1`, capped; the new operation's items re-drive a fresh attempt with the new `state`; `success` / `already_redeemed` are never reopened (T15) |
-| An `outbox_jobs` row goes `dead` **before** the seal | Dispatcher **atomic-reopens** the outbox row (fresh `attempt_id`) + item row (guarded on `summary_state='none'`) |
-| An `outbox_jobs` row goes `dead` after the seal / finalization | Item recorded `retry_exhausted (outbox_dead)`; alert; `repair_run` stub; finalized operation and its snapshot not mutated |
-| Operation misses `deadline_at` | Sweeper → `state = 'stale_closed'` **and seals the snapshot then** (non-terminal items captured as `still_pending`); a **partial** summary (`output_type = 'partial_summary'`) is built from that immutable snapshot; late terminalizations update `operation_items` only — no re-render, no second summary |
-| Late redemption result **or** `players.display_name` change after the seal | The base `operation_items` / `players` row is updated (live audit); `summary_item_snapshot` is immutable, so no pass re-computes a different boundary or content |
+| All items terminal | Seal `summary_item_snapshot` (freeze at `none → sealing`) → layout pass → render pass → dispatcher delivers chunks in order → `summary_state = 'delivered'` |
+| **Two concurrent deliveries, same `attempt_id`** | D1 acquires the invocation (token `X`, **T1/T2**). D2 finds a live invocation → **T3**: no provider call, no writes, `ack`. Exactly one provider call. Covered by an explicit test ([§21](#21-testing-strategy)). |
+| Legitimate sequential owner retry | Provider `retryable` → **T9**: atomically clear the invocation, set `retry_due_at`, **then** `message.retry`. The redelivered body (same `attempt_id`) arrives ≥ `retry_due_at` → **T2** (new invocation token, `attempts += 1`) → calls the provider. Budget stays on `attempt_id`; a premature duplicate before `retry_due_at` is **T3**. |
+| Invocation crash | `invocation_expires_at` passes with the token still set → next redelivery **T2** (`in_progress AND invocation_expires_at<:now`); if none arrives, sweeper **T12** → `pending` + fresh `attempt_id`. |
+| Execution lease expires during a provider call | A redelivery steals via **T2** (token `Y`). The first invocation's terminal write is guarded `current_invocation_token = X` → discarded; `Y`'s result wins. Normal (non-expired) lease operation: **T3** prevents any second call. Expired case: production-provider **idempotency key** prevents double-apply; set `REDEMPTION_CLAIM_LEASE_SECONDS` > provider timeout. |
+| DLQ message for `attempt_id` A while an invocation is **still active** | **T11** (`invocation_expires_at ≥ now`) → `dlq_invocation_active`, audit-only, `ack`. The active invocation drives the outcome; if it later exhausts, *its* DLQ message hits **T10**. |
+| DLQ message for `attempt_id` A, no live invocation | **T10** if `current_attempt_id = A` → `retry_exhausted`. **T11** `dlq_stale_attempt` if `current_attempt_id ≠ A` (a newer attempt took over, **even if that newer lease has since expired**) → no write. |
+| Player changes `state` while an old-state attempt is still `in_progress` | The old attempt's `player_ineligible` hits **T7** (`attempt_state ≠ players.state`, under cap) → row → `pending`; a fresh `attempt_id` re-drives with the current `state`. **T15** (sweeper) is the catch-up for rows that turned terminal before T7. |
+| State re-evaluation cap reached (`reeval_count ≥ REDEMPTION_MAX_REEVAL`, `attempt_state ≠ players.state`) | **T8**: `permanent_failure` / `state_reevaluation_limit`, invocation cleared, **operator alert**, counts as a terminal failure so the operation finishes; the obsolete `player_ineligible` result is **not** reported as current; reopen only via `repair_run` (**T14**). |
+| Player re-registers with a corrected `state` after a terminal `player_ineligible` | **T13** inside the atomic acceptance batch: `permanent_failure → pending`, guarded on `attempt_state ≠ new state`, `reeval_count += 1`, capped; the new operation re-drives a fresh attempt; `success` / `already_redeemed` never reopen (T16); `state_reevaluation_limit` needs `repair_run`. |
+| An `outbox_jobs` row goes `dead` **before** the seal (`summary_state='none'`) | Dispatcher **atomic-reopens** the outbox row (fresh `attempt_id`) + item row |
+| An `outbox_jobs` row goes `dead` after the seal / finalization | Item outcome recorded in `operation_late_results`; alert; `repair_run` stub; finalized operation and its snapshot not mutated |
+| Operation misses `deadline_at` | Sweeper → `state = 'stale_closed'`, then **`summary_state: none → sealing`** — the freeze and seal capture non-terminal items as `still_pending`; a **partial** summary is built from that immutable snapshot; later terminalizations go to `operation_late_results` — no re-render, no second summary |
+| Late redemption result **or** `players.display_name` change after `summary_state ≠ 'none'` | The redemption outcome is appended to **`operation_late_results`** (the `operation_items` row is frozen); a name change touches only `players`. Neither can alter the snapshot, the layout boundaries, or the counts. |
 | Layout page ends mid-chunk | The open-chunk accumulator (`summary_layout_open = {first_sort_key, bytes, chunk_index}`) is persisted **in the same `db.batch()`** as `summary_layout_cursor`; the next invocation resumes the partial chunk exactly |
 | Crash mid seal / layout / render | Resume from `snapshot_cursor` / (`summary_layout_cursor` + `summary_layout_open`) / `summary_build_cursor`; re-derived rows are byte-identical (`ON CONFLICT DO NOTHING`) |
 | Summary would exceed `SUMMARY_MAX_CHUNKS` | Layout stops at the cap; the final chunk carries a deterministic `"+N more not listed"` line; footer still only in that final chunk |
@@ -1253,10 +1297,10 @@ delivered by the same dispatcher. The runtime footer is present in that one chun
 | Discord event acceptance | `processed_events.event_id` | marker inserted **only** in the same atomic `db.batch()` as the validation-reply delivery row (invalid) or the registration work + outbox rows (valid); PK conflict ⇒ whole batch rolls back ⇒ duplicate no-op; state-machine mode keeps `status` non-terminal until `work_committed` |
 | Player | `players.player_id` | upsert |
 | Gift code | `gift_codes.code` | unique |
-| **Redemption (global)** | `redemptions (player_id, code)` | claim-or-resume upsert keyed by the durable `attempt_id`; **sole provider-call authority**; deterministic `idempotency_key` (stable across re-evaluations); **every terminal write (consumer or DLQ) guarded on `current_attempt_id = :attempt_id` + `status='in_progress'`** — no lease/generation check; state-dependent terminal adds `attempt_state` vs `players.state`; `success` / `already_redeemed` immutable (T15); contention (T4) writes nothing here; full transition table in [§15.2](#152-global-redemption-record--the-sole-provider-call-authority) |
-| Operation item | `operation_items (operation_id, item_key)` | PK + short lease keyed by the same `attempt_id` (queue-dedup + accounting only); mirrors the global outcome |
+| **Redemption (global)** | `redemptions (player_id, code)` | acquire-invocation upsert (**T1/T2/T3**); the durable `attempt_id` is the retry budget, the per-invocation `current_invocation_token` serializes provider calls; **every consumer terminal / `retry_wait` write guarded on `current_attempt_id = :aid AND current_invocation_token = :itok AND status='in_progress'`**; the **DLQ** write (T10) guarded on exact `attempt_id` **AND no live invocation**; state-dependent terminal adds `attempt_state` vs `players.state`; `success` / `already_redeemed` immutable (T16); T3 (contention) writes nothing here; full transition table in [§15.2](#152-global-redemption-record--the-sole-provider-call-authority) |
+| Operation item | `operation_items (operation_id, item_key)` | PK + coarse `attempt_id` lease (queue-dedup + accounting only — the real serializer is the global invocation token); `status` frozen once `summary_state ≠ 'none'` |
 | Outbox → Queue | `outbox_jobs.job_id` + `attempt_id` in the message body | **consumer-side** dedup (no producer key, [fact:C7]); `attempt_id` re-minted only on a reset to `pending`, never on `message.retry` |
-| Summary rendered inputs | `summary_item_snapshot (operation_id, player_id, code)` (ordered by `sort_key`) | sealed once (`summary_state: none → sealing → building`) reading `operation_items` in stable `(player_id, code)` order, `ON CONFLICT DO NOTHING`; immutable after seal; both build passes read only this |
+| Summary rendered inputs | `summary_item_snapshot (operation_id, player_id, code)` (ordered by `sort_key`) | sealed once from **frozen** `operation_items` (freeze at `summary_state: none → sealing`; later outcomes → `operation_late_results`), `ON CONFLICT DO NOTHING`; immutable after seal; both build passes **and the counters** read only this |
 | Discord output (per chunk) | `discord_output_deliveries.delivery_id` + deterministic `nonce`; `summary_chunk_layout (operation_id, chunk_index)` | `delivery_id` / `nonce` / content are pure functions of `(operation_id, chunk_index)` + the immutable snapshot; seal / layout / render passes resume from `snapshot_cursor` / (`summary_layout_cursor` + `summary_layout_open`) / `summary_build_cursor` with `ON CONFLICT DO NOTHING`; `enforce_nonce` bounded suppression ([fact:D6]); delivery resumes at first unsent chunk |
 
 Queues are at-least-once **[fact:C7][fact:C8]**; every consumer is written to be safely
@@ -1268,19 +1312,20 @@ re-runnable.
 
 | Provider / transport signal | Class (`reason_code`) | Action | Reopen |
 |---|---|---|---|
-| HTTP 429, `Retry-After` present | `retryable` | owner path (T2): `message.retry`, honour `Retry-After`, exponential backoff, re-stamp `attempt_expires_at` | — |
-| HTTP 5xx, connection reset, timeout | `retryable` | owner path (T2): retry with backoff up to `PROVIDER_MAX_RETRIES` | — |
-| Provider "rate limited" / "temporarily unavailable" | `retryable` | owner path (T2): retry with backoff | — |
-| Redemption succeeded now | `success` | T5 terminal, guarded on `current_attempt_id`; record `provider_receipt` if returned | **never** (T15) |
-| Redemption already applied for this pair | `already_redeemed` | T5 **terminal, success-equivalent**; no retry; counts toward `applied`; never a failure | **never** (T15) |
-| Invalid / expired / disabled code | `permanent` (`code_invalid` / `code_expired`) | T6 terminal `permanent_failure`, no retry, **never DLQ** | operator `repair_run` (T13) only |
-| Player ineligible / unknown to the game | `permanent` (`player_ineligible`) — **state-dependent** | T7 if `attempt_state = players.state`; **T8** (row → `pending`) if `attempt_state ≠ players.state` — a stale in-flight attempt never terminalizes | T8 / T12 / T14 (guarded `state` mismatch, `reeval_count += 1`, capped by `REDEMPTION_MAX_REEVAL`); then `repair_run` only |
-| Bad request / auth failure | `permanent` (`provider_bad_request` / `provider_auth_failed`) — operational | T6 terminal `permanent_failure` | operator `repair_run` (T13) only, after the cause is fixed |
+| HTTP 429, `Retry-After` present | `retryable` | **T9**: atomically → `retry_wait` (clear invocation, set `retry_due_at` from `Retry-After` / backoff), **then** `message.retry` | — |
+| HTTP 5xx, connection reset, timeout | `retryable` | **T9** with exponential backoff up to `PROVIDER_MAX_RETRIES` | — |
+| Provider "rate limited" / "temporarily unavailable" | `retryable` | **T9** with backoff | — |
+| Redemption succeeded now | `success` | **T4** terminal, guarded on `current_invocation_token`; record `provider_receipt` if returned | **never** (T16) |
+| Redemption already applied for this pair | `already_redeemed` | **T4** **terminal, success-equivalent**; no retry; counts toward `applied`; never a failure | **never** (T16) |
+| Invalid / expired / disabled code | `permanent` (`code_invalid` / `code_expired`) | **T5** terminal `permanent_failure`, no retry, **never DLQ** | operator `repair_run` (T14) only |
+| Player ineligible / unknown to the game | `permanent` (`player_ineligible`) — **state-dependent** | **T6** if `attempt_state = players.state`; **T7** (row → `pending`) if `attempt_state ≠ players.state` and `reeval_count < REDEMPTION_MAX_REEVAL`; **T8** (`permanent_failure` / `state_reevaluation_limit`, alert) if the cap is reached — a stale in-flight attempt never terminalizes as `player_ineligible`-for-current-state | T7 / T13 / T15 while under cap; then **`repair_run` only (T14)** — incl. `state_reevaluation_limit` |
+| Bad request / auth failure | `permanent` (`provider_bad_request` / `provider_auth_failed`) — operational | **T5** terminal `permanent_failure` | operator `repair_run` (T14) only, after the cause is fixed |
 | Input validation failure (bad `PLAYER_ID`) | n/a | never reaches a queue; durable validation reply instead ([§5](#invalid-message-reply)) | — |
-| Owner-path attempt exhausts retries | `retry_exhausted` | message → `redemption-dlq`; the global row is set `retry_exhausted` **only** by the DLQ consumer's exact-`attempt_id` write (T9); a stale `attempt_id` message is audit-only (T10); mirrored items marked `retry_exhausted` | operator `repair_run` (T13); or bounded sweeper reopen when `REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED` |
+| Owner-path attempt exhausts retries | `retry_exhausted` | message → `redemption-dlq`; the global row is set `retry_exhausted` **only** by the DLQ consumer's exact-`attempt_id` write **with no live invocation** (T10); a stale `attempt_id` or an active invocation ⇒ audit-only (T11); mirrored items marked `retry_exhausted` | operator `repair_run` (T14); or bounded sweeper reopen when `REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED` |
+| State re-evaluation cap reached | `permanent` → **`state_reevaluation_limit`** | **T8** terminal `permanent_failure`; clear invocation; **operator alert**; counts as a terminal failure so the operation finishes; rendered truthfully, never as `player_ineligible`-for-current-state | **`repair_run` only (T14)** |
 
 Backoff, `delaySeconds`, and `PROVIDER_MAX_RETRIES` stay within Queue limits **[fact:C8]**.
-Contention never consumes the retry budget ([§15.2](#152-global-redemption-record--the-sole-provider-call-authority)).
+T3 (contention) never consumes the retry budget ([§15.2](#152-global-redemption-record--the-sole-provider-call-authority)).
 
 ---
 
@@ -1288,9 +1333,10 @@ Contention never consumes the retry budget ([§15.2](#152-global-redemption-reco
 
 - **Sanitisation:** display names and any echoed user input are sanitized
   (strip/escape backticks, `@`, `#`, `:` role/emoji triggers, zero-width and control
-  characters; cap length). Sanitisation happens **at seal time**, and the sanitised
-  `display_label` is frozen in `summary_item_snapshot`; the render pass never re-reads
-  `players`, so a later name change cannot alter an in-progress or delivered summary.
+  characters; cap length). The label is sanitised and stored in
+  `operation_items.display_label` **when the item row is created** and is **immutable**
+  thereafter; the seal copies it verbatim and the render pass never reads `players`, so a
+  later `players.display_name` change cannot alter an in-progress or delivered summary.
 - **Mention suppression:** every Create Message call sets `allowed_mentions` to an empty
   allow-list so `@everyone`, role, and user mentions never fire.
 - **No silent mutation:** the service never edits or deletes a message it did not just
@@ -1337,15 +1383,18 @@ Migrations are applied to staging first, then production, after review.
   beyond mapped `reasonCode`s / `provider_receipt`.
 - **Redaction helper** applied at the log boundary; unit-tested.
 - **Metrics:** events accepted (valid / invalid); redemptions by outcome (`success` /
-  `already_redeemed` / `retryable` / `permanent` / `retry_exhausted`); attempt outcomes
-  (T1 grant / T2 resume / T3 steal / T4 contention-released); **sweeper re-drives**
-  (fresh `attempt_id`); **`dlq_stale_attempt`** count (T10); **redemption re-evaluations**
-  by trigger (T8 in-flight / T12 re-registration / T14 sweeper / T13 `repair_run`);
-  operations by `state`; operations `stale_closed`; seal / layout / render cursor lag;
-  **summaries capped at `SUMMARY_MAX_CHUNKS`**; `discord_output_deliveries` by `status`;
-  unsent-chunk age; DLQ depth; queue backlog; outbox backlog and `dead` count; `repair_run`
-  count; Gateway reconnect / RESUME / IDENTIFY counts (ingestion tier).
-- **Alerts:** DLQ depth > 0, outbox `dead` count > 0, `dlq_stale_attempt` rate,
+  `already_redeemed` / `retryable` / `permanent` / `retry_exhausted` / `state_reevaluation_limit`);
+  invocation transitions (T1 grant / T2 resume / T3 contention-ack / T9 → `retry_wait`);
+  **sweeper re-drives (T12)** with a fresh `attempt_id`; **`dlq_stale_attempt`** (T11) and
+  **`dlq_invocation_active`** (T11) counts; **redemption re-evaluations** by trigger
+  (T7 in-flight / T13 re-registration / T15 sweeper / T14 `repair_run`);
+  **`operation_late_results` inserts** (outcomes after freeze); operations by `state`;
+  operations `stale_closed`; seal / layout / render cursor lag; **summaries capped at
+  `SUMMARY_MAX_CHUNKS`**; `discord_output_deliveries` by `status`; unsent-chunk age; DLQ
+  depth; queue backlog; outbox backlog and `dead` count; `repair_run` count; Gateway
+  reconnect / RESUME / IDENTIFY counts (ingestion tier).
+- **Alerts:** DLQ depth > 0, outbox `dead` count > 0, `dlq_stale_attempt` /
+  `dlq_invocation_active` rate, **`state_reevaluation_limit` recorded**,
   `discord_output_deliveries` stuck `pending`/`claimed` beyond a threshold, operations stuck
   in `summary_state ∈ {sealing, building}` beyond a threshold, operations `stale_closed`
   rate, `repair_run` created, `reeval_count` hitting `REDEMPTION_MAX_REEVAL`, ingestion tier
@@ -1370,28 +1419,37 @@ Migrations are applied to staging first, then production, after review.
     `(player_id, code)` result in exactly one provider call; the loser reuses the terminal
     outcome; a terminal `redemptions` row is mirrored onto every waiting `operation_items`
     row (via consumer and via sweeper);
-  - **owner-path retry resumes the same attempt:** after a `retryable` result the
-    redelivered message re-acquires its own `attempt_id` via **T2** (item + global gates),
-    `attempts += 1`, and calls the provider again — the retry is not swallowed; the DLQ
-    message for that `attempt_id` still owns the budget;
-  - **contention is not a retry (T4):** a different attempt hitting a live incumbent
-    releases its item lease and `ack`s — no `message.retry`, no `max_retries`, no DLQ, no
-    `redemptions` write; the sweeper re-drives with a **fresh `attempt_id`**;
-  - **DLQ binds to the exact `attempt_id` (T9/T10):** a DLQ message whose `attempt_id`
-    equals `current_attempt_id` terminalizes `retry_exhausted`; a stale `attempt_id`
-    (`current_attempt_id` is a newer attempt, **whether or not that newer lease has since
-    expired**) is audit-only `dlq_stale_attempt` — it never terminalizes the newer attempt;
-  - **state race (T8):** a `player_ineligible` result whose `attempt_state ≠ players.state`
-    returns the row to `pending` instead of terminalizing; a fresh attempt runs with the
-    current state; **T14** covers rows that turned terminal before T8; capped by
-    `REDEMPTION_MAX_REEVAL`; `idempotency_key` unchanged; `success` / `already_redeemed`
-    never reopen (T15);
+  - **concurrent same-`attempt_id` deliveries (T3):** two overlapping deliveries of the same
+    queue body → **exactly one** provider call; the second finds a live
+    `current_invocation_token` and `ack`s without calling the provider, `message.retry`, or
+    writing to `redemptions`;
+  - **owner-path retry resumes the same attempt (T9 → T2):** a `retryable` result
+    atomically moves the row to `retry_wait` (clears the invocation, records `retry_due_at`)
+    **before** `message.retry`; the redelivered body acquires a **new invocation** for the
+    same `attempt_id`, `attempts += 1`, and calls the provider again — the retry is not
+    swallowed; a premature duplicate before `retry_due_at` is T3;
+  - **invocation crash / lease expiry during a call:** a redelivery acquires a new
+    invocation via T2 (`invocation_expires_at < now`); the crashed invocation's later
+    terminal write is discarded by the `current_invocation_token` guard; if no redelivery
+    comes, sweeper T12 → `pending` + fresh `attempt_id`;
+  - **DLQ vs live invocation (T10/T11):** a DLQ message terminalizes `retry_exhausted` only
+    on an exact `attempt_id` match **and** no live invocation; with a live invocation it is
+    `dlq_invocation_active` (audit-only); with a newer `attempt_id` it is `dlq_stale_attempt`
+    (audit-only) **even if that newer lease has since expired**;
+  - **state race (T7) and cap (T8):** a `player_ineligible` result whose `attempt_state ≠
+    players.state` returns the row to `pending` (T7) while `reeval_count <
+    REDEMPTION_MAX_REEVAL`; **at the cap it terminalizes as `permanent_failure` /
+    `state_reevaluation_limit`** (T8) with an alert — it does **not** stay `in_progress` and
+    is **not** re-driven by T12; a `state_reevaluation_limit` row reopens only via
+    `repair_run` (T14); it is rendered truthfully, never as `player_ineligible`-for-current-state;
   - **`already_redeemed`** counts toward `applied` and never as a failure in totals and
     rendered summaries;
-  - **immutable summary snapshot:** the seal atomically freezes `status` / `reason_code` /
-    sanitised `display_label` / ordering into `summary_item_snapshot`; a late
-    `operation_items` change or `players.display_name` edit after the seal never alters
-    layout boundaries or rendered content; both passes read only the snapshot;
+  - **immutable summary source:** the instant `summary_state` leaves `none`, a mirror write
+    goes to `operation_late_results` instead of mutating the frozen `operation_items` row;
+    `display_label` is immutable from item creation; the seal never reads `players`; both
+    build passes **and the counters** read only `summary_item_snapshot`; a late redemption
+    result or a `players.display_name` edit cannot change layout boundaries, rendered
+    content, or counts;
   - **paged layout resumes an open chunk:** a layout page that ends mid-chunk persists
     `summary_layout_open = {first_sort_key, bytes, chunk_index}` **in the same `db.batch()`**
     as `summary_layout_cursor`; the resumed pass produces byte-identical chunks; no single
@@ -1426,21 +1484,24 @@ Migrations are applied to staging first, then production, after review.
 | Ingestion Worker `/ingest` unavailable | Companion cannot forward | Companion retries with bounded local buffer; the atomic accept + PK conflict makes re-sends safe |
 | Crash between event accept and work commit | Event `accepted_valid` but work incomplete | State-machine mode: `processed_events.status` non-terminal; sweeper re-drives expansion; marker never `finalized` without work. Single-batch mode: the marker only exists if the work committed |
 | D1 unavailable | Atomic unit cannot commit | Ingestion returns 5xx; companion retries; nothing accepted or enqueued without a committed unit |
-| Two operations target the same `(player_id, code)` | Risk of double provider call | Global `redemptions` claim-or-resume by `attempt_id`: one attempt is `current_attempt_id`, others reuse the terminal outcome or **release + `ack`** on T4 contention; sweeper re-drives with a fresh `attempt_id`; only the `attempt_id` owner terminalizes; outcome mirrored to all |
-| Owner-path `retryable` result | Second provider attempt could be lost | The redelivered message re-acquires its own `attempt_id` (T2) through both gates, `attempts += 1`, and calls the provider again; the retry budget and eventual DLQ ownership stay with that `attempt_id` |
-| Contending message (T4) | Could exhaust `max_retries` → DLQ → poison the shared row | Contention is off the retry path: release item lease + `ack`; the sweeper re-drives with a fresh `attempt_id`/budget; a T4 message can never write to the global row or reach the DLQ |
-| Claim owner crashes mid-retry | Global row stuck `in_progress` | `attempt_expires_at` passes → sweeper **T11** resets `in_progress → pending` (never terminal), re-enqueues a fresh `attempt_id`; a late DLQ message for the old `attempt_id` is **T10** (no-op) |
-| Stale DLQ message vs a newer attempt | Wrong `retry_exhausted` on the shared row | DLQ write is guarded `current_attempt_id = message.attempt_id AND status='in_progress'` (T9); if a newer attempt has taken over — **even if its lease has since expired** — the write matches nothing (T10, `dlq_stale_attempt`); it never overwrites a fresher attempt |
-| Player changes `state` while an old-state attempt is still `in_progress` | Stale `player_ineligible` becomes the new registration's terminal | Before terminalizing, **T8** compares `attempt_state` with `players.state`; mismatch ⇒ row → `pending` (capped), fresh attempt with current state; **T14** sweeper catch-up for pre-T8 terminals |
-| Player re-registers with corrected `state` after a terminal `player_ineligible` | Old failure would be reused forever | **T12** in the atomic acceptance batch reopens the guarded row (`permanent_failure → pending`, `reeval_count += 1`, capped); the new operation re-drives with the new `state`; `success` / `already_redeemed` never reopen |
-| Provider redeems then Worker crashes before recording | Ambiguous redemption | Redelivery re-enters as T2 (same `attempt_id`) and calls again. Production requires a stable idempotency key or authorized reconciliation; until then production redemption is blocked. Mock is idempotent |
+| Two operations target the same `(player_id, code)` | Risk of double provider call | One invocation holds `current_invocation_token`; others reuse the terminal outcome or **`ack`** on T3; sweeper T12 re-drives with a fresh `attempt_id`; only the token holder terminalizes; outcome mirrored to all |
+| **Two concurrent deliveries of the same `attempt_id`** | Both could call the provider (T2 previously ignored the lease) | Only the first acquires `current_invocation_token`; the second is **T3** (live invocation) → `ack`, no provider call, no writes. Explicit test in [§21](#21-testing-strategy). |
+| Owner-path `retryable` result | Second provider attempt could be lost | **T9**: atomically → `retry_wait`, clear invocation, record `retry_due_at`, **then** `message.retry`. The redelivery acquires a new invocation for the same `attempt_id` (T2), `attempts += 1`, calls the provider again |
+| Execution lease expires during a provider call | Two invocations could overlap | Only during the *abnormal* expiry case; the stale invocation's terminal write is discarded by the `current_invocation_token` guard, and the production-provider **idempotency key** prevents double-apply. Set `REDEMPTION_CLAIM_LEASE_SECONDS` > the call timeout so normal operation never expires; then T3 blocks any second call |
+| Invocation crash | Global row stuck `in_progress` | `invocation_expires_at` passes → a redelivery re-acquires via **T2**, or sweeper **T12** → `pending` + fresh `attempt_id` |
+| DLQ message while an invocation is still active | Wrong `retry_exhausted` while work is in flight | **T11** `dlq_invocation_active` (audit-only, `ack`); the active invocation drives the outcome; if it later exhausts, *its* DLQ message hits **T10** |
+| Stale DLQ message vs a newer attempt | Wrong `retry_exhausted` on the shared row | DLQ write is guarded on exact `attempt_id` **and** no live invocation (T10); a newer `attempt_id` — **even after its lease expires** — is **T11** `dlq_stale_attempt`, no write |
+| Player changes `state` while an old-state attempt is still `in_progress` | Stale `player_ineligible` becomes the new registration's terminal | Before terminalizing, **T7** compares `attempt_state` with `players.state`; mismatch & under cap ⇒ row → `pending`, fresh attempt with current state; **T15** sweeper catch-up for pre-T7 terminals |
+| State re-evaluation cap reached | Row would loop `in_progress` ↔ `pending` forever (old T8 gap) | **T8**: `permanent_failure` / `state_reevaluation_limit`, invocation cleared, **operator alert**, counts as a terminal failure so the operation finishes; T12 does **not** re-drive it; reopen only via `repair_run` (T14); never rendered as `player_ineligible`-for-current-state |
+| Player re-registers with corrected `state` after a terminal `player_ineligible` | Old failure would be reused forever | **T13** in the atomic acceptance batch reopens the guarded row (`permanent_failure → pending`, `reeval_count += 1`, capped); the new operation re-drives with the new `state`; `success` / `already_redeemed` / `state_reevaluation_limit` are not touched |
+| Provider redeems then Worker crashes before recording | Ambiguous redemption | The invocation lease expires; a redelivery re-acquires via **T2** and calls again. Production requires a stable idempotency key or authorized reconciliation; until then production redemption is blocked. Mock is idempotent |
 | Queue backlog | Delayed redemptions | Consumers scale (push concurrency up to 250, [fact:C8]); operations bounded by `deadline_at` |
-| Provider outage / rate-limit storm | Many `retryable` failures | Owner-path backoff + `PROVIDER_RATE_LIMIT_PER_SECOND`; an attempt's retries exhaust → DLQ → `attempt_id`-guarded `retry_exhausted` (T9) + mirrored items; summary lists failures |
-| DLQ growth | Redemptions stuck | Alert; DLQ consumer terminalises **only on an exact `attempt_id` match**; operator triage / `repair_run` |
+| Provider outage / rate-limit storm | Many `retryable` failures | **T9** backoff + `PROVIDER_RATE_LIMIT_PER_SECOND`; an attempt's retries exhaust → DLQ → **T10** `retry_exhausted` + mirrored items; summary lists failures |
+| DLQ growth | Redemptions stuck | Alert; DLQ consumer terminalises **only on an exact `attempt_id` match with no live invocation**; operator triage / `repair_run` |
 | Very large player list → summary | One unbounded seal/build batch could exceed D1 limits | Paged seal + paged layout + paged render, each bounded per invocation and per `db.batch()`, cursor-resumable, capped at `SUMMARY_MAX_CHUNKS` |
-| Late `operation_items` result or `players.display_name` change after the seal | A later pass could compute a different boundary / render different text | `summary_item_snapshot` is immutable after the seal; the base row is updated for audit only; both passes read only the snapshot |
+| Late redemption result or `players.display_name` change after `summary_state ≠ 'none'` | A later pass could compute a different boundary / render different text / different counts | The redemption outcome goes to **`operation_late_results`** (the `operation_items` row is frozen); `display_label` is immutable from creation; both build passes **and the counters** read only `summary_item_snapshot` |
 | Crash mid seal / layout / render | Partial snapshot / layout / delivery rows | Resume from `snapshot_cursor` / (`summary_layout_cursor` + `summary_layout_open`) / `summary_build_cursor`; re-derived rows byte-identical (`ON CONFLICT DO NOTHING`) |
-| Duplicate queue delivery | Repeated processing attempt | Absorbed by the item lease + the global redemption claim, both keyed by `attempt_id` |
+| Duplicate queue delivery | Repeated processing attempt | Coarse `operation_items` lease (by `attempt_id`) plus the authoritative per-invocation `current_invocation_token` (T3) — at most one provider call |
 | Partial fan-out (crash mid-expansion) | Some `operation_items` missing | Expansion worker resumes from `expansion_cursor`; finalisation waits for `expanded` |
 | Outbox row `dead` before the seal | One unit of work never enqueued | Atomic reopen of the outbox row (fresh `attempt_id`) + item row (guarded on `summary_state='none'`) |
 | Outbox row `dead` after the seal / finalization | Same, but the snapshot is sealed | Item `retry_exhausted (outbox_dead)`; alert; `repair_run` stub; no in-place mutation of the operation or its snapshot |
@@ -1486,38 +1547,48 @@ automated.
   large-write-set fallback.
 - **Redemption serialization:** the global `redemptions (player_id, code)` record is the
   sole provider-call authority; operation items reuse its terminal outcome.
-- **Durable attempt identity (`attempt_id`):** one owner-path retry stays attached to one
-  `attempt_id` across `message.retry` (T2 resumes both the item and global gates); lease
-  contention (T4) is off the retry path — the waiter releases + `ack`s and the sweeper
-  re-drives with a **fresh `attempt_id`**; **every** global terminal write (consumer or DLQ)
-  is guarded by `current_attempt_id = :attempt_id` alone (no lease/generation check);
-  `attempt_generation` is an audit counter only. The single state-transition table
-  (T1–T15) in §15.2 is the source of truth for all guards, the queue-message field, the DLQ
-  rule, the sweeper rules, and the scenario matrix.
-- **DLQ ↔ generation:** a DLQ message names one `attempt_id`; it terminalizes `retry_exhausted`
-  only on `current_attempt_id = message.attempt_id` (T9). A stale `attempt_id` — a newer
-  attempt has taken over, **whether or not its lease has since expired** — is audit-only
-  (T10, `dlq_stale_attempt`).
-- **State race:** a `player_ineligible` result whose `attempt_state ≠ players.state`
-  returns the row to `pending` (**T8**) instead of terminalizing; **T12** covers a
-  re-registration, **T14** the sweeper catch-up; all capped by `REDEMPTION_MAX_REEVAL`;
-  `idempotency_key` stays stable; `success` / `already_redeemed` never reopen (T15).
+- **Retry-budget identity vs invocation claim:** the durable **`attempt_id`** (queue body,
+  preserved across `message.retry`) is the retry budget; a distinct per-invocation
+  **`current_invocation_token`** + `invocation_expires_at` serializes provider calls, so two
+  overlapping deliveries of the same `attempt_id` cannot both call the provider (**T3**). A
+  `retryable` result executes **T9** — atomically release the invocation and record
+  `retry_due_at` — *before* `message.retry`; a redelivery acquires a **new invocation** for
+  the same `attempt_id` only when no invocation is live and the retry is due (**T2**).
+  Consumer terminal writes are guarded on `current_invocation_token`; the DLQ write on
+  exact `attempt_id` **and** no live invocation. `attempt_generation` is an audit counter.
+  The single state-transition table **T1–T16** in §15.2 is the source of truth for all
+  guards, the queue-message field, the DLQ rules, the sweeper rules, the scenario matrix,
+  and the tests.
+- **DLQ while an invocation is active:** **T11** `dlq_invocation_active` (audit-only) — the
+  live invocation drives the outcome; the DLQ terminal write (**T10**) needs an exact
+  `attempt_id` match **and** no live invocation. A stale `attempt_id` (newer attempt owns
+  the row, **even if its lease has since expired**) is **T11** `dlq_stale_attempt`.
+- **State race and its cap:** a `player_ineligible` result whose `attempt_state ≠
+  players.state` returns the row to `pending` (**T7**) while under cap; at
+  `reeval_count ≥ REDEMPTION_MAX_REEVAL` it becomes a **terminal failure** —
+  `permanent_failure` / **`state_reevaluation_limit`** (**T8**) — with an operator alert,
+  never left `in_progress`, never re-driven, never rendered as `player_ineligible` for the
+  current state; reopen only via `repair_run` (**T14**). **T13** covers a re-registration,
+  **T15** the sweeper catch-up; `idempotency_key` stays stable; `success` /
+  `already_redeemed` never reopen (**T16**).
 - **Staging spike exception:** reachable at **both** the `DiscordEventSource` (forwards
   allow-listed bot/webhook senders) and the Ingestion Worker (authoritative gate); the
   production filter is unconditional because `SPIKE_SENDER_ALLOWLIST` is absent there.
-- **Immutable summary snapshot:** an atomic seal (`summary_state: none → sealing → building`)
-  freezes `status` / `reason_code` / sanitised `display_label` / ordering into
-  `summary_item_snapshot`; both the layout and render passes read **only** that; late
-  `operation_items` / `players` changes update the base rows for audit and never alter a
-  started summary. A layout page that ends mid-chunk persists the open-chunk accumulator
-  (`summary_layout_open`) with `summary_layout_cursor` in the same `db.batch()`.
+- **Genuinely frozen summary source:** the instant `summary_state` leaves `none`,
+  `operation_items` for that operation is frozen — a later redemption outcome goes to
+  **`operation_late_results`**, and `display_label` was immutable from item creation. The
+  paged seal copies only those frozen rows (never reads `players`); both build passes **and
+  the summary counters** read only `summary_item_snapshot`. A layout page that ends
+  mid-chunk persists the open-chunk accumulator (`summary_layout_open`) with
+  `summary_layout_cursor` in the same `db.batch()`.
 - **Discord output:** durable per-chunk `discord_output_deliveries` built by a **paged,
   crash-resumable** seal + layout + render process over the immutable snapshot, bounded per
   `db.batch()`, capped at `SUMMARY_MAX_CHUNKS`; one logical result, at-least-once delivery,
   bounded duplicate suppression; footer only in the final chunk.
 - **D1 → Queue reliability:** per-item transactional outbox carrying `attempt_id`; `dead`
-  rows are atomic-reopened (fresh `attempt_id`) while `summary_state='none'`, or handed to a
-  `repair_run` once the snapshot is sealed / finalized (no ineffective requeue).
+  rows are atomic-reopened (fresh `attempt_id`) while `summary_state='none'`, or the outcome
+  is recorded in `operation_late_results` + handed to a `repair_run` once the snapshot is
+  sealed / finalized (no ineffective requeue).
 - **`nonce` / `enforce_nonce`:** confirmed — `nonce` ≤ 25 chars; `enforce_nonce` checks
   uniqueness within the past few minutes and returns the existing message for a same-author
   repeat **[fact:D6]**.
@@ -1531,14 +1602,13 @@ automated.
 - Where the companion runs if Option 2 stands (infra decision).
 - `player_id` canonicalisation edge cases (max length; leading zeros — current lean:
   preserve verbatim).
-- Tuning during implementation: lease durations (`ITEM_CLAIM_LEASE_SECONDS`,
-  `REDEMPTION_CLAIM_LEASE_SECONDS` — an owner always resumes its **own** `attempt_id` (T2)
-  regardless of lease, so this only bounds how long a *different* attempt waits before T3
-  steal / T11 re-drive; set it comfortably above a few provider-retry `delaySeconds` cycles
-  to avoid wasted parallel attempts, `OUTPUT_CLAIM_LEASE_SECONDS`),
-  `FANOUT_EXPANSION_PAGE_SIZE`, `SUMMARY_BUILD_PAGE_SIZE`, `SUMMARY_MAX_CHUNKS`,
-  `SWEEPER_REDRIVE_BATCH`, `REDEMPTION_MAX_REEVAL`, and the single-batch size threshold that
-  triggers state-machine acceptance.
+- Tuning during implementation: lease durations (`ITEM_CLAIM_LEASE_SECONDS`;
+  `REDEMPTION_CLAIM_LEASE_SECONDS` — the **invocation** lease, which **must exceed the
+  provider call timeout** so a lease never expires mid-call (T3 then guarantees no second
+  call); `OUTPUT_CLAIM_LEASE_SECONDS`), `FANOUT_EXPANSION_PAGE_SIZE`,
+  `SUMMARY_BUILD_PAGE_SIZE`, `SUMMARY_MAX_CHUNKS`, `SWEEPER_REDRIVE_BATCH`,
+  `REDEMPTION_MAX_REEVAL`, the `retry_wait` backoff schedule, and the single-batch size
+  threshold that triggers state-machine acceptance.
 - Whether `repair_run` is fully automated later or stays human-triggered; whether
   `REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED` is ever enabled in production.
 - Missed-event backfill: bounded REST catch-up vs manual re-send only.
