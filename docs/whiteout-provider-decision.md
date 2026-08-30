@@ -23,6 +23,14 @@ secret values.**
 > `repair_run`. `idempotencyKey` stays stable across reopens so a genuine prior `success` is
 > still deduplicated. The DLQ path terminalizes the shared row only for the claim-owning
 > attempt (architecture side).
+>
+> **Revision 2026-08-30 (PR #3 review round 3):** the "claim-owning attempt" is now a
+> durable `attempt_id` (architecture §15.2, state-transition table T1–T15). An owner-path
+> retry keeps its `attempt_id` across `message.retry` (T2); the DLQ write is guarded on the
+> **exact** `current_attempt_id` (T9), so a stale `attempt_id` never terminalizes a newer
+> one (T10). A `player_ineligible` result whose `attempt_state` no longer matches the
+> current `players.state` re-drives instead of terminalizing (T8). No provider-contract
+> change.
 
 ## 1. Current status
 
@@ -170,7 +178,7 @@ implementation must fill in.
 | Malformed / rejected request that a retry cannot fix | `permanent` | `provider_bad_request` | investigate adapter |
 | Invalid / unknown gift code | `permanent` | `code_invalid` | mark code `disabled` |
 | Expired gift code | `permanent` | `code_expired` | mark code `expired` |
-| Player not eligible / unknown to the game | `permanent` — **state-dependent** | `player_ineligible` | none — reported in summary; **auto-reopens** on a re-registration that changes `players.state` |
+| Player not eligible / unknown to the game | `permanent` — **state-dependent** | `player_ineligible` | none — reported in summary; **T8**: if `attempt_state ≠ players.state` the row is re-driven instead of terminalizing; also **T12**/**T14** reopen on a `state` change |
 | Authentication / authorization failure | `permanent` — operational | `provider_auth_failed` | rotate credentials (human); reopen via `repair_run` only |
 
 Policy:
@@ -181,24 +189,28 @@ Policy:
   summary may add a parenthetical note but the headline count includes it
   ([architecture.md §15.3](architecture.md#153-completion-accounting),
   [architecture.md §17](architecture.md#17-retry-and-permanent-failure-classification)).
-- **Terminality is per `reason_code`** ([architecture.md §15.2](architecture.md#152-global-redemption-record--the-sole-provider-call-authority)):
-  `success` / `already_redeemed` immutable; `player_ineligible` auto-reopens on a `state`
-  change (guarded, capped by `REDEMPTION_MAX_REEVAL`); `code_invalid` / `code_expired` /
-  `provider_bad_request` / `provider_auth_failed` reopen only via operator `repair_run`;
-  `retry_exhausted` via `repair_run` (or a bounded opt-in sweeper reopen). The provider
-  adapter does not decide reopen policy — it only returns the `reason_code`.
+- **Terminality is per `reason_code`** ([architecture.md §15.2](architecture.md#152-global-redemption-record--the-sole-provider-call-authority),
+  state-transition table T1–T15): `success` / `already_redeemed` immutable (T15);
+  `player_ineligible` re-drives when `attempt_state ≠ players.state` (T8 in-flight, T12
+  re-registration, T14 sweeper), guarded, capped by `REDEMPTION_MAX_REEVAL`; `code_invalid`
+  / `code_expired` / `provider_bad_request` / `provider_auth_failed` reopen only via
+  operator `repair_run` (T13); `retry_exhausted` via `repair_run` (or a bounded opt-in
+  sweeper reopen). The provider adapter does not decide reopen policy — it only returns the
+  `reason_code`.
 - **Backoff:** exponential with jitter, capped at `PROVIDER_MAX_RETRIES` and within Queue
-  limits. Lease contention on the global `redemptions` record is **not** a retry and does
-  not consume the retry budget.
+  limits. An owner-path retry stays attached to one durable `attempt_id` across
+  `message.retry`. Lease contention on the global `redemptions` record (T4) is **not** a
+  retry and does not consume the retry budget.
 - **Circuit-breaking:** on a sustained burst of `retryable` failures, pause the affected
   consumer and alert; operations continue to age toward their deadline and will finalise
   with a partial summary if needed.
-- **`retry_exhausted`:** after an **owner-path** attempt's retries are exhausted the message
+- **`retry_exhausted`:** after an owner-path attempt's retries are exhausted the message
   dead-letters and the DLQ consumer marks the global `redemptions` row `retry_exhausted`
-  **only when that attempt still owns the claim** (`claim_token` + `attempt_generation`
-  match, row still `in_progress`); mirrored `operation_items` rows follow. A contention /
-  non-owning message never dead-letters and never terminalizes the shared row. The final
-  summary reports `retry_exhausted` as a failure, never a success.
+  **only on an exact `current_attempt_id = message.attempt_id` match while the row is
+  `in_progress`** (T9); mirrored `operation_items` rows follow. A stale `attempt_id` message
+  (a newer attempt has taken over, **whether or not that newer lease has since expired**) is
+  audit-only (T10) and never terminalizes the shared row; a T4 contention message never
+  dead-letters. The final summary reports `retry_exhausted` as a failure, never a success.
 
 ---
 
@@ -243,3 +255,4 @@ the supporting contract, before implementation.
 | 2026-08-29 | Initial decision record. Production redemption blocked; mock provider is the default; discovery source unauthorized. | (pending review) |
 | 2026-08-30 | Review fixes: `redeem(player: PlayerRef, code, idempotencyKey)` signature; `already_redeemed` is an explicit success-equivalent terminal outcome that counts toward `applied`; the global `redemptions` record is the sole provider-call authority; production still blocked without a stable idempotency key or authorized reconciliation. | (pending review) |
 | 2026-08-30 | PR #3 review round 2: terminality defined per `reason_code` — `success` / `already_redeemed` immutable; `player_ineligible` auto-reopens on a `state` change; other `permanent` failures and `retry_exhausted` reopen only via `repair_run`. `idempotencyKey` stays stable across reopens. `retry_exhausted` on the shared row is written only by the claim-owning owner-path attempt; contention is off the retry path. | (pending review) |
+| 2026-08-30 | PR #3 review round 3: durable `attempt_id` — an owner-path retry keeps one `attempt_id` across `message.retry` (T2); the DLQ terminal write is guarded on the exact `current_attempt_id = message.attempt_id` (T9), so a stale `attempt_id` can never terminalize a newer attempt even after the newer lease expires (T10). A `player_ineligible` result whose `attempt_state ≠ players.state` re-drives instead of terminalizing (T8). No provider-contract change. | (pending review) |
