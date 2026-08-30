@@ -12,10 +12,14 @@ secret values.**
 
 ---
 
+> **Revision 2026-08-30:** provider signature updated to `redeem(player, code,
+> idempotencyKey)`; `already_redeemed` is now an explicit success-equivalent terminal
+> outcome; the global `redemptions` record is the sole provider-call authority.
+
 ## 1. Current status
 
 **No authorized production `WhiteoutProvider` exists.** Production gift-code redemption is
-**disabled** and stays disabled until every item in [§4](#4-required-authorization-and-evidence)
+**disabled** and stays disabled until every item in [§4](#4-required-authorization-and-evidence-before-adding-a-real-provider)
 and [§5](#5-acceptance-criteria-for-a-production-provider) is satisfied and a maintainer
 records explicit approval here.
 
@@ -31,8 +35,26 @@ records explicit approval here.
 `WhiteoutProvider` is the **only** path to Whiteout Survival. Its responsibilities are
 limited to:
 
-- **Redeem one gift code for one player:** `redeem(playerId: string, code: string)` →
-  a structured `RedeemResult` (`success` | `retryable` + reason | `permanent` + reason).
+- **Redeem one gift code for one player:**
+
+  ```ts
+  interface PlayerRef { playerId: string; state: string }
+
+  type RedeemResult =
+    | { outcome: 'success'; providerReceipt?: string }          // terminal, counts as applied
+    | { outcome: 'already_redeemed'; providerReceipt?: string } // terminal, success-equivalent, counts as applied
+    | { outcome: 'retryable'; reasonCode: string }
+    | { outcome: 'permanent'; reasonCode: string };
+
+  redeem(player: PlayerRef, code: string, idempotencyKey: string): Promise<RedeemResult>;
+  ```
+
+  `player.state` is the state carried through the registration contract (user input or
+  `DEFAULT_STATE`); the provider uses it as given. `idempotencyKey` is the stable
+  per-`(player_id, code)` key from the global `redemptions` record
+  ([architecture.md §15.2](architecture.md#152-global-redemption-record--the-sole-provider-call-authority));
+  a compliant real provider uses it (or an authorized reconciliation lookup) so a retried
+  redemption is a safe no-op.
 - **Provider-side rate limiting:** keep requests within the provider's documented limits
   (`PROVIDER_RATE_LIMIT_PER_SECOND`).
 - **Error mapping:** translate provider responses into the internal taxonomy
@@ -44,11 +66,13 @@ It **must not**:
   ([§7](#7-gift-code-discovery-source-status)).
 - Look up, infer, or "enrich" a player's state, nickname, or any other profile attribute.
   State comes from user input or `DEFAULT_STATE`; the display name comes from user input or
-  the `ID <PLAYER_ID>` fallback.
+  the `ID <PLAYER_ID>` fallback. `PlayerRef` carries only what the registration contract
+  already provided.
 - Call any undocumented or unauthorized Whiteout Survival endpoint.
 
 Identifiers passed to and stored by the provider adapter are **canonical strings**
-(`player_id`, `code`) — see [architecture.md §10](architecture.md#10-identifier-handling).
+(`playerId`, `code`, `idempotencyKey`) — see
+[architecture.md §10](architecture.md#10-identifier-handling).
 
 ---
 
@@ -56,15 +80,19 @@ Identifiers passed to and stored by the provider adapter are **canonical strings
 
 `MockWhiteoutProvider` is the default in development, automated tests, and staging. It:
 
-- returns deterministic, configurable outcomes per `(playerId, code)`:
+- implements `redeem(player: PlayerRef, code, idempotencyKey)` and returns deterministic,
+  configurable outcomes per `(playerId, code)`:
   - `success`,
+  - `already_redeemed` (success-equivalent; e.g. when the same `idempotencyKey` is seen
+    again, or per fixture),
   - `retryable` for simulated rate limiting (HTTP 429-equivalent) and transient 5xx,
   - `permanent` for invalid, expired, or disabled codes and for ineligible players;
-- is **idempotent by construction** — re-invoking `redeem` with the same arguments yields
-  the same outcome and applies nothing twice;
+- is **idempotent by construction** — re-invoking `redeem` with the same `idempotencyKey`
+  yields a terminal, success-equivalent outcome and applies nothing twice;
 - performs no network I/O and holds no secrets;
 - supports fixtures that drive the mandated unit tests (validation, deduplication, retry
-  classification, message chunking, provider error mapping).
+  classification, message chunking, provider error mapping) and the global-redemption
+  serialization tests.
 
 ---
 
@@ -93,15 +121,15 @@ provider secret name, and do not enable production redemption.
 A candidate provider is acceptable only if **all** hold:
 
 - **Documented, authorized API** — official documentation, or a written authorization plus a
-  recorded contract ([§4](#4-required-authorization-and-evidence)).
+  recorded contract ([§4](#4-required-authorization-and-evidence-before-adding-a-real-provider)).
 - **Redemption idempotency** — the provider supports **a stable redemption idempotency key**
   (so retrying a redemption that already succeeded is a safe no-op) **or** an **authorized
   lookup / reconciliation mechanism** (so the service can determine after a crash whether a
-  redemption landed). A provider offering **neither does not pass acceptance**, because the
-  claim-and-lease protocol
-  ([architecture.md §15](architecture.md#item-claim-and-lease-before-any-provider-call))
-  cannot rule out a "provider redeemed, Worker crashed before recording" double-apply
-  without one. In that case production redemption **remains blocked**.
+  redemption landed, recorded as `redemptions.provider_receipt`). A provider offering
+  **neither does not pass acceptance**, because the global redemption record
+  ([architecture.md §15.2](architecture.md#152-global-redemption-record--the-sole-provider-call-authority))
+  still cannot rule out a "provider redeemed, Worker crashed before the conditional write"
+  double-apply without one. In that case production redemption **remains blocked**.
 - **Known, honoured rate limits** — documented and enforced client-side.
 - **Mapped error taxonomy** — every provider error maps to `retryable` or `permanent` with a
   reason code ([§6](#6-provider-rate-limits-and-error-mapping)); passes the provider
@@ -119,27 +147,34 @@ A candidate provider is acceptable only if **all** hold:
 The adapter owns a mapping table; the shape below is the contract every provider
 implementation must fill in.
 
-| Provider signal (example categories) | Internal class | Reason code (example) | Operator action |
+| Provider signal (example categories) | Internal outcome | Reason code (example) | Operator action |
 |---|---|---|---|
+| Redemption applied now | `success` | — | none; store `providerReceipt` if returned |
+| Code was already redeemed for this player | **`already_redeemed`** (success-equivalent terminal — **not** a failure) | `already_redeemed` | none |
 | HTTP 429 / explicit "rate limited" | `retryable` | `provider_rate_limited` | none — backoff + `Retry-After` |
 | HTTP 5xx / gateway / timeout / connection reset | `retryable` | `provider_unavailable` | watch error rate |
 | Malformed / rejected request that a retry cannot fix | `permanent` | `provider_bad_request` | investigate adapter |
 | Invalid / unknown gift code | `permanent` | `code_invalid` | mark code `disabled` |
 | Expired gift code | `permanent` | `code_expired` | mark code `expired` |
 | Player not eligible / unknown to the game | `permanent` | `player_ineligible` | none — reported in summary |
-| Already redeemed for this player | `permanent` (treated as success-equivalent) | `already_redeemed` | none — idempotent outcome |
 | Authentication / authorization failure | `permanent` | `provider_auth_failed` | rotate credentials (human) |
 
 Policy:
 
+- **`already_redeemed` counting:** it is a terminal, success-equivalent outcome. In
+  operation totals and user-facing Discord summaries it counts toward
+  **`applied` (`success` + `already_redeemed`)** and is **never** listed as a failure; a
+  summary may add a parenthetical note but the headline count includes it
+  ([architecture.md §15.3](architecture.md#153-completion-accounting),
+  [architecture.md §17](architecture.md#17-retry-and-permanent-failure-classification)).
 - **Backoff:** exponential with jitter, capped at `PROVIDER_MAX_RETRIES` and within Queue
   limits.
 - **Circuit-breaking:** on a sustained burst of `retryable` failures, pause the affected
   consumer and alert; operations continue to age toward their deadline and will finalise
   with a partial summary if needed.
 - **`retry_exhausted`:** after retries are exhausted the message dead-letters and the
-  `operation_items` row is marked `retry_exhausted`; the final summary reports it as a
-  failure, never a success.
+  global `redemptions` row plus every mirrored `operation_items` row are marked
+  `retry_exhausted`; the final summary reports it as a failure, never a success.
 
 ---
 
@@ -182,3 +217,4 @@ the supporting contract, before implementation.
 | Date | Change | Approved by |
 |---|---|---|
 | 2026-08-29 | Initial decision record. Production redemption blocked; mock provider is the default; discovery source unauthorized. | (pending review) |
+| 2026-08-30 | Review fixes: `redeem(player: PlayerRef, code, idempotencyKey)` signature; `already_redeemed` is an explicit success-equivalent terminal outcome that counts toward `applied`; the global `redemptions` record is the sole provider-call authority; production still blocked without a stable idempotency key or authorized reconciliation. | (pending review) |

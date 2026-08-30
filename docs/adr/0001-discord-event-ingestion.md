@@ -52,7 +52,12 @@ question** that this ADR resolves with a spike, not an assumption.
 Constraints that bound the options:
 
 - Staging is the default environment; no production action without explicit human approval.
-- A Discord **bot account** only. No self-bot; no automation of a normal user account.
+- A Discord **bot account** only. No self-bot; no automation of a normal user account —
+  this applies to the service **and** to any spike harness.
+- Production registration ingestion **ignores** the application's own messages, other
+  bot-authored messages, and webhook-authored messages
+  ([architecture.md §3](../architecture.md#author-filtering-production),
+  [architecture.md §5](../architecture.md#channel-and-author-gate)) **[fact:D7]**.
 - `MockWhiteoutProvider` in development, tests, and staging; real redemption stays disabled.
 
 ---
@@ -159,16 +164,31 @@ reliability, nothing else.
 
 **Duration:** a continuous run of **≥ 72 hours**.
 
-**Test-message generation.** A dedicated test harness (a separate bot, or a scripted
-poster) posts messages `SPIKE-<seq>-<uuid>` into a dedicated staging channel at a defined
-cadence: 1 message/minute steady, plus a burst of 10 messages within 5 seconds every 30
-minutes. Every post is appended to an **expected-message ledger**: `seq`, `uuid`, post
-timestamp, and the message id returned by the poster's Create Message call.
+**Sender identity.** Every automated poster and observer in the spike authenticates as a
+**dedicated Discord bot account or an incoming webhook**. **No spike component uses a normal
+Discord user, a user token, or user automation** — this is non-negotiable and matches the
+constraint in [§1](#1-context).
 
-**Independent control.** A second, independent observer of the same channel — a throwaway
-reference Gateway client on a normal always-on host, and periodic
+**Staging-only allow-list.** Production ingestion drops bot- and webhook-authored messages
+([architecture.md §3](../architecture.md#author-filtering-production)), so the staging
+Ingestion Worker consults `SPIKE_SENDER_ALLOWLIST` — the dedicated spike sender's bot /
+webhook id(s) — to let those messages through. The Worker asserts
+`ENVIRONMENT !== "production"` before reading it; the variable is **never defined in the
+production stack**, and it can only ever admit a bot account or incoming webhook. The
+production author filter is therefore never weakened.
+
+**Test-message generation.** The dedicated spike bot / webhook posts messages
+`SPIKE-<seq>-<uuid>` into a dedicated staging channel at a defined cadence: 1 message/minute
+steady, plus a burst of 10 messages within 5 seconds every 30 minutes. Every post is
+appended to an **expected-message ledger**: `seq`, `uuid`, post timestamp, and the message
+id returned by the poster's Create Message call.
+
+**Independent control.** A second, independent observer — **its own dedicated bot account**
+(distinct from the ingestion tier's bot and from the spike poster), running a throwaway
+reference Gateway client on a normal always-on host, plus periodic
 `GET /channels/{id}/messages` pagination as a cross-check — records every message id it
-sees. Compared against the ledger and against what the DO source delivered to `/ingest`:
+sees. It never uses a user token. Compared against the ledger and against what the DO source
+delivered to `/ingest`:
 
 - **miss** = a ledger entry the DO source never delivered to `/ingest`;
 - **duplicate** = the same message id delivered to `/ingest` more than once and **not**
@@ -274,6 +294,7 @@ ingestion outage.
 | D3 | <https://docs.discord.com/developers/topics/gateway> | `MESSAGE_CONTENT` is a privileged intent; empty content without it (with the four exceptions); Developer Portal enablement; approval thresholds; `4014` on misconfiguration |
 | D4 | <https://docs.discord.com/developers/topics/gateway#get-gateway-bot> | Get Gateway Bot fields; `session_start_limit` incl. `max_concurrency`; do not cache the URL for extended periods |
 | D5 | <https://docs.discord.com/developers/interactions/receiving-and-responding> | Gateway vs HTTP-webhook interactions are mutually exclusive; Ed25519 verification; 3-second initial response; deferred responses |
+| D7 | <https://docs.discord.com/developers/resources/message> | Message object exposes `author.bot`, `author.system`, `webhook_id`, and `application_id`, which the author filter uses to drop bot / system / webhook / own-application messages |
 | C1 | <https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/> | Hibernation preconditions; ~70–140 s idle eviction; in-memory state discarded; `constructor()` re-runs |
 | C2 | <https://developers.cloudflare.com/durable-objects/best-practices/websockets/> | "Outgoing WebSockets do not hibernate"; "prevents eviction for up to 15 minutes per connection"; hibernation is server-only |
 | C3 | <https://developers.cloudflare.com/durable-objects/api/alarms/> | One alarm per DO; guaranteed at-least-once; ret/backoff; survives restart; `constructor()` before `alarm()` |
