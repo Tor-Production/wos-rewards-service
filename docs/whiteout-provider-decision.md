@@ -38,6 +38,13 @@ secret values.**
 > else **T11** audit-only). The state re-evaluation cap now has an explicit terminal outcome
 > **`state_reevaluation_limit`** (**T8**, `repair_run`-only, alerted). The single
 > state-transition table is now **T1–T16**. No provider-contract change.
+>
+> **Revision 2026-08-31 (PR #3 review round 5):** the DLQ "no invocation active" test is
+> now taken from `current_invocation_token`, not the pickup-grace deadline. A `retry_wait`
+> row (invocation already released by **T9**) always satisfies **T10**, so a retry that
+> exhausts `max_retries` **before** its `retry_due_at` is recorded `retry_exhausted`
+> instead of being misfiled as `dlq_invocation_active`; the lease-expiry comparison is
+> reserved for an `in_progress` row still holding a token. No provider-contract change.
 
 ## 1. Current status
 
@@ -216,14 +223,19 @@ Policy:
   consumer and alert; operations continue to age toward their deadline and will finalise
   with a partial summary if needed.
 - **`retry_exhausted`:** after an `attempt_id`'s deliveries exhaust their retries the DLQ
-  consumer marks the global `redemptions` row `retry_exhausted` **only on an exact
-  `current_attempt_id = message.attempt_id` match, `status IN ('in_progress','retry_wait')`,
-  and no live invocation** (**T10**); mirrored `operation_items` rows follow. A stale
-  `attempt_id` message (a newer attempt has taken over, **whether or not its lease has
-  since expired**) **or** a message that arrives while an invocation is still active is
-  audit-only (**T11**) and never terminalizes the shared row; a **T3** contention message
-  never dead-letters. The final summary reports `retry_exhausted` as a failure, never a
-  success.
+  consumer marks the global `redemptions` row `retry_exhausted` on an exact
+  `current_attempt_id = message.attempt_id` match when **no invocation is active** (**T10**).
+  A `retry_wait` row always qualifies — **T9** already cleared `current_invocation_token`, so
+  the future `retry_due_at` and the pickup-grace `invocation_expires_at` are **not**
+  consulted; a retry that reaches `max_retries` before it was due is still recorded
+  `retry_exhausted`. For an `in_progress` row the consumer additionally requires the token to
+  be null or the lease expired. Mirrored `operation_items` rows follow. A stale `attempt_id`
+  message (a newer attempt has taken over, **whether or not its lease has since expired**) is
+  audit-only `dlq_stale_attempt`; a message that arrives while an `in_progress` invocation is
+  still live is audit-only `dlq_invocation_active` (**T11**); neither terminalizes the shared
+  row, and the sweeper (**T12**) never re-drives the row **T10** has already terminalized. A
+  **T3** contention message never dead-letters. The final summary reports `retry_exhausted`
+  as a failure, never a success.
 
 ---
 
@@ -270,3 +282,4 @@ the supporting contract, before implementation.
 | 2026-08-30 | PR #3 review round 2: terminality defined per `reason_code` — `success` / `already_redeemed` immutable; `player_ineligible` auto-reopens on a `state` change; other `permanent` failures and `retry_exhausted` reopen only via `repair_run`. `idempotencyKey` stays stable across reopens. `retry_exhausted` on the shared row is written only by the claim-owning owner-path attempt; contention is off the retry path. | (pending review) |
 | 2026-08-30 | PR #3 review round 3: durable `attempt_id` — an owner-path retry keeps one `attempt_id` across `message.retry`; the DLQ terminal write is guarded on the exact `current_attempt_id`; a `player_ineligible` result whose `attempt_state ≠ players.state` re-drives instead of terminalizing. No provider-contract change. | (pending review) |
 | 2026-08-31 | PR #3 review round 4: split `attempt_id` (retry budget) from a per-invocation `current_invocation_token` (+ lease) so two overlapping deliveries of one `attempt_id` cannot both call the provider (**T3**); `retryable` → `retry_wait` release + `retry_due_at` before `message.retry` (**T9**), redelivery acquires a new invocation via **T2**; DLQ terminal write also requires no live invocation (**T10** / **T11**). New terminal outcome **`state_reevaluation_limit`** (**T8**, `repair_run`-only, alerted) for the state re-evaluation cap. Summary source frozen at `summary_state: none → sealing` with late outcomes in `operation_late_results`. Table now **T1–T16**. No provider-contract change. | (pending review) |
+| 2026-08-31 | PR #3 review round 5: the DLQ "no invocation active" check reads `current_invocation_token`, not the pickup-grace `invocation_expires_at`. A `retry_wait` row always satisfies **T10** (invocation released by **T9**), so a retry exhausting `max_retries` before `retry_due_at` is recorded `retry_exhausted` rather than `dlq_invocation_active`; the lease-expiry comparison is reserved for an `in_progress` row still holding a token; **T12** never re-drives a row **T10** terminalized. No provider-contract change. | (pending review) |
