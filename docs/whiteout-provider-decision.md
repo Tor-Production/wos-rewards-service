@@ -4,6 +4,7 @@
 - **Date:** 2026-08-29
 - **Owner:** wos-rewards-service maintainers
 - **Related:** [architecture.md](architecture.md), [ADR 0001](adr/0001-discord-event-ingestion.md)
+- **Architecture detail:** [Redemption state machine and retries](architecture/redemption-state-machine.md) (the `WhiteoutProvider` interface, T1–T16, retry classification), [Summary construction and Discord delivery](architecture/summary-and-delivery.md) (how outcomes are counted and reported), [Configuration](architecture/configuration.md) (`PROVIDER_MODE`, `PRODUCTION_REDEMPTION_ENABLED`, `CODE_DISCOVERY_ENABLED`)
 
 This document is the single place that records what Whiteout Survival access is authorized,
 what the provider abstraction may do, and exactly what evidence is required before real
@@ -82,10 +83,10 @@ limited to:
   `player.state` is the state carried through the registration contract (user input or
   `DEFAULT_STATE`); the provider uses it as given. `idempotencyKey` is the stable
   per-`(player_id, code)` key from the global `redemptions` record
-  ([architecture.md §15.2](architecture.md#152-global-redemption-record--the-sole-provider-call-authority));
+  ([architecture.md §15.2](architecture/redemption-state-machine.md#152-global-redemption-record--the-sole-provider-call-authority));
   a compliant real provider uses it (or an authorized reconciliation lookup) so a retried
   redemption is a safe no-op. `permanent` outcomes carry a `reasonCode` that the service
-  uses to classify terminality and reopen eligibility (see §6 and architecture §15.2); the
+  uses to classify terminality and reopen eligibility (see §6 and architecture [§15.2](architecture/redemption-state-machine.md#152-global-redemption-record--the-sole-provider-call-authority)); the
   provider only reports the reason, it does not decide reopen policy.
 - **Provider-side rate limiting:** keep requests within the provider's documented limits
   (`PROVIDER_RATE_LIMIT_PER_SECOND`).
@@ -104,7 +105,7 @@ It **must not**:
 
 Identifiers passed to and stored by the provider adapter are **canonical strings**
 (`playerId`, `code`, `idempotencyKey`) — see
-[architecture.md §10](architecture.md#10-identifier-handling).
+[architecture.md §10](architecture/data-model-and-outbox.md#10-identifier-handling).
 
 ---
 
@@ -159,7 +160,7 @@ A candidate provider is acceptable only if **all** hold:
   lookup / reconciliation mechanism** (so the service can determine after a crash whether a
   redemption landed, recorded as `redemptions.provider_receipt`). A provider offering
   **neither does not pass acceptance**, because the global redemption record
-  ([architecture.md §15.2](architecture.md#152-global-redemption-record--the-sole-provider-call-authority))
+  ([architecture.md §15.2](architecture/redemption-state-machine.md#152-global-redemption-record--the-sole-provider-call-authority))
   still cannot rule out a "provider redeemed, Worker crashed before the conditional write"
   double-apply without one. In that case production redemption **remains blocked**. The key
   is **stable across the service's re-evaluations** (a re-registration that reopens a
@@ -202,9 +203,9 @@ Policy:
   operation totals and user-facing Discord summaries it counts toward
   **`applied` (`success` + `already_redeemed`)** and is **never** listed as a failure; a
   summary may add a parenthetical note but the headline count includes it
-  ([architecture.md §15.3](architecture.md#153-completion-accounting-and-the-source-freeze),
-  [architecture.md §17](architecture.md#17-retry-and-permanent-failure-classification)).
-- **Terminality is per `reason_code`** ([architecture.md §15.2](architecture.md#152-global-redemption-record--the-sole-provider-call-authority),
+  ([architecture.md §15.3](architecture/summary-and-delivery.md#153-completion-accounting-and-the-source-freeze),
+  [architecture.md §17](architecture/redemption-state-machine.md#17-retry-and-permanent-failure-classification)).
+- **Terminality is per `reason_code`** ([architecture.md §15.2](architecture/redemption-state-machine.md#152-global-redemption-record--the-sole-provider-call-authority),
   state-transition table **T1–T16**): `success` / `already_redeemed` immutable (T16);
   `player_ineligible` re-drives when `attempt_state ≠ players.state` while under cap (T7
   in-flight, T13 re-registration, T15 sweeper); **at the cap it terminalizes as
@@ -244,7 +245,7 @@ Policy:
 **Not authorized / not finalized.**
 
 - Discovery is modelled as the `GiftCodeSource` abstraction
-  ([architecture.md §11](architecture.md#11-whiteoutprovider-and-giftcodesource-abstractions)).
+  ([architecture.md §11](architecture/redemption-state-machine.md#11-whiteoutprovider-and-giftcodesource-abstractions)).
   It is disabled (`CODE_DISCOVERY_ENABLED=false`) and has no implementation.
 - **Allowed-source criteria** — a source may be implemented only if it is:
   - official, or explicitly authorized in writing and recorded here;

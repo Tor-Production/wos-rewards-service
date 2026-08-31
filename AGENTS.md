@@ -79,3 +79,9 @@ At the end of every task, report:
 5. A focused diff ready for human review.
 
 Do not merge or deploy automatically.
+
+## Documentation routing
+
+- Start from `docs/README.md` for current state and a routing table into the architecture docs.
+- `docs/architecture.md` is the overview; detailed material lives in focused documents under `docs/architecture/`.
+- Load only the documents relevant to the task at hand.
