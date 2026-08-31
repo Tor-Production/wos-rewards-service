@@ -4,6 +4,7 @@
 - **Date:** 2026-08-29
 - **Deciders:** wos-rewards-service maintainers
 - **Related:** [architecture.md](../architecture.md), [whiteout-provider-decision.md](../whiteout-provider-decision.md)
+- **Architecture detail:** [Discord ingestion and registration](../architecture/discord-ingestion-and-registration.md) (the `DiscordEventSource` boundary and author gate this ADR decides), [Configuration](../architecture/configuration.md) (`SPIKE_SENDER_ALLOWLIST`, Discord ids, secrets), [Operations and reliability](../architecture/operations-and-reliability.md) (staging separation, ingestion-tier observability), [Open decisions and risks](../architecture/open-decisions-and-risks.md)
 
 > **Not Accepted.** The provisional recommendation below stands only until the time-boxed
 > spike in [§6](#6-decision-proposed-spike-gated) completes or is explicitly waived by the
@@ -56,8 +57,8 @@ Constraints that bound the options:
   this applies to the service **and** to any spike harness.
 - Production registration ingestion **ignores** the application's own messages, other
   bot-authored messages, and webhook-authored messages
-  ([architecture.md §3](../architecture.md#author-filtering),
-  [architecture.md §5](../architecture.md#channel-and-author-gate)) **[fact:D7]**.
+  ([architecture.md §3](../architecture/discord-ingestion-and-registration.md#author-filtering),
+  [architecture.md §5](../architecture/discord-ingestion-and-registration.md#channel-and-author-gate)) **[fact:D7]**.
 - `MockWhiteoutProvider` in development, tests, and staging; real redemption stays disabled.
 
 ---
@@ -68,7 +69,7 @@ Constraints that bound the options:
 - Minimise event loss: every `MESSAGE_CREATE` in the registration channel must reach the
   backend, and duplicates must be absorbable.
 - Keep as much logic as possible on Cloudflare, testable, and behind the stable
-  `DiscordEventSource` boundary defined in [architecture.md §3](../architecture.md#3-discordeventsource--the-ingestion-boundary).
+  `DiscordEventSource` boundary defined in [architecture.md §3](../architecture/discord-ingestion-and-registration.md#3-discordeventsource--the-ingestion-boundary).
 - Minimise operational surface and secret spread.
 - Do not force a Cloudflare-only design if the platform docs do not support it.
 
@@ -171,7 +172,7 @@ constraint in [§1](#1-context).
 
 **Staging-only allow-list — reachable at both tiers.** Production ingestion drops bot- and
 webhook-authored messages
-([architecture.md §3](../architecture.md#author-filtering)). So in the `staging` stack,
+([architecture.md §3](../architecture/discord-ingestion-and-registration.md#author-filtering)). So in the `staging` stack,
 `SPIKE_SENDER_ALLOWLIST` (the dedicated spike sender's bot / webhook id(s)) is consulted by
 **both** the `DiscordEventSource` and the Ingestion Worker: the source **forwards** an
 allow-listed sender's message (flags intact) instead of dropping it — otherwise it would
