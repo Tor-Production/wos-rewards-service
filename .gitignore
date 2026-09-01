@@ -5,3 +5,30 @@
 # Note: only this file is ignored, not the whole .claude/ directory,
 # so repository-shared Claude configuration can still be committed.
 .claude/settings.local.json
+
+# Node.js dependencies
+node_modules/
+
+# Build and bundle output
+dist/
+
+# Wrangler local state and build cache
+.wrangler/
+
+# Test coverage output
+coverage/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Package manager debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment files that can contain secrets. Never commit these.
+.dev.vars
+.dev.vars.*
+.env
+.env.*

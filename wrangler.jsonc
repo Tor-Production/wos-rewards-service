@@ -1,0 +1,43 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wos-rewards-service",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-28",
+
+  // Fail closed: no workers.dev subdomain and no routes, so nothing about this Worker is
+  // publicly reachable. Do not enable either without an explicit human decision.
+  "workers_dev": false,
+
+  // Phase 1 declares NO bindings on purpose. D1 databases, Queues, Durable Objects, Cron
+  // triggers, routes, custom domains, and Discord configuration belong to later phases
+  // (docs/architecture.md section 23). Declaring them here would let an accidental deploy
+  // provision real Cloudflare resources.
+  //
+  // Variable names come from docs/architecture/configuration.md section 4. `vars` is a
+  // non-inheritable key, so the same safe values are declared at the top level and in the
+  // `staging` environment: a deploy that forgets `--env staging` still gets staging/mock/
+  // disabled rather than an empty environment.
+  "vars": {
+    "ENVIRONMENT": "staging",
+    "PROVIDER_MODE": "mock",
+    "PRODUCTION_REDEMPTION_ENABLED": false,
+    "CODE_DISCOVERY_ENABLED": false,
+    "LOG_LEVEL": "info",
+  },
+
+  // Staging is the only environment. There is deliberately no `production` environment:
+  // production redemption is blocked (docs/whiteout-provider-decision.md section 1) and the
+  // production stack has not been provisioned.
+  "env": {
+    "staging": {
+      "name": "wos-rewards-service-staging",
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "PROVIDER_MODE": "mock",
+        "PRODUCTION_REDEMPTION_ENABLED": false,
+        "CODE_DISCOVERY_ENABLED": false,
+        "LOG_LEVEL": "info",
+      },
+    },
+  },
+}
