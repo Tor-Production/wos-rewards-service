@@ -2,7 +2,7 @@
 
 - **Parent:** [architecture.md](../architecture.md) — overview, component map, cross-cutting
   invariants, phased implementation order, and the [traceability map](../architecture.md#traceability-map).
-- **Status:** Draft. Identifier rules, the preliminary D1 tables, and the committed-intent → Queue bridge.
+- **Status:** Draft. Identifier rules, the implemented D1 tables, and the committed-intent → Queue bridge.
 
 > Evidence tags carry the same meaning as in the overview: **[fact:<ref>]** (confirmed by an
 > official page listed in [architecture.md §25](../architecture.md#25-official-sources)),
@@ -28,11 +28,114 @@
 
 ---
 
-## 12. Preliminary D1 data model
+## 12. D1 data model
 
-> **Preliminary — no migrations are authored in this task.** Column lists below are a
-> design sketch for later implementation. All identifier columns are `TEXT`
-> ([§10](#10-identifier-handling)).
+> **Implemented.** `migrations/0001_initial_schema.sql` is the baseline migration and
+> creates every table below. It is applied inside the Workers runtime and verified by
+> `test/migrations.test.ts`; the column lists in this section are the contract that suite
+> asserts against, column by column. All identifier columns are `TEXT`
+> ([§10](#10-identifier-handling)). No Cloudflare D1 resource has been provisioned and no
+> remote migration has been applied — see [the repository docs index](../README.md#current-state).
+
+### Implemented schema (migration 0001)
+
+What the migration adds on top of the column lists below.
+
+**Conventions.** Every timestamp is `TEXT` holding ISO-8601 UTC, written by the
+application: there are deliberately no SQL timestamp defaults, because
+`CURRENT_TIMESTAMP` renders `YYYY-MM-DD HH:MM:SS` and would neither sort nor compare
+against ISO-8601. Boolean-like columns are `INTEGER` constrained to `0`/`1`. Counters are
+`INTEGER NOT NULL DEFAULT 0` with a non-negative check. There are no triggers, no views, no
+`AUTOINCREMENT`. Column order in the migration follows the order of the tables below, so
+`PRAGMA table_info` ordering is itself part of the tested contract (130 columns).
+
+**Named checks.** Every `CHECK` is named `ck_<table>_<rule>`, so SQLite reports
+`CHECK constraint failed: ck_dod_footer_placement` and a test can assert *which* rule fired.
+The constrained rules are: the documented status / type / state enum domains; non-negative
+counters; `chunk_index >= 1`, `chunk_total >= 1` and `chunk_index <= chunk_total`;
+`has_footer IN (0,1)` **plus** the footer-placement rule
+(`has_footer = 1` only when `chunk_index = chunk_total` and `output_type <> 'validation_reply'`,
+[§15.4](summary-and-delivery.md#154-deterministic-bounded-crash-resumable-summary-build-and-per-chunk-delivery));
+`length(nonce) BETWEEN 1 AND 25` (Discord's ceiling **[fact:D6]** plus a non-empty floor,
+since the nonce is derived deterministically from `delivery_id` and an empty one would
+silently disable `enforce_nonce` suppression); and digits-only, non-empty `player_id` and
+`state` on `players`. The **T1–T16** transitions of
+[§15.2](redemption-state-machine.md#152-global-redemption-record--the-sole-provider-call-authority)
+are deliberately **not** encoded: only the flat status domains are constrained, so no
+documented intermediate state can be blocked.
+
+**Foreign keys — 16 constraints, 17 `PRAGMA foreign_key_list` rows, no cascades.**
+`processed_events → operations`; `redemptions → players, gift_codes`;
+`operation_items → operations, players, gift_codes`;
+`operation_players_snapshot → operations, players`;
+`operation_late_results → operations, players, gift_codes`;
+`summary_item_snapshot → operations`; `summary_chunk_layout → operations`;
+`discord_output_deliveries → processed_events, operations` (both nullable, so a summary with
+no event and a reply with no operation are both valid); and the composite
+`outbox_jobs (operation_id, item_key) → operation_items (operation_id, item_key)`, which
+emits the seventeenth row and is the strongest guarantee here — an outbox job cannot exist
+without the domain row it was committed with ([§14](#14-transactional-outbox)). Every key
+uses SQLite's default `ON DELETE NO ACTION ON UPDATE NO ACTION`.
+
+**Write ordering this imposes.** D1 enforces foreign keys by default and `db.batch()`
+executes sequentially inside one transaction, so **within a batch, parents must be inserted
+before children**: `players` / `gift_codes` → `operations` → `operation_items` →
+`outbox_jobs`, and `processed_events` → `discord_output_deliveries`.
+`PRAGMA defer_foreign_keys = on` is the in-transaction escape hatch if a future flow needs
+another order.
+
+**Indexes — 14, each tied to a documented access pattern.**
+
+| Index | Columns | Serves |
+|---|---|---|
+| `idx_gift_codes_status_code` | `gift_codes (status, code)` | [§6](discord-ingestion-and-registration.md#6-existing-code-processing-after-registration) snapshot of active codes in a fixed order |
+| `idx_processed_events_status_accepted_at` | `processed_events (status, accepted_at)` | sweeper re-drive of events stuck at `accepted_valid` |
+| `idx_redemptions_status_invocation_expires_at` | `redemptions (status, invocation_expires_at)` | [§15.2](redemption-state-machine.md#152-global-redemption-record--the-sole-provider-call-authority) crash-safe re-drive (**T12**); also covers `retry_wait`, whose `invocation_expires_at` is the documented pickup hint |
+| `idx_operations_state_deadline_at` | `operations (state, deadline_at)` | [§9](operations-and-reliability.md#9-scheduled-cron-components-and-the-trigger-budget) operation sweeper / force-close |
+| `idx_operations_summary_state_updated_at` | `operations (summary_state, updated_at)` | summary builder and output dispatcher picking operations mid-pipeline |
+| `idx_operations_trigger` | `operations (trigger_kind, trigger_ref)` | [§16](../architecture.md#16-idempotency) "does an operation already exist for this trigger?"; repair lookup by origin |
+| `idx_operation_items_operation_player_code` | `operation_items (operation_id, player_id, code)` | [§15.4](summary-and-delivery.md#154-deterministic-bounded-crash-resumable-summary-build-and-per-chunk-delivery) paged seal in `(player_id, code)` order — the PK is `(operation_id, item_key)`, a different order |
+| `idx_operation_items_operation_status_claim` | `operation_items (operation_id, status, claim_expires_at)` | [§15.1](redemption-state-machine.md#151-operation-item-lease-queue-dedup--accounting) item-lease sweep and [§15.3](summary-and-delivery.md#153-completion-accounting-and-the-source-freeze) completion accounting |
+| `idx_operation_items_player_code` | `operation_items (player_id, code)` | [§15.2](redemption-state-machine.md#152-global-redemption-record--the-sole-provider-call-authority) mirror write from a terminal redemption to the owning item(s) |
+| `idx_summary_item_snapshot_sort` | `summary_item_snapshot (operation_id, sort_key)` | layout and render passes reading `ORDER BY sort_key`, resuming after `summary_layout_cursor` |
+| `idx_discord_output_deliveries_group_chunk` | `discord_output_deliveries (delivery_group, chunk_index)` | dispatcher sending a group in `chunk_index` order, resuming at the first non-`sent` row |
+| `idx_discord_output_deliveries_status_claim` | `discord_output_deliveries (status, claim_expires_at)` | dispatcher claim: `pending`, or `claimed` with an expired lease |
+| `idx_outbox_jobs_status_available_at` | `outbox_jobs (status, available_at)` | [§14](#14-transactional-outbox) Cron dispatcher scan |
+| `idx_outbox_jobs_operation_item` | `outbox_jobs (operation_id, item_key)` | [§14](#14-transactional-outbox) atomic reopen and the sweeper's reset of stuck `enqueued` rows |
+
+`players`, `operation_players_snapshot`, `operation_late_results` and
+`summary_chunk_layout` carry no extra index: every documented read of them is
+`WHERE operation_id = ?` (or `player_id` order), which the primary key already serves.
+
+**Five decisions resolved during implementation.**
+
+1. `summary_chunk_layout.first_sort_key` / `last_sort_key` are **nullable**, with a paired
+   "both or neither" check. [§15.5](summary-and-delivery.md#155-zero-result-operations)
+   documents a zero-result operation that seals zero snapshot rows and still yields
+   `summary_chunk_total = 1`, so that single chunk genuinely has no sort-key bounds.
+2. `discord_output_deliveries.content` is **`NOT NULL`**: the stored-text form is the
+   documented default, and the `content_hash`-only variant noted below would be a separate
+   decision with its own migration.
+3. `nonce` is bounded to **1–25** characters, not merely `<= 25`.
+4. There are **no unique constraints or unique indexes other than the primary keys**.
+   [§15.4](summary-and-delivery.md#154-deterministic-bounded-crash-resumable-summary-build-and-per-chunk-delivery)
+   specifies *targeted* upserts (`ON CONFLICT (operation_id, player_id, code) DO NOTHING`,
+   `ON CONFLICT (delivery_id) DO NOTHING`), and in SQLite a targeted `DO NOTHING` aborts on a
+   conflict against any **other** unique index — which would break the crash-resumed seal and
+   render passes that deliberately re-insert identical rows. Every uniqueness property that
+   might have been added (`idempotency_key`, `job_id`, `(delivery_group, chunk_index)`,
+   `outbox_jobs (operation_id, item_key)`) is already functionally determined by a primary
+   key, so nothing is lost.
+5. `operation_late_results` has **no** foreign key to `redemptions (player_id, code)`. The
+   post-seal outbox-dead path records `status = 'retry_exhausted'` with
+   `reason_code = 'outbox_dead'`
+   ([§22](operations-and-reliability.md#22-failure-modes-and-recovery)) for a unit of work
+   that never reached a consumer, so no `redemptions` row need exist.
+
+`processed_events.output_delivery_group` is `NOT NULL`: it is deterministic per event and
+must be written for valid events too. `redemptions.updated_at` and
+`discord_output_deliveries.created_at` / `updated_at` stay **nullable** because the tables
+below mark them `TEXT NULL`.
 
 ### `players`
 
@@ -155,7 +258,9 @@ authorize a provider call.
 | `operation_id` | TEXT | PK part |
 | `player_id` | TEXT | PK part |
 
-Point-in-time player boundary when a monotonic cursor filter is not used.
+Point-in-time player boundary when a monotonic cursor filter is not used. It is created by
+the baseline migration even though it is optional for some distribution implementations, so
+the complete documented schema is available.
 
 ### `operation_late_results` (audit / history — outcomes observed after freeze)
 

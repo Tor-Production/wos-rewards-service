@@ -15,6 +15,7 @@
     "cf-typegen:check": "wrangler types ./worker-configuration.d.ts --env staging --check",
     "typecheck": "npm run cf-typegen:check && tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
     "test": "vitest run",
+    "d1:migrate:local": "wrangler d1 migrations apply STAGING_DB --local --env staging",
     "validate": "wrangler deploy --dry-run --env staging",
     "dev": "wrangler dev --env staging",
     "check": "npm run format:check && npm run typecheck && npm run test && npm run validate"

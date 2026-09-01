@@ -37,7 +37,7 @@ links, and never restates a normative rule that another document owns.
 | **This document** | Scope and goals (§1), system context and deployment topology (§2), component boundaries (§8), cross-cutting idempotency invariants (§16), the phased implementation order (§23), and the official-sources table (§25) that every `[fact:<ref>]` tag resolves against | Orientation; which component does what; what phase you are in; where an evidence tag comes from |
 | [architecture/configuration.md](architecture/configuration.md) | §4 — every non-secret variable and every secret, **names only** | Wiring a stack; looking up what a variable controls |
 | [architecture/discord-ingestion-and-registration.md](architecture/discord-ingestion-and-registration.md) | §3 `DiscordEventSource` and the author gate, §5 registration flow and atomic acceptance, §6 existing-code processing, §7 new-code fan-out | Anything from a Discord message up to the point work is enqueued |
-| [architecture/data-model-and-outbox.md](architecture/data-model-and-outbox.md) | §10 identifier handling, §12 the preliminary D1 tables, §14 the transactional outbox | Schema and migrations; the committed-intent → Queue bridge |
+| [architecture/data-model-and-outbox.md](architecture/data-model-and-outbox.md) | §10 identifier handling, §12 the D1 tables, §14 the transactional outbox | Schema and migrations; the committed-intent → Queue bridge |
 | [architecture/redemption-state-machine.md](architecture/redemption-state-machine.md) | §11 `WhiteoutProvider` / `GiftCodeSource`, §13 Queue and DLQ boundaries, §15.1 the item lease, §15.2 the global redemption record and the **T1–T16** state-transition table, §17 retry and permanent-failure classification | Any provider call, retry, DLQ, or serialization question |
 | [architecture/summary-and-delivery.md](architecture/summary-and-delivery.md) | §15.3 completion accounting and the source freeze, §15.4 the seal → layout → render → deliver pipeline, §15.5 zero-result operations, §18 Discord output safety and footer placement | Building or sending a Discord summary or validation reply |
 | [architecture/operations-and-reliability.md](architecture/operations-and-reliability.md) | §9 scheduled components, §19 staging/production separation, §20 observability, §21 testing strategy, §22 failure modes and recovery, §15.6 the scenario matrix | Cron, alerting, tests, and what happens when something breaks |
@@ -209,7 +209,7 @@ See [§19](architecture/operations-and-reliability.md#19-staging-and-production-
 | `WhiteoutProvider` adapter | `redeem(PlayerRef, code, idempotencyKey)` → structured result; provider-side rate limiting; error mapping | `MockWhiteoutProvider` by default |
 | `GiftCodeSource` adapter | Discover/list candidate codes from an **authorized** source | Not authorized; disabled |
 | Code-discovery scheduler | Poll the authorized source when `CODE_DISCOVERY_ENABLED=true` | Cron; no-op until authorized |
-| D1 | System of record | See [§12](architecture/data-model-and-outbox.md#12-preliminary-d1-data-model) |
+| D1 | System of record | See [§12](architecture/data-model-and-outbox.md#12-d1-data-model) |
 | Queues + DLQ | Async fan-out + retry isolation | See [§13](architecture/redemption-state-machine.md#13-cloudflare-queue-and-dead-letter-queue-boundaries) |
 
 ---
@@ -239,7 +239,7 @@ automated.
 
 1. **Scaffold** — TypeScript strict, Wrangler config for the `staging` stack,
    `MockWhiteoutProvider`, test harness. Staging only.
-2. **D1 schema + migrations** for the preliminary model ([§12](architecture/data-model-and-outbox.md#12-preliminary-d1-data-model)).
+2. **D1 schema + migrations** for the model in [§12](architecture/data-model-and-outbox.md#12-d1-data-model).
 3. **Ingestion Worker + `DiscordEventSource` interface + atomic acceptance + transactional
    outbox + Queues** — no real Gateway adapter yet; drive `/ingest` with synthetic
    `RegistrationMessageEvent`s (including bot/webhook cases).
@@ -324,7 +324,7 @@ decision, risk, evidence tag, or source reference was added, removed, or reworde
 | §9 | `## 9. Scheduled (Cron) components and the trigger budget` | [architecture/operations-and-reliability.md](architecture/operations-and-reliability.md) |
 | §10 | `## 10. Identifier handling` | [architecture/data-model-and-outbox.md](architecture/data-model-and-outbox.md) |
 | §11 | ``## 11. `WhiteoutProvider` and `GiftCodeSource` abstractions`` | [architecture/redemption-state-machine.md](architecture/redemption-state-machine.md) |
-| §12 | `## 12. Preliminary D1 data model` | architecture/data-model-and-outbox.md |
+| §12 | `## 12. Preliminary D1 data model` | architecture/data-model-and-outbox.md — **renamed in Phase 2** to `## 12. D1 data model` once the baseline migration existed, so the anchor is now `#12-d1-data-model`. This is the one heading whose text changed after the split; every in-repository link was repaired in the same change. |
 | §12 › | ``### `players` `` | architecture/data-model-and-outbox.md |
 | §12 › | ``### `gift_codes` `` | architecture/data-model-and-outbox.md |
 | §12 › | ``### `processed_events` (event-acceptance state machine)`` | architecture/data-model-and-outbox.md |
