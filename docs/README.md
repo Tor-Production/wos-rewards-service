@@ -14,13 +14,13 @@ Discord footer. It wins over anything written here.
 
 | | |
 |---|---|
-| **Repository contents** | Documentation only. No application code, package manifest, Wrangler configuration, schema, or migration exists yet. |
-| **Implemented phase** | None. The next step is **Phase 1 — Scaffold** ([architecture.md §23](architecture.md#23-phased-implementation-order)). |
-| **Supported environments** | `staging` only, and only on paper — no stack has been provisioned. Production is defined in the design but must stay separate and unprovisioned until approved. |
-| **Production gift-code redemption** | **BLOCKED.** No authorized production `WhiteoutProvider` exists; `PRODUCTION_REDEMPTION_ENABLED` must be `false` everywhere. See [whiteout-provider-decision.md](whiteout-provider-decision.md). |
-| **Gift-code discovery** | **Not authorized.** `GiftCodeSource` is an abstraction only; `CODE_DISCOVERY_ENABLED` is `false`. |
+| **Repository contents** | The Phase 1 scaffold: Worker entry point, typed configuration loader with fail-closed safety gates, `WhiteoutProvider` / `GiftCodeSource` contracts, `MockWhiteoutProvider`, staging-only Wrangler configuration, committed generated Worker types, and a Workers-runtime Vitest harness. No D1 schema, migration, queue, Durable Object, or Discord code exists yet. |
+| **Implemented phase** | **Phase 1 — Scaffold** is implemented. The next step is **Phase 2 — D1 schema + migrations** ([architecture.md §23](architecture.md#23-phased-implementation-order)). |
+| **Supported environments** | `staging` only. `wrangler.jsonc` declares a single `staging` environment and no production environment, and the configuration loader rejects any `ENVIRONMENT` other than `staging`. **No Cloudflare stack or resource has been provisioned.** |
+| **Production gift-code redemption** | **BLOCKED.** No authorized production `WhiteoutProvider` exists; `PRODUCTION_REDEMPTION_ENABLED` is `false` and the configuration loader rejects `true` in every environment. See [whiteout-provider-decision.md](whiteout-provider-decision.md). |
+| **Gift-code discovery** | **Not authorized.** `GiftCodeSource` is an interface with no implementation; `CODE_DISCOVERY_ENABLED` is `false` and the configuration loader rejects `true`. |
 | **Ingestion topology** | **Provisional.** [ADR 0001](adr/0001-discord-event-ingestion.md) is **Proposed**, not Accepted; a time-boxed spike decides between a Durable Object Gateway client and an external companion. The real `DiscordEventSource` adapter is not built until that spike completes or is explicitly waived. |
-| **Checks that apply today** | Markdown review only — there is no build, type check, or test suite to run yet. |
+| **Checks that apply today** | `npm run format:check` (Prettier), `npm run typecheck` (`wrangler types --check` plus strict `tsc --noEmit` over `src` and `test`), `npm test` (Vitest in the Workers runtime), and `npm run validate` (`wrangler deploy --dry-run --env staging`). `npm run check` runs all four. |
 
 > **Maintenance note.** Any future task that changes the implemented phase, the current gates
 > (production redemption, code discovery, the ADR 0001 spike), or the supported environments

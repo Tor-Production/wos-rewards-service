@@ -1,0 +1,29 @@
+{
+  "name": "wos-rewards-service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare-hosted Discord service for registering Whiteout Survival players and processing gift codes.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "cf-typegen": "wrangler types ./worker-configuration.d.ts --env staging",
+    "cf-typegen:check": "wrangler types ./worker-configuration.d.ts --env staging --check",
+    "typecheck": "npm run cf-typegen:check && tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
+    "test": "vitest run",
+    "validate": "wrangler deploy --dry-run --env staging",
+    "dev": "wrangler dev --env staging",
+    "check": "npm run format:check && npm run typecheck && npm run test && npm run validate"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.2",
+    "prettier": "^3.9.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.127.1"
+  }
+}
