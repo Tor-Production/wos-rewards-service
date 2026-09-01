@@ -8,10 +8,11 @@
   // publicly reachable. Do not enable either without an explicit human decision.
   "workers_dev": false,
 
-  // Phase 1 declares NO bindings on purpose. D1 databases, Queues, Durable Objects, Cron
-  // triggers, routes, custom domains, and Discord configuration belong to later phases
-  // (docs/architecture.md section 23). Declaring them here would let an accidental deploy
-  // provision real Cloudflare resources.
+  // Phase 2 adds exactly ONE binding: the staging D1 database (see `env.staging` below).
+  // Queues, Durable Objects, Cron triggers, routes, custom domains, and Discord
+  // configuration still belong to later phases (docs/architecture.md section 23);
+  // declaring them here would let an accidental deploy provision real Cloudflare
+  // resources.
   //
   // Variable names come from docs/architecture/configuration.md section 4. `vars` is a
   // non-inheritable key, so the same safe values are declared at the top level and in the
@@ -38,6 +39,37 @@
         "CODE_DISCOVERY_ENABLED": false,
         "LOG_LEVEL": "info",
       },
+
+      // The staging D1 database (docs/architecture/data-model-and-outbox.md section 12).
+      //
+      // `d1_databases` is a non-inheritable key, so it is declared HERE and deliberately
+      // NOT at the top level. Unlike `vars`, a binding is a resource reference: mirroring
+      // it at the top level would point an un-suffixed Worker at the staging database and
+      // would create a second place where a real database id could be pasted. A deploy
+      // that forgets `--env staging` therefore gets no database binding at all, which
+      // fails closed. Every Wrangler script in package.json passes `--env staging`.
+      //
+      // `database_id` is an all-zero LOCAL-ONLY SENTINEL. It is NOT a real Cloudflare
+      // database id, and no D1 resource has been provisioned for this repository. It is
+      // present rather than omitted on purpose: current Wrangler can automatically
+      // provision a D1 database for a binding that has no resource id, and the sentinel
+      // makes that impossible. It is the same placeholder Cloudflare's own Vitest D1
+      // fixture uses, so `wrangler d1 migrations apply ... --local` and the Workers-runtime
+      // tests both resolve it locally.
+      //
+      // Migrations live in `migrations/` and are applied locally with
+      // `npm run d1:migrate:local`. There is no remote-apply script. A future, explicitly
+      // authorized task provisions the real staging database and replaces this sentinel;
+      // remote application stays staging first, production only later, after review
+      // (docs/architecture/operations-and-reliability.md section 19).
+      "d1_databases": [
+        {
+          "binding": "STAGING_DB",
+          "database_name": "wos-rewards-service-staging",
+          "database_id": "00000000-0000-0000-0000-000000000000",
+          "migrations_dir": "migrations",
+        },
+      ],
     },
   },
 }
