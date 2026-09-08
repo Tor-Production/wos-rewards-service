@@ -18,14 +18,50 @@ minimum granularity is one minute **[fact:C4]**. The design keeps the scheduled 
 small and, where practical, multiplexes work into a single `scheduled()` handler that
 dispatches by current UTC minute.
 
-| Scheduled job | Cadence | Work |
+The one-minute handler always reserves each lane independently; a failed lane cannot
+spend another lane's reservation. Work is awaited sequentially. Page cursors use durable
+round-robin operation ordering, so expansion and summary do not share one slot.
+
+| Lane | D1 statements, including failures | Work per tick |
 |---|---|---|
-| Outbox dispatcher | every minute | enqueue `pending` `outbox_jobs`; back off; mark `dead`; atomic-reopen pre-summary or flag a repair after finalization ([§14](data-model-and-outbox.md#14-transactional-outbox)) |
-| Summary builder | every minute | advance the seal / layout / render cursors (`snapshot_cursor`, `summary_layout_cursor` + `summary_layout_open`, `summary_build_cursor`) for operations that are finalisable or in `summary_state ∈ {sealing, building}` ([§15.4](summary-and-delivery.md#154-deterministic-bounded-crash-resumable-summary-build-and-per-chunk-delivery)); shares the `scheduled()` handler |
-| Output delivery dispatcher | every minute | claim and send `pending` / lease-expired `discord_output_deliveries` chunks in `chunk_index` order; resume at the first unsent chunk |
-| Operation sweeper | every minute | force-close operations past `deadline_at` (freeze + seal then); **T12** reset `redemptions` rows with an expired invocation (`in_progress`/`retry_wait` → `pending`); mirror terminal `redemptions` onto waiting `operation_items` (freeze-guarded); re-drive up to `SWEEPER_REDRIVE_BATCH` stuck non-terminal, unclaimed pairs with a fresh `attempt_id`; **T15** `state`-mismatch reopen; optional bounded `retry_exhausted` reopen |
-| Retention | hourly | delete fully-accounted `enqueued` outbox rows, `sent` delivery rows, and `summary_chunk_layout` / `summary_item_snapshot` rows for delivered operations past the retention window |
-| Code-discovery scheduler | configurable | poll the authorized `GiftCodeSource` when `CODE_DISCOVERY_ENABLED=true`; **no-op until a source is authorized** |
+| Expansion | 6 | one operation, up to 128 snapshot members |
+| Outbox | 10 | one fair operation, up to 90 rows; at most eight sequential `sendBatch` calls |
+| Recovery | 8 | close at most 128 deadlines, then rotate item reuse / observation mirror / one stuck pair / one dead outbox repair |
+| Summary | 6 | one operation: freeze, seal page, layout page, or render one chunk |
+| Output | 9 | one ordered chunk, including claim, cooldown, result and completion recovery; zero requests unless a synthetic transport is injected |
+| **Complete scheduled handler** | **39** | at most eight Queue sends and one injected output request; no provider calls |
+
+Queue consumers process at most two messages per invocation, reserving 16 D1 statements
+per message (**32 total**), with at most two mock provider invocations. The DLQ reserves
+eight per message (**16 total**) and makes no provider call. Excess messages are retried
+without accessing D1. Binding count is capped at 100 on every runtime statement, including
+batch members; failed attempts consume the same reservation. Sequential awaited I/O keeps
+one service connection active at a time in healthy execution. Budgets are application
+limits, not claims about production CPU latency or at-most-once external effects.
+
+The outbox read is bounded to 90 rows and 9,000,000 source bytes, allowing one larger
+legacy row alone so it can be classified. Existing Queue packing remains 96,000 charged
+bytes per message / 192,000 per batch. Seal and terminal pages use at most 128 rows and
+262,144 cumulative source bytes, or one larger legacy row alone; row identifiers carry
+mutation pages without duplicating large codes into JSON parameters. Seal uses fixed-size
+code hashes for sort keys and persists bounded display code labels. Layout reads at most
+128 bounded display rows, render at most 256 (minimum line length prevents more from
+fitting a 2,000-character chunk); output response reads stop at 16,384 bytes. Expansion
+uses 128 bounded registration names and synthetic codes capped at 128 UTF-8 bytes.
+
+At the default 3,600-second deadline a 2,000-player distribution needs **16 expansion
+passes**, while outbox dispatch needs 23 passes of 90. The deterministic healthy envelope
+is 90 mock redemptions within 45 seconds after each minute's dispatch. An isolated maximum
+operation finishes redemption accounting before 24 minutes; two competing maximum
+operations each finish before 47 minutes under round-robin scheduling. This is an explicit
+mock service envelope, not a guarantee under arbitrary backlog, provider latency or retry
+rates. More competition or a deliberately short deadline closes incomplete work truthfully
+as `stale_closed`; unexpanded snapshot members appear as unfinished. The deadline covers
+redemption accounting, not eventual summary delivery while transport is disabled.
+
+Retention, discovery, adaptive provider rate limiting and operational dashboards remain
+later work. Required correctness recovery above is implemented now. Operator repairs are
+parked and never auto-authorized or selected by a consumer before explicit authorization.
 
 Durable Object **alarms** ([fact:C3]) are an implementation option for per-operation timers
 if Option 1 is chosen or if per-operation precision is needed; they do not consume the Cron
@@ -170,6 +206,22 @@ Migrations are applied to staging first, then production, after review.
   Local tests and dry runs do not provision resources or validate deployed performance.
 
 ---
+
+### Phase 4 requirement-to-test matrix
+
+| Requirement | Deterministic local evidence |
+|---|---|
+| Atomic logical budget across duplicate physical sends | `phase4.test.ts`: two physical IDs alternate at eligible times; exactly four provider calls, one exhaustion observation; recovery does not replenish; fourth-call success remains immutable |
+| Concurrency, retry release, stale writes and DLQ | same suite: latched concurrent invocations, T9/T2 due-time retry, stale invocation result, stale/new attempt DLQ, live invocation and future retry-wait handling |
+| T7/T8/T13/T15 and operator reopening | state changes with zero/nonzero caps, baseline T13 tests, T15 after the final grant, missing legacy leases, parked repair authorization; successful outcomes cannot reopen |
+| Late terminal-result reuse | completed observation traversal, insertion behind a cursor, state reopening between selection and mutation, frozen-source audit, and no extra successful provider call |
+| Accepted maximum snapshot and fairness | `phase4-throughput.test.ts`: 2,000 players, one and two operations, all expansion/accounting before their default deadline under the stated clock/service envelope |
+| Snapshot stability and deliberate timeout | `phase4.test.ts`: membership/name changes, rollback at 2,001 players, unexpanded members frozen as unfinished at a short deadline |
+| Summary restart / immutable rendering | concurrent passes, crashes before/after a D1 page transaction, Unicode at 500 characters, overflow counts, zero-result registration/distribution, final-only footer |
+| Durable output / bounded nonce suppression | synthetic 429/5xx/4xx, shared cooldown, exhausted attempts, crash after response before sent mark, stable nonce inside and outside a synthetic suppression window |
+| End-to-end local processing | real local Queue producer binding plus Workers Queue harness, accepted registration → consumer ack → sealed summary → synthetic transport → finalized event; unmatched outbound network is blocked |
+| Complete-handler budgets | combined scheduled failure and healthy paths, every throughput Cron and two-message consumer invocation measured, binding cap, original outbox send/mark budget suites retained |
+| Migration compatibility | unchanged baseline suite on a baseline-only binding; `phase4-upgrade.test.ts` populates 0001 then upgrades and reapplies, preserving audit counts and terminal records; local Wrangler upgrade/reapplication plus FK checks |
 
 ## 22. Failure modes and recovery
 

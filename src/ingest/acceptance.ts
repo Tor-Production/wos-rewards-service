@@ -71,12 +71,18 @@ export async function acceptRegistrationEvent(input: AcceptanceInput): Promise<A
           `UPDATE redemptions SET status='pending', current_attempt_id=NULL,
         current_invocation_token=NULL, invocation_expires_at=NULL, retry_due_at=NULL,
         reason_code=NULL, terminal_at=NULL, attempts=0, attempt_generation=attempt_generation+1,
-        reeval_count=reeval_count+1, updated_at=?1
+        reeval_count=reeval_count+1, updated_at=?1, budget_generation=budget_generation+1, provider_invocations=0, provider_invocation_limit=?5, current_terminal_generation=NULL
         WHERE player_id=?2 AND status='permanent_failure' AND reason_code='player_ineligible'
           AND reeval_count < ?3 AND (attempt_state IS NULL OR attempt_state <> ?4)
           AND EXISTS (SELECT 1 FROM players p WHERE p.player_id=?2 AND p.state <> ?4)`,
         )
-        .bind(timestamp, playerId, config.redemptionMaxReeval, state),
+        .bind(
+          timestamp,
+          playerId,
+          config.redemptionMaxReeval,
+          state,
+          config.providerMaxInvocations,
+        ),
       db
         .prepare(
           `INSERT INTO players
@@ -93,10 +99,10 @@ export async function acceptRegistrationEvent(input: AcceptanceInput): Promise<A
         .prepare(
           `INSERT INTO operations
         (operation_id, type, trigger_kind, trigger_ref, snapshot_at, expected_count,
-         expansion_state, expansion_cursor, state, deadline_at, summary_state, created_at, updated_at)
+         expansion_state, expansion_cursor, state, deadline_at, summary_state, created_at, updated_at, summary_context)
         SELECT ?1, 'registration_run', 'discord_event', ?2, ?3,
           CASE WHEN c.n <= ?4 THEN c.n ELSE -1 END,
-          'expanded', NULL, 'pending', ?5, 'none', ?3, ?3
+          'expanded', NULL, 'pending', ?5, 'none', ?3, ?3, ?6
         FROM (SELECT COUNT(*) AS n FROM gift_codes WHERE status='active') c`,
         )
         .bind(
@@ -105,6 +111,14 @@ export async function acceptRegistrationEvent(input: AcceptanceInput): Promise<A
           timestamp,
           MAX_REGISTRATION_SNAPSHOT_CODES,
           new Date(now.getTime() + config.operationDeadlineSeconds * 1000).toISOString(),
+          JSON.stringify({
+            version: 1,
+            channelId: event.channel_id,
+            playerId,
+            label: renderDisplayLabel(displayName, playerId),
+            maxLength: config.discordMessageMaxLength,
+            maxChunks: config.summaryMaxChunks,
+          }),
         ),
       db
         .prepare(

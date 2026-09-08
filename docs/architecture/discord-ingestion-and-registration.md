@@ -317,10 +317,9 @@ finalisable and produces a **single-chunk** zero-result summary
    authorized** yet; the flow is defined so it works the moment an authorized source exists.
 2. **Deduplicate** on `gift_codes.code` (unique). A re-seen code is a no-op.
 3. **Open a `code_distribution_run` operation** and fix a **stable player snapshot
-   boundary** at discovery time (a monotonic `player_id` cursor filtered by `snapshot_at`,
-   or an `operation_players_snapshot` side table). `expected_count` = boundary size.
+   boundary** in `operation_players_snapshot`, copying player IDs and display names in the opening D1 transaction. The cap is 2,000 players, enforced atomically; `expected_count` is the exact accepted membership size. Phase 4 exposes only an internal synthetic input helper, with no discovery implementation or public endpoint.
 4. **Bounded, restartable expansion:** the fan-out expansion worker repeatedly reads the
-   next `FANOUT_EXPANSION_PAGE_SIZE` players after `expansion_cursor` and, in one atomic D1
+   next 128 snapshot members after `expansion_cursor` and, in one atomic D1
    batch, writes that page's `operation_items` rows + per-item `outbox_jobs` rows + the
    advanced `expansion_cursor`. `expansion_state` moves `pending → expanding → expanded`.
    After a crash it resumes from the persisted cursor; already-written pages are skipped by
@@ -333,8 +332,7 @@ finalisable and produces a **single-chunk** zero-result summary
 6. **Aggregate & summarize:** when `expansion_state = expanded` **and** all items are
    terminal, the operation's summary is sealed into `summary_item_snapshot` and built by the
    **paged, cursor-driven, idempotent** process ([§15.4](summary-and-delivery.md#154-deterministic-bounded-crash-resumable-summary-build-and-per-chunk-delivery)):
-   the code, the applied-player count (`success` + `already_redeemed`), and a comma-separated
-   list of display names / `ID <PLAYER_ID>` fallbacks. Output is **chunked** when it exceeds
+   the code, the applied-player count (`success` + `already_redeemed`), and a bounded line list of display names / `ID <PLAYER_ID>` fallbacks. Output is **chunked** when it exceeds
    `DISCORD_MESSAGE_MAX_LENGTH` ([§18](summary-and-delivery.md#18-discord-output-safety)) and capped at
    `SUMMARY_MAX_CHUNKS`; the runtime footer appears **only in the final persisted chunk**.
    Zero registered players ⇒ single-chunk zero-result summary.

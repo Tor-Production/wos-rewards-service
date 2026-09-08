@@ -23,7 +23,7 @@ const sources = import.meta.glob<string>(
 it("makes zero external fetch calls throughout acceptance, inline send and scheduled send", async () => {
   const code = uniqueId();
   await seedCodes(env.STAGING_DB, [code]);
-  const scheduled = await seedOutbox(env.STAGING_DB, [{}]);
+  const scheduled = await seedOutbox(env.STAGING_DB, [{}], new Date());
   const event = makeEvent();
   const operationId = await deterministicUuid(`registration:${event.event_id}`);
   const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(() => {

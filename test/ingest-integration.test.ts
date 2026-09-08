@@ -134,7 +134,7 @@ describe("full Workers runtime ingestion", () => {
     ).toEqual({ status: "enqueued", attempts: 1 });
   });
   it("scheduled uses local Queues and fails closed for unsafe configuration", async () => {
-    const seeded = await seedOutbox(env.STAGING_DB, [{}, { type: "distribution" }]);
+    const seeded = await seedOutbox(env.STAGING_DB, [{}, { type: "distribution" }], new Date());
     operations.push(seeded.operationId);
     const ctx = createExecutionContext();
     await worker.scheduled(createScheduledController(), env, ctx);

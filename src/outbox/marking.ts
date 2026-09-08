@@ -39,7 +39,8 @@ export function prepareOutboxMarks(
       group = { kind: mark.kind, attempts, ids: [] };
       groups.set(key, group);
     }
-    group.ids.push(mark.row.job_id);
+    if (mark.row.attempt_id === undefined) throw new Error("missing_outbox_generation");
+    group.ids.push(JSON.stringify([mark.row.job_id, mark.row.attempt_id]));
   }
 
   const statements: D1PreparedStatement[] = [];
@@ -78,11 +79,11 @@ export function prepareOutboxMarks(
         guard = " AND attempts = ?1 - 1";
         outcome = "retried";
       }
-      const placeholders = ids.map((_, index) => `?${scalars.length + index + 1}`).join(",");
+      const observed = ids.map((_, index) => `(?${scalars.length + index + 1})`).join(",");
       statements.push(
         db
           .prepare(
-            `UPDATE outbox_jobs SET ${assignments} WHERE status='pending'${guard} AND job_id IN (${placeholders})`,
+            `UPDATE outbox_jobs SET ${assignments} WHERE status='pending'${guard} AND EXISTS (SELECT 1 FROM (VALUES ${observed}) observed WHERE json_extract(observed.column1, '$[0]')=outbox_jobs.job_id AND json_extract(observed.column1, '$[1]')=outbox_jobs.attempt_id)`,
           )
           .bind(...scalars, ...ids),
       );

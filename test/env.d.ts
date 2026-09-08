@@ -8,6 +8,10 @@
  */
 declare namespace Cloudflare {
   interface Env {
+    BASELINE_DB: D1Database;
+    PHASE4_DB: D1Database;
+    THROUGHPUT_DB: D1Database;
+    UPGRADE_DB: D1Database;
     /** The migrations read from `migrations/` by `vitest.config.ts`. */
     TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
   }

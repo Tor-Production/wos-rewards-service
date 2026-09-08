@@ -1,3 +1,4 @@
+import { scheduledWork, queueWork } from "./runtime/handlers";
 import { ConfigurationError, loadConfig } from "./config";
 import { acknowledgement, errorResponse } from "./http/responses";
 import { acceptRegistrationEvent } from "./ingest/acceptance";
@@ -6,7 +7,7 @@ import { shouldAcceptAuthor } from "./ingest/author-filter";
 import { newAttemptRunId } from "./ingest/identity";
 import { parseRegistration } from "./ingest/registration-parser";
 import { readRegistrationEvent } from "./ingest/transport";
-import { INLINE_DISPATCH_LIMIT, OUTBOX_DISPATCH_SCAN_LIMIT } from "./limits";
+import { INLINE_DISPATCH_LIMIT } from "./limits";
 import { dispatchOutbox } from "./outbox/dispatcher";
 
 /** Synthetic/local Phase 3 boundary. No Discord transport, provider call or consumer. */
@@ -67,16 +68,9 @@ export default {
     env: Env,
     _ctx: ExecutionContext,
   ): Promise<void> {
-    const config = loadConfig(env);
-    await dispatchOutbox({
-      db: env.STAGING_DB,
-      config,
-      now: new Date(),
-      queues: {
-        registration: env.REGISTRATION_JOBS_QUEUE,
-        distribution: env.CODE_FANOUT_JOBS_QUEUE,
-      },
-      source: { kind: "scan", limit: OUTBOX_DISPATCH_SCAN_LIMIT },
-    });
+    await scheduledWork(env);
+  },
+  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+    await queueWork(batch, env);
   },
 } satisfies ExportedHandler<Env>;

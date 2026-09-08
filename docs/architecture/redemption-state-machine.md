@@ -86,18 +86,15 @@ interface GiftCodeSource {
   `retryable` result the consumer executes **T9** — atomically move the global row to
   `retry_wait`, clear `current_invocation_token`, record `retry_due_at`, **then**
   `message.retry({ delaySeconds })`. The redelivered body (same `attempt_id`) re-acquires an
-  **invocation** via T2, so the retry budget and eventual DLQ ownership stay attached to
-  that one durable `attempt_id`.
+  **invocation** via T2, so DLQ ownership stays attached to that durable `attempt_id`. Each physical message has its own platform retry counter; duplicate producer sends do **not** share it.
 - **Contention is never a retry.** A delivery that finds a **live invocation** (any
   `attempt_id`), a `retry_wait` not yet due, a different `attempt_id`, or a terminal row is
   **T3**: it makes no provider call, `ack`s, and writes nothing. The pair is re-driven by
   the Operation sweeper (**T12**) with a **fresh `attempt_id`**. A **T3** message can never
   reach the DLQ.
-- **DLQ:** `redemption-dlq` receives a message only after that `attempt_id`'s deliveries
-  exhaust `max_retries` **[fact:C6]**. The inspection consumer terminalizes on an **exact
+- **DLQ:** `redemption-dlq` receives a message after one physical message exhausts `max_retries` **[fact:C6]**. The inspection consumer terminalizes on an **exact
   `attempt_id` match with no invocation active** (**T10**). A `retry_wait` row always
-  qualifies: **T9** already cleared `current_invocation_token`, so the retry budget is
-  genuinely spent and the future `retry_due_at` / pickup-grace `invocation_expires_at` are
+  qualifies: **T9** already cleared `current_invocation_token`, so its platform retry path is exhausted and the future `retry_due_at` / pickup-grace `invocation_expires_at` are
   irrelevant once the DLQ message itself has arrived. The lease-expiry comparison applies
   only to an `in_progress` row that still carries a `current_invocation_token`:
   ```sql
@@ -126,7 +123,7 @@ interface GiftCodeSource {
   row is skipped by the sweeper's **T12** guard, so no fresh `attempt_id` or retry budget is
   ever minted for it — reopen is `repair_run` (**T14**) only. **Business-rule (`permanent`)
   failures never enter the DLQ.**
-- Discord output delivery does **not** use a queue or DLQ: it is a Cron + inline dispatcher
+- Discord output delivery does **not** use a queue or DLQ: it is a Cron dispatcher
   over `discord_output_deliveries` rows, with `attempts` and an alert after
   `OUTPUT_DISPATCH_MAX_ATTEMPTS`.
 
@@ -181,32 +178,29 @@ cannot do on its own **[inference]**.
 - **Acquire-invocation** (one upsert; grants the first invocation of a new `attempt_id`, or
   the next invocation of a due `retry_wait`, or steals a crashed invocation of the same
   `attempt_id`):
+  The consumer first inserts a missing `pending` row and claims the eligible operation
+  item in the same D1 batch. The authoritative update then includes all of:
   ```sql
-  INSERT INTO redemptions (player_id, code, idempotency_key, status,
-                           current_attempt_id, current_invocation_token, invocation_expires_at,
-                           attempt_state, attempt_generation, attempts, first_claimed_at, updated_at)
-       VALUES (:pid, :code, :idk, 'in_progress', :aid, :itok, :exp, :state, 1, 1, :now, :now)
-  ON CONFLICT (player_id, code) DO UPDATE SET
-       status = 'in_progress',
-       current_attempt_id = :aid,
-       current_invocation_token = :itok,
-       invocation_expires_at = :exp,
-       retry_due_at = NULL,
-       attempt_state = :state,
-       attempt_generation = redemptions.attempt_generation
-                            + (CASE WHEN redemptions.current_attempt_id = :aid THEN 0 ELSE 1 END),
-       attempts = (CASE WHEN redemptions.current_attempt_id = :aid
-                        THEN redemptions.attempts + 1 ELSE 1 END),  -- +1 on same-attempt resume; reset for a fresh attempt after a reopen
-       updated_at = :now
-     WHERE redemptions.status = 'pending'                                                     -- T1
-        OR (redemptions.status = 'retry_wait'  AND redemptions.current_attempt_id = :aid
-            AND redemptions.retry_due_at <= :now AND redemptions.current_invocation_token IS NULL)  -- T2: next invocation, retry due
-        OR (redemptions.status = 'in_progress' AND redemptions.current_attempt_id = :aid
-            AND redemptions.invocation_expires_at < :now);                                     -- T2: previous invocation crashed
+  UPDATE redemptions AS r
+     SET status='in_progress', current_attempt_id=:aid,
+         current_invocation_token=:token, invocation_expires_at=:expiry,
+         provider_invocations=provider_invocations+1
+   WHERE player_id=:pid AND code=:code
+     AND provider_invocations<provider_invocation_limit
+     AND (
+       (status='pending' AND (last_attempt_id IS NULL OR last_attempt_id<>:aid
+                             OR last_attempt_budget_generation=budget_generation))
+       OR (status='retry_wait' AND current_attempt_id=:aid
+           AND current_invocation_token IS NULL AND retry_due_at<=:now)
+       OR (status='in_progress' AND current_attempt_id=:aid AND invocation_expires_at<:now)
+     )
+     AND EXISTS (/* matching mutable operation item, eligible lease, deadline > :now */)
+  RETURNING attempt_state, provider_invocations, provider_invocation_limit;
   ```
-  If **no** row changes, the delivery is **T3** (a live invocation holds it, or a
-  `retry_wait` is not yet due, or a different `attempt_id` owns it, or the row is terminal):
-  the consumer **does not call the provider**, writes nothing, and `message.ack()`s.
+  This is a guard illustration; `src/redemption/consumer.ts` also atomically captures
+  player state, lease and audit fields. Only the returned row authorizes a provider call.
+  A zero-row result is T3 unless it independently meets the exhausted-budget guard, in
+  which case T12b records exhaustion without calling the provider.
 
 ### State-transition table (the single source of truth)
 
@@ -216,22 +210,55 @@ conforms to this table. `A` = the caller's `attempt_id`; `X` = its fresh
 
 | # | From (`status`, invocation) | Trigger | Guard | To | Effect |
 |---|---|---|---|---|---|
-| T1 | `pending` | delivery for `A` | `status='pending'` | `in_progress` | `current_attempt_id=A` (`attempt_generation+=1` if `A` is new), `current_invocation_token=X`, `invocation_expires_at`, `attempt_state`, `attempts=1`, `retry_due_at=NULL` |
-| T2 | `retry_wait` (`A`, due, no live invocation) **or** `in_progress` (`A`, invocation crashed) | redelivery of `A`'s body | `(status='retry_wait' AND current_attempt_id=A AND retry_due_at<=:now AND current_invocation_token IS NULL)` **or** `(status='in_progress' AND current_attempt_id=A AND invocation_expires_at<:now)` | `in_progress` | new `current_invocation_token=X`, `invocation_expires_at`, `attempts+=1` |
+| T1 | `pending` | delivery for `A` | `status='pending'` and logical budget remains; message matches current outbox generation | `in_progress` | `current_attempt_id=A` (`attempt_generation+=1` if `A` is new), `current_invocation_token=X`, `invocation_expires_at`, `attempt_state`, `attempts=1`, `retry_due_at=NULL`; atomically increment `provider_invocations` |
+| T2 | `retry_wait` (`A`, due, no live invocation) **or** `in_progress` (`A`, invocation crashed) | redelivery of `A`'s body | `(status='retry_wait' AND current_attempt_id=A AND retry_due_at<=:now AND current_invocation_token IS NULL)` **or** `(status='in_progress' AND current_attempt_id=A AND invocation_expires_at<:now)` | `in_progress` | new `current_invocation_token=X`, `invocation_expires_at`, `attempts+=1`; require `provider_invocations < provider_invocation_limit` and increment it atomically |
 | T3 | any: **live invocation present** (any `attempt_id`), **or** `retry_wait` not yet due, **or** different `attempt_id`, **or** terminal | any delivery | none of T1/T2 match | *(unchanged)* | delivery makes **no provider call**, no writes, `message.ack()`s — **contention / duplicate suppression** |
 | T4 | `in_progress` (`A`, `X`) | provider `success` / `already_redeemed` | `status='in_progress' AND current_attempt_id=A AND current_invocation_token=X` | `success` / `already_redeemed` | clear `current_attempt_id`, `current_invocation_token`, `invocation_expires_at`; `terminal_at` |
 | T5 | `in_progress` (`A`, `X`) | provider `permanent`, reason ∈ {`code_invalid`,`code_expired`,`provider_bad_request`,`provider_auth_failed`} | `… AND current_invocation_token=X` | `permanent_failure` | clear attempt + invocation; `reason_code`; `terminal_at` |
 | T6 | `in_progress` (`A`, `X`) | provider `permanent` = `player_ineligible`, **`attempt_state = players.state`** | `… AND current_invocation_token=X AND attempt_state=(SELECT state FROM players WHERE player_id=:pid)` | `permanent_failure` (`player_ineligible`) | clear attempt + invocation; `terminal_at` |
-| T7 | `in_progress` (`A`, `X`) | provider `permanent` = `player_ineligible`, **`attempt_state ≠ players.state`**, **`reeval_count < REDEMPTION_MAX_REEVAL`** | `… AND current_invocation_token=X AND attempt_state<>(…) AND reeval_count<:max` | `pending` | clear attempt + invocation; `attempt_generation+=1`; `reeval_count+=1`; `reason_code=NULL`; `attempts=0` |
+| T7 | `in_progress` (`A`, `X`) | provider `permanent` = `player_ineligible`, **`attempt_state ≠ players.state`**, **`reeval_count < REDEMPTION_MAX_REEVAL`** | `… AND current_invocation_token=X AND attempt_state<>(…) AND reeval_count<:max` | `pending` | clear attempt + invocation; `attempt_generation+=1`; `reeval_count+=1`; `reason_code=NULL`; `attempts=0`; increment `budget_generation`, reset `provider_invocations=0`, capture the configured limit, clear current terminal pointer |
 | T8 | `in_progress` (`A`, `X`) | provider `permanent` = `player_ineligible`, **`attempt_state ≠ players.state`**, **`reeval_count ≥ REDEMPTION_MAX_REEVAL`** | `… AND current_invocation_token=X AND attempt_state<>(…) AND reeval_count>=:max` | **`permanent_failure`** | clear attempt + invocation; **`reason_code='state_reevaluation_limit'`**; `terminal_at`; **operator alert**; counts as a **terminal failure**; reopen **only** via `repair_run` (T14); the obsolete `player_ineligible` result is **never** reported as applying to the current `state` |
-| T9 | `in_progress` (`A`, `X`) | provider `retryable` | `… AND current_invocation_token=X` | **`retry_wait`** | **atomically** `current_invocation_token=NULL`, `retry_due_at=:now+backoff`, `invocation_expires_at=:retry_due_at + REDEMPTION_CLAIM_LEASE_SECONDS`; `attempts` unchanged. **Then** `message.retry({ delaySeconds = backoff })` |
+| T9a | `in_progress` (`A`, `X`) | provider `retryable`, budget remains | `… AND current_invocation_token=X` | **`retry_wait`** | **atomically** `current_invocation_token=NULL`, `retry_due_at=:now+backoff`, `invocation_expires_at=:retry_due_at + REDEMPTION_CLAIM_LEASE_SECONDS`; `attempts` unchanged. **Then** `message.retry({ delaySeconds = backoff })` |
+| T9b | `in_progress` (`A`, `X`) | final granted invocation returns `retryable` | exact invocation token; `provider_invocations = provider_invocation_limit` | `retry_exhausted` | clear attempt/invocation, publish one terminal observation and account exhaustion; `ack`; a DLQ message is not required |
 | T10 | `retry_wait` (`A`) — always; **or** `in_progress` (`A`) with no live invocation | **DLQ message whose `attempt_id` = `A`** | `current_attempt_id=A AND ((status='retry_wait' AND current_invocation_token IS NULL) OR (status='in_progress' AND (current_invocation_token IS NULL OR invocation_expires_at<:now)))` | `retry_exhausted` | clear attempt + invocation; `reason_code='provider_retry_exhausted'`; `terminal_at`. `retry_wait` qualifies **regardless of `retry_due_at` / pickup-grace `invocation_expires_at`** (T9 already released the invocation) |
 | T11 | different attempt, **or** exact `A` with a live invocation | **DLQ message whose `attempt_id` = `A`** | `current_attempt_id IS NULL OR current_attempt_id<>A` (⇒ `dlq_stale_attempt`, **even if that newer lease has since expired**) — **or** — `current_attempt_id=A AND status='in_progress' AND current_invocation_token IS NOT NULL AND invocation_expires_at>=:now` (⇒ `dlq_invocation_active`) | *(unchanged)* | audit-only; **never terminalizes**; `message.ack()`s. A live invocation drives the outcome; when it later exhausts, *its* DLQ message hits **T10** |
-| T12 | `in_progress` / `retry_wait` (`A`), no live invocation, stuck | Operation sweeper | `status IN ('in_progress','retry_wait') AND (invocation_expires_at IS NULL OR invocation_expires_at<:now)` | `pending` | clear attempt + invocation; sweeper re-enqueues a **fresh `attempt_id`**. The `status IN ('in_progress','retry_wait')` guard **excludes every terminal status**, so once **T10** has set `retry_exhausted` the sweeper never re-drives the row or mints a new retry budget — reopen is `repair_run` (T14) only |
-| T13 | `permanent_failure`/`player_ineligible` | valid re-registration changes `players.state` | atomic acceptance batch, `attempt_state<>:new_state AND reeval_count<:max` | `pending` | `attempt_generation+=1`; `reeval_count+=1`; `reason_code=NULL`; `terminal_at=NULL`; `attempts=0` |
-| T14 | `permanent_failure` (**any** reason, incl. `state_reevaluation_limit`) / `retry_exhausted` | operator `repair_run` | — | `pending` | `attempt_generation+=1`; operator may reset `reeval_count` |
-| T15 | `permanent_failure`/`player_ineligible` (already terminal, predates T7) | Operation sweeper, `attempt_state<>players.state AND reeval_count<:max AND` a non-terminal `operation_items` waits | sweeper | `pending` | as T13 |
+| T12a | `in_progress` / `retry_wait` (`A`), no live invocation, stuck | Operation sweeper | `status IN ('in_progress','retry_wait') AND (invocation_expires_at IS NULL OR invocation_expires_at<:now)` | `pending` (only while logical budget remains) | preserve `budget_generation`, `provider_invocations`, and its limit; clear attempt + invocation; sweeper re-enqueues a **fresh `attempt_id`**. The `status IN ('in_progress','retry_wait')` guard **excludes every terminal status**, so once **T10** has set `retry_exhausted` the sweeper never re-drives the row or mints a new retry budget — reopen is `repair_run` (T14) only |
+| T12b | eligible expired `in_progress` / `retry_wait`, or pending recovery | final grant was charged and no live invocation remains | same authority guard; `provider_invocations >= provider_invocation_limit` | `retry_exhausted` | publish exhaustion observation without provider call, fresh attempt, or fresh budget |
+| T13 | `permanent_failure`/`player_ineligible` | valid re-registration changes `players.state` | atomic acceptance batch, `attempt_state<>:new_state AND reeval_count<:max` | `pending` | `attempt_generation+=1`; `reeval_count+=1`; `reason_code=NULL`; `terminal_at=NULL`; `attempts=0`; increment `budget_generation`, reset `provider_invocations=0`, capture the configured limit, clear current terminal pointer |
+| T14 | `permanent_failure` (**any** reason, incl. `state_reevaluation_limit`) / `retry_exhausted` | operator `repair_run` | — | `pending` | `attempt_generation+=1`; operator may reset `reeval_count`; increment `budget_generation`, reset `provider_invocations=0`, capture the configured limit, clear current terminal pointer |
+| T15 | `permanent_failure`/`player_ineligible` (already terminal, predates T7) | Operation sweeper, `attempt_state<>players.state AND reeval_count<:max AND` a non-terminal `operation_items` waits | sweeper | `pending` | as T13; increment `budget_generation`, reset `provider_invocations=0`, capture the configured limit, clear current terminal pointer |
 | T16 | `success` / `already_redeemed` | anything | — | *(immutable)* | — |
+
+### Logical invocation authority and terminal reconciliation (Phase 4)
+
+A generation has a default limit of **four grants including the initial call**. T1/T2
+atomically test `provider_invocations < provider_invocation_limit` and increment the
+counter in the same guarded D1 update that returns the invocation token. Only a returned
+grant permits a provider call. A grant lost to a crash is never refunded. The counter is
+independent of physical message retries and of `attempts`, which remains attempt audit.
+T3 produces no mutations or provider calls; eligible exhaustion is instead T9b/T12b.
+T10 may exhaust earlier when one matching physical message reaches the DLQ; T11 is audit
+only. T12a rotates `attempt_id` without replenishment. Only capped state reevaluations
+T7/T13/T15 and explicitly authorized T14 create a new generation. Successful rows remain
+immutable; retry-exhausted and state-cap failures require T14. T9 and T12 in older prose
+refer to their explicitly split a/b transitions above.
+
+Each terminal write atomically creates an immutable observation identified by
+`(player_id, code, budget_generation)`. `current_terminal_generation` identifies the
+applicable observation. The observation carries outcome, reason, attempted state and a
+monotonic observation timestamp. A guarded page applies at most 128 recipients and writes
+per-item receipts in the same transaction; frozen or expired operations receive an
+idempotent late-result audit instead. A reopening invalidates the old pointer immediately.
+`player_ineligible` also requires that the attempted state still matches the current
+player state. Returning to an older state never revives an older generation.
+
+`mirror_cursor` / `mirror_complete` describe one traversal, **not a subscription**. The
+independent item-driven reuse lane finds missing receipts even after mirroring completed,
+and finds items inserted behind a live cursor. Both lanes revalidate applicability inside
+the mutation transaction. A zero-row traversal marks complete; hitting a row/byte page
+boundary merely advances the cursor. Obsolete observations remain historical and cannot
+complete current items. Receipts record `applied` or `audited`; `superseded` is reserved for
+future retention auditing and is not needed to reuse a current result.
 
 ### The six required behaviours
 
@@ -261,7 +288,7 @@ writes a terminal status, and its `status IN ('in_progress','retry_wait')` guard
 
 ### Crash-safe re-drive (Operation sweeper)
 
-Every minute, bounded by `SWEEPER_REDRIVE_BATCH`, the sweeper:
+The recovery reservation rotates four independent work classes across minute ticks. The stuck-pair class processes one pair per turn:
 
 - **T12:** resets `redemptions` rows in `in_progress` / `retry_wait` whose
   `invocation_expires_at` has passed (crashed invocation, or a `retry_wait` whose retried
@@ -269,26 +296,19 @@ Every minute, bounded by `SWEEPER_REDRIVE_BATCH`, the sweeper:
   **T10** first and moved the row to the terminal `retry_exhausted`, which this guard's
   `status IN ('in_progress','retry_wait')` filter skips) to `pending`
   (`current_attempt_id = NULL`, `current_invocation_token = NULL`);
-- re-enqueues **one fresh job per pair** — **fresh `attempt_id`**, fresh `max_retries` — for
+- re-enqueues **one fresh job per pair** — **fresh `attempt_id`**, fresh physical-message retry counters but the same logical budget — for
   every pair with a non-terminal `operation_items` row and a non-terminal `redemptions` row
   that now has `current_attempt_id IS NULL`;
 - **T15:** reopens an already-terminal `permanent_failure`/`player_ineligible` row whose
   `attempt_state <> players.state` and `reeval_count < REDEMPTION_MAX_REEVAL` while a
   non-terminal `operation_items` waits (catch-up for rows that turned terminal before T7);
-- mirrors any now-terminal `redemptions` outcome onto every non-terminal `operation_items`
-  row for the pair (see [§15.3](summary-and-delivery.md#153-completion-accounting-and-the-source-freeze) for the freeze guard):
-  ```sql
-  UPDATE operation_items
-     SET status = :mirror, reason_code = :rc, updated_at = :now
-   WHERE (player_id, code) = (:pid, :code)
-     AND status IN ('pending', 'in_progress')
-     AND (SELECT summary_state FROM operations o WHERE o.operation_id = operation_items.operation_id) = 'none';
-  -- operations whose summary_state <> 'none': append to operation_late_results instead
-  ```
+- the separate observation and item-reuse classes mirror applicable current terminal
+  observations in bounded pages, using generation/state checks and receipts inside the
+  same D1 transaction. Frozen/expired recipients receive late audits instead.
 
-This single mechanism covers T3 `ack`s, invocation crashes, obsolete-state terminals, and
-lost queue messages. While any `operation_items` for a pair is non-terminal and the
-operation is within its deadline, the pair keeps being re-driven.
+These classes cover T3 acknowledgements, invocation crashes, obsolete-state terminals,
+and lost messages without replenishing an exhausted budget. Complete scheduling and
+fairness bounds are specified in [§9](operations-and-reliability.md#9-scheduled-cron-components-and-the-trigger-budget).
 
 ### Terminality is per `reason_code`
 
@@ -299,7 +319,7 @@ operation is within its deadline, the pair keeps being re-driven.
 | `permanent_failure` / **`state_reevaluation_limit`** (state re-evaluation cap reached — **T8**) | **terminal failure** | **`repair_run` only (T14)** — never auto-reopened, never reported as the obsolete `player_ineligible` applying to the current `state`; raises an operator alert |
 | `permanent_failure` / `code_invalid`, `code_expired` (**code-dependent**) | terminal | operator `repair_run` only (T14; e.g. after correcting `gift_codes.status`) |
 | `permanent_failure` / `provider_bad_request`, `provider_auth_failed` (**operational**) | terminal | operator `repair_run` only (T14), after the operational cause is fixed |
-| `retry_exhausted` (**operational**) | terminal for accounting | operator `repair_run` (T14); **or** a bounded sweeper auto-reopen after a cooldown when `REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED = true` (capped by `REDEMPTION_MAX_REEVAL`) |
+| `retry_exhausted` (**operational**) | terminal for accounting | operator `repair_run` (T14) only |
 
 **T13 — state-change reopen** (runs inside the same atomic acceptance `db.batch()` as the
 re-registration, [§5](discord-ingestion-and-registration.md#atomic-acceptance)):
@@ -310,12 +330,15 @@ UPDATE redemptions
        invocation_expires_at = NULL, retry_due_at = NULL,
        reason_code = NULL, terminal_at = NULL,
        attempts = 0, attempt_generation = attempt_generation + 1,
-       reeval_count = reeval_count + 1, updated_at = :now
+       reeval_count = reeval_count + 1, updated_at = :now,
+       budget_generation=budget_generation+1, provider_invocations=0,
+       provider_invocation_limit=:configured_limit, current_terminal_generation=NULL
  WHERE player_id = :pid
    AND status = 'permanent_failure'
    AND reason_code = 'player_ineligible'               -- state-dependent, under cap only
    AND reeval_count < :max_reeval
-   AND (attempt_state IS NULL OR attempt_state <> :new_state);
+   AND (attempt_state IS NULL OR attempt_state <> :new_state)
+   AND EXISTS (SELECT 1 FROM players p WHERE p.player_id=:pid AND p.state<>:new_state);
 ```
 
 It never matches `success` / `already_redeemed` / `state_reevaluation_limit` /
@@ -344,7 +367,7 @@ operation, T3 guarantees no two invocations of the same `attempt_id` call the pr
 | Provider / transport signal | Class (`reason_code`) | Action | Reopen |
 |---|---|---|---|
 | HTTP 429, `Retry-After` present | `retryable` | **T9**: atomically → `retry_wait` (clear invocation, set `retry_due_at` from `Retry-After` / backoff), **then** `message.retry` | — |
-| HTTP 5xx, connection reset, timeout | `retryable` | **T9** with exponential backoff up to `PROVIDER_MAX_RETRIES` | — |
+| HTTP 5xx, connection reset, timeout | `retryable` | **T9a** with exponential backoff while logical grants remain; final grant **T9b** terminalizes directly | — |
 | Provider "rate limited" / "temporarily unavailable" | `retryable` | **T9** with backoff | — |
 | Redemption succeeded now | `success` | **T4** terminal, guarded on `current_invocation_token`; record `provider_receipt` if returned | **never** (T16) |
 | Redemption already applied for this pair | `already_redeemed` | **T4** **terminal, success-equivalent**; no retry; counts toward `applied`; never a failure | **never** (T16) |
@@ -352,7 +375,7 @@ operation, T3 guarantees no two invocations of the same `attempt_id` call the pr
 | Player ineligible / unknown to the game | `permanent` (`player_ineligible`) — **state-dependent** | **T6** if `attempt_state = players.state`; **T7** (row → `pending`) if `attempt_state ≠ players.state` and `reeval_count < REDEMPTION_MAX_REEVAL`; **T8** (`permanent_failure` / `state_reevaluation_limit`, alert) if the cap is reached — a stale in-flight attempt never terminalizes as `player_ineligible`-for-current-state | T7 / T13 / T15 while under cap; then **`repair_run` only (T14)** — incl. `state_reevaluation_limit` |
 | Bad request / auth failure | `permanent` (`provider_bad_request` / `provider_auth_failed`) — operational | **T5** terminal `permanent_failure` | operator `repair_run` (T14) only, after the cause is fixed |
 | Input validation failure (bad `PLAYER_ID`) | n/a | never reaches a queue; durable validation reply instead ([§5](discord-ingestion-and-registration.md#invalid-message-reply)) | — |
-| Owner-path attempt exhausts retries | `retry_exhausted` | message → `redemption-dlq`; the DLQ consumer sets the global row `retry_exhausted` on an exact-`attempt_id` match when **no invocation is active** — a `retry_wait` row always qualifies (T9 released the invocation; the future `retry_due_at` / pickup-grace is not consulted), an `in_progress` row only with its token cleared or lease expired (**T10**); a stale `attempt_id` ⇒ `dlq_stale_attempt`, a live `in_progress` invocation ⇒ `dlq_invocation_active`, both audit-only (**T11**); mirrored items marked `retry_exhausted` | operator `repair_run` (T14); or bounded sweeper reopen when `REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED` |
+| Owner-path attempt exhausts retries | `retry_exhausted` | message → `redemption-dlq`; the DLQ consumer sets the global row `retry_exhausted` on an exact-`attempt_id` match when **no invocation is active** — a `retry_wait` row always qualifies (T9 released the invocation; the future `retry_due_at` / pickup-grace is not consulted), an `in_progress` row only with its token cleared or lease expired (**T10**); a stale `attempt_id` ⇒ `dlq_stale_attempt`, a live `in_progress` invocation ⇒ `dlq_invocation_active`, both audit-only (**T11**); mirrored items marked `retry_exhausted` | operator `repair_run` (T14) only |
 | State re-evaluation cap reached | `permanent` → **`state_reevaluation_limit`** | **T8** terminal `permanent_failure`; clear invocation; **operator alert**; counts as a terminal failure so the operation finishes; rendered truthfully, never as `player_ineligible`-for-current-state | **`repair_run` only (T14)** |
 
 Backoff, `delaySeconds`, and `PROVIDER_MAX_RETRIES` stay within Queue limits **[fact:C8]**.

@@ -6,6 +6,7 @@ import {
 
 export interface OutboxRow {
   readonly job_id: string;
+  readonly attempt_id?: string;
   readonly type: OutboxJobType;
   readonly payload_json: string;
   readonly attempts: number;

@@ -45,6 +45,16 @@ export interface AppConfig {
   readonly operationDeadlineSeconds: number;
   readonly redemptionMaxReeval: number;
   readonly outboxDispatchMaxAttempts: number;
+  readonly providerMaxInvocations: number;
+  readonly providerMaxRetries: number;
+  readonly itemLeaseSeconds: number;
+  readonly redemptionLeaseSeconds: number;
+  readonly providerTimeoutSeconds: number;
+  readonly outputLeaseSeconds: number;
+  readonly outputTimeoutSeconds: number;
+  readonly outputMaxAttempts: number;
+  readonly summaryMaxChunks: number;
+  readonly discordDeliveryEnabled: false;
 }
 
 /**
@@ -134,8 +144,8 @@ export function loadConfig(raw: unknown): AppConfig {
       issues.push("SPIKE_SENDER_ALLOWLIST must not contain DISCORD_APPLICATION_ID");
     }
   }
-  // Keep every static reply within the configured Discord bound; future summary settings
-  // remain outside Phase 3. The attempt ceiling keeps the query-budget proof closed.
+  // Keep replies and summaries within Discord limits. The attempt ceiling keeps
+  // the complete outbox query-budget proof closed.
   const discordMessageMaxLength = readInteger(
     source,
     "DISCORD_MESSAGE_MAX_LENGTH",
@@ -159,6 +169,25 @@ export function loadConfig(raw: unknown): AppConfig {
     issues,
   );
 
+  const phase4 = {
+    providerMaxInvocations: readInteger(source, "PROVIDER_MAX_INVOCATIONS", 1, 101, issues),
+    providerMaxRetries: readInteger(source, "PROVIDER_MAX_RETRIES", 0, 100, issues),
+    itemLeaseSeconds: readInteger(source, "ITEM_CLAIM_LEASE_SECONDS", 30, 3600, issues),
+    redemptionLeaseSeconds: readInteger(source, "REDEMPTION_CLAIM_LEASE_SECONDS", 30, 3600, issues),
+    providerTimeoutSeconds: readInteger(source, "PROVIDER_TIMEOUT_SECONDS", 1, 60, issues),
+    outputLeaseSeconds: readInteger(source, "OUTPUT_CLAIM_LEASE_SECONDS", 30, 3600, issues),
+    outputTimeoutSeconds: readInteger(source, "OUTPUT_TIMEOUT_SECONDS", 1, 60, issues),
+    outputMaxAttempts: readInteger(source, "OUTPUT_DISPATCH_MAX_ATTEMPTS", 1, 20, issues),
+    summaryMaxChunks: readInteger(source, "SUMMARY_MAX_CHUNKS", 1, 100, issues),
+  };
+  requireDisabled(source, "DISCORD_DELIVERY_ENABLED", issues);
+  requireDisabled(source, "REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED", issues);
+  if (phase4.itemLeaseSeconds <= phase4.providerTimeoutSeconds)
+    issues.push("item lease must exceed provider timeout");
+  if (phase4.redemptionLeaseSeconds <= phase4.providerTimeoutSeconds)
+    issues.push("redemption lease must exceed provider timeout");
+  if (phase4.outputLeaseSeconds <= phase4.outputTimeoutSeconds)
+    issues.push("output lease must exceed transport timeout");
   if (
     issues.length > 0 ||
     environment === undefined ||
@@ -185,6 +214,8 @@ export function loadConfig(raw: unknown): AppConfig {
     operationDeadlineSeconds,
     redemptionMaxReeval,
     outboxDispatchMaxAttempts,
+    ...phase4,
+    discordDeliveryEnabled: false,
   };
 }
 
