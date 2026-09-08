@@ -2,15 +2,18 @@
  * Runtime configuration.
  *
  * Variable names come from `docs/architecture/configuration.md` section 4. This module is the
- * only place that reads the Worker environment. It accepts `unknown` on purpose: the
+ * only place that reads configuration values from the Worker environment. It accepts
+ * `unknown` on purpose: the
  * generated `Env` type describes what the checked-in `wrangler.jsonc` declares, but the gates
  * below must also hold for a Worker deployed with tampered variables, so they are enforced at
  * runtime rather than assumed from a type.
  *
- * The scaffold fails closed. Phase 1 is staging-only, no authorized production provider
+ * The service fails closed. Phase 3 is staging-only, no authorized production provider
  * exists, and no gift-code discovery source is authorized, so anything other than the exact
  * safe combination is rejected.
  */
+
+import { STATE_MAX_DIGITS } from "./limits";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -32,6 +35,16 @@ export interface AppConfig {
   readonly productionRedemptionEnabled: false;
   readonly codeDiscoveryEnabled: false;
   readonly logLevel: LogLevel;
+  readonly discordGuildId: string;
+  readonly discordRegistrationChannelId: string;
+  readonly discordApplicationId: string;
+  readonly defaultState: string;
+  readonly spikeSenderAllowlist: readonly string[];
+  readonly ingestionSharedSecret: string;
+  readonly discordMessageMaxLength: number;
+  readonly operationDeadlineSeconds: number;
+  readonly redemptionMaxReeval: number;
+  readonly outboxDispatchMaxAttempts: number;
 }
 
 /**
@@ -95,12 +108,63 @@ export function loadConfig(raw: unknown): AppConfig {
   const logLevel = readEnum(source, "LOG_LEVEL", LOG_LEVELS, issues);
   requireDisabled(source, "PRODUCTION_REDEMPTION_ENABLED", issues);
   requireDisabled(source, "CODE_DISCOVERY_ENABLED", issues);
+  const discordGuildId = readDigitString(source, "DISCORD_GUILD_ID", 20, issues);
+  const discordRegistrationChannelId = readDigitString(
+    source,
+    "DISCORD_REGISTRATION_CHANNEL_ID",
+    20,
+    issues,
+  );
+  const discordApplicationId = readDigitString(source, "DISCORD_APPLICATION_ID", 20, issues);
+  const defaultState = readDigitString(source, "DEFAULT_STATE", STATE_MAX_DIGITS, issues);
+  const ingestionSharedSecret = source.INGESTION_SHARED_SECRET;
+  if (typeof ingestionSharedSecret !== "string" || !/^[^\s]+$/.test(ingestionSharedSecret)) {
+    issues.push("INGESTION_SHARED_SECRET must be a non-empty string without whitespace");
+  }
+  const spikeSenderAllowlist: string[] = [];
+  const allowlist = source.SPIKE_SENDER_ALLOWLIST;
+  if (
+    typeof allowlist !== "string" ||
+    (allowlist !== "" && !/^\d{1,20}(?:,\d{1,20})*$/.test(allowlist))
+  ) {
+    issues.push("SPIKE_SENDER_ALLOWLIST must be empty or comma-separated snowflakes");
+  } else if (allowlist !== "") {
+    spikeSenderAllowlist.push(...new Set(allowlist.split(",")));
+    if (spikeSenderAllowlist.includes(discordApplicationId)) {
+      issues.push("SPIKE_SENDER_ALLOWLIST must not contain DISCORD_APPLICATION_ID");
+    }
+  }
+  // Keep every static reply within the configured Discord bound; future summary settings
+  // remain outside Phase 3. The attempt ceiling keeps the query-budget proof closed.
+  const discordMessageMaxLength = readInteger(
+    source,
+    "DISCORD_MESSAGE_MAX_LENGTH",
+    500,
+    2_000,
+    issues,
+  );
+  const operationDeadlineSeconds = readInteger(
+    source,
+    "OPERATION_DEADLINE_SECONDS",
+    1,
+    604_800,
+    issues,
+  );
+  const redemptionMaxReeval = readInteger(source, "REDEMPTION_MAX_REEVAL", 0, 100, issues);
+  const outboxDispatchMaxAttempts = readInteger(
+    source,
+    "OUTBOX_DISPATCH_MAX_ATTEMPTS",
+    1,
+    5,
+    issues,
+  );
 
   if (
     issues.length > 0 ||
     environment === undefined ||
     providerMode === undefined ||
-    logLevel === undefined
+    logLevel === undefined ||
+    typeof ingestionSharedSecret !== "string"
   ) {
     throw new ConfigurationError(issues);
   }
@@ -111,5 +175,42 @@ export function loadConfig(raw: unknown): AppConfig {
     productionRedemptionEnabled: false,
     codeDiscoveryEnabled: false,
     logLevel,
+    discordGuildId,
+    discordRegistrationChannelId,
+    discordApplicationId,
+    defaultState,
+    spikeSenderAllowlist,
+    ingestionSharedSecret,
+    discordMessageMaxLength,
+    operationDeadlineSeconds,
+    redemptionMaxReeval,
+    outboxDispatchMaxAttempts,
   };
+}
+
+function readDigitString(
+  source: Record<string, unknown>,
+  name: string,
+  max: number,
+  issues: string[],
+): string {
+  const value = source[name];
+  if (typeof value === "string" && /^\d+$/.test(value) && value.length <= max) return value;
+  issues.push(`${name} must be a digit string of 1 to ${max} digits`);
+  return "";
+}
+
+function readInteger(
+  source: Record<string, unknown>,
+  name: string,
+  min: number,
+  max: number,
+  issues: string[],
+): number {
+  const raw = source[name];
+  const value = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : raw;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= min && value <= max)
+    return value;
+  issues.push(`${name} must be an integer from ${min} to ${max}`);
+  return min;
 }

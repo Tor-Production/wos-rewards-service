@@ -34,11 +34,13 @@ interface RegistrationMessageEvent {
 interface DiscordEventSource {
   // Implementations hold the Discord Gateway connection and filter to the configured
   // guild + registration channel. In PRODUCTION they drop bot / system / webhook /
-  // own-application messages before creating a RegistrationMessageEvent. In STAGING they
-  // drop the same EXCEPT senders listed in SPIKE_SENDER_ALLOWLIST, which are forwarded
+  // own-application messages before creating a RegistrationMessageEvent. In STAGING only
+  // listed bot/webhook senders are exempt; own-app and system messages always drop.
+  // SPIKE_SENDER_ALLOWLIST senders that pass those gates are forwarded
   // with author_is_bot / author_is_system / webhook_id / application_id UNCHANGED so the
   // Ingestion Worker can validate them. They perform NO player-registration business
-  // validation.
+  // validation. Phase 3 defines this interface and implements no source adapter.
+  forward(event: RegistrationMessageEvent): Promise<"accepted" | "duplicate" | "ignored">;
 }
 ```
 
@@ -74,7 +76,9 @@ is consulted by **both** tiers:
   `ENVIRONMENT !== "production"`** before consulting the list at all.
 
 The allow-list can only ever hold dedicated bot-account or incoming-webhook ids, never a
-normal user. It is never defined in the production config of either tier. See
+normal user. System-authored and own-application messages are always ignored, including
+when an author or webhook is allow-listed. Configuration rejects an allow-list containing
+`DISCORD_APPLICATION_ID`. The list is never defined in the production config of either tier. See
 [ADR 0001 §6](../adr/0001-discord-event-ingestion.md#6-decision-proposed-spike-gated).
 
 ### Candidate implementations (decided by [ADR 0001](../adr/0001-discord-event-ingestion.md))
@@ -145,39 +149,63 @@ Behaviour:
 
 The Ingestion Worker never writes a bare "processed" marker before the work. It builds the
 **entire write set** for the event and commits it as **one atomic D1 `db.batch()`**
-**[fact:C9]** whose first statement is a plain `INSERT INTO processed_events (event_id, …)`.
-A primary-key conflict rolls the whole batch back atomically and is interpreted as a
-**duplicate delivery** → ack, no-op.
+**[fact:C9]**. Its plain `INSERT INTO processed_events (event_id, …)` is placed as early
+as the foreign-key graph allows: first for invalid input, immediately after `operations`
+for valid input. Foreign-key enforcement stays enabled. A batch error rolls the entire
+write set back; one lookup of `processed_events.event_id` then distinguishes a durable
+duplicate from an unrelated failure. No SQLite error-message string is used as control
+flow. The deterministic operation id can make a duplicate fail on the `operations`
+primary key before it reaches the marker; the same marker lookup still applies.
 
 - **Invalid input** — the atomic unit persists, together:
   1. `processed_events` row with `status = 'accepted_invalid'` and `validation_reason`;
   2. the `discord_output_deliveries` row for the validation reply (single chunk,
      deterministic ≤ 25-char nonce, `status = 'pending'`, **no footer**).
 - **Valid input** — the atomic unit persists, together:
-  1. `processed_events` row with `status = 'accepted_valid'` and `operation_id`;
-  2. the `players` upsert (and, if `state` changed, `players.state_updated_at = now`);
-  3. the `operations` row (`type = 'registration_run'`) with `expected_count` fixed at the
-     active-code snapshot size;
-  4. one `operation_items` row per snapshotted active code;
-  5. one per-item `outbox_jobs` row;
-  6. **if the accepted registration changed `players.state`**, the guarded **T13** reopen of
+  1. **if the accepted registration changes `players.state`**, the guarded **T13** reopen of
      any state-dependent (`player_ineligible`, under cap) `redemptions` failures for this
      `player_id` ([§15.2](redemption-state-machine.md#152-global-redemption-record--the-sole-provider-call-authority)) —
      never touching `success` / `already_redeemed` / `state_reevaluation_limit` rows. (An
      old-state attempt still `in_progress` is handled at terminalization by **T7** / **T8**,
-     not here.)
+     not here.) An `EXISTS` guard reads the old player state before the upsert.
+  2. the `players` upsert; `state_updated_at = now` on insertion or an actual state change,
+     otherwise the previous timestamp is retained;
+  3. the `operations` row (`type = 'registration_run'`, `expansion_state = 'expanded'`)
+     with `expected_count` derived from the transaction's active-code count;
+  4. `processed_events` with `status = 'work_committed'`, `outcome = 'valid'` and
+     `operation_id`; the expanded snapshot already meets the work-committed condition;
+  5. all active-code `operation_items` through one set-based `INSERT … SELECT`;
+  6. all per-item `outbox_jobs` through one set-based `INSERT … SELECT`, with a fresh
+     per-acceptance attempt-run id combined with each item key.
 
-A registration write set is bounded by the number of currently-active gift codes, which is
-small in practice. **If that count ever exceeds a safe single-batch size**, acceptance
-falls back to the **explicit state machine**: the atomic unit commits only
-`processed_events (status = 'accepted_valid')` + the `operations` shell
-(`expansion_state = 'pending'`), and a paginated expansion
-([§7](#7-new-code-fan-out-flow)) fills `operation_items` + `outbox_jobs`.
-`processed_events.status` advances to `work_committed` only when
-`expansion_state = 'expanded'`. The sweeper re-drives any event stuck in `accepted_valid`.
-**A crash can never leave an event `accepted_*` without either its registration work or its
-validation-reply delivery row durably present**, because the marker is only ever written in
-the same batch as one of them.
+The valid batch is **six statements for every snapshot size**, including zero. Two
+invariants hold together:
+
+- **SM-1 — membership:** an accepted registration's item codes are exactly the active
+  `gift_codes` seen by the acceptance transaction; `expected_count` equals that set's
+  size, and `expansion_state = 'expanded'`. Later status changes or newly inserted codes
+  do not change this membership. The baseline foreign key rejects deletion of a
+  referenced code; no delete cascade is assumed.
+- **SM-2 — cap:** at most `MAX_REGISTRATION_SNAPSHOT_CODES = 2,000` codes are accepted.
+  The operation insert always executes and uses
+  `CASE WHEN active_count <= cap THEN active_count ELSE -1 END` for `expected_count`.
+  Above the cap, the existing `ck_operations_expected_count_nonneg` check rejects the
+  statement and the whole batch rolls back, including T13 and the player upsert.
+  An existing operation with the deterministic id cannot bypass this guard. There is
+  no advisory preflight count. A failure-path count may label the rejection, but both
+  cap and D1 failures return the same generic `503`; that label never authorizes writes.
+
+The former deferred registration-shell fallback is withdrawn: `gift_codes` has no
+status history, and the existing player snapshot/cursor cannot reconstruct historical
+code membership. `expansion_state` / `expansion_cursor` remain the distribution fan-out
+mechanism ([§7](#7-new-code-fan-out-flow)). Raising the registration cap would require a
+separate design and, for resumable expansion, a proposed `operation_codes_snapshot
+(operation_id, code)` migration. No migration is added for Phase 3. The 2,000-row cap
+bounds row count; it is not a proof of maximum write bytes or query duration, which must
+be measured with representative code sizes before an authorized deployment.
+
+**A crash cannot commit an event marker without its complete registration work or its
+validation-reply delivery row**, because each branch writes them in the same transaction.
 
 ### Invalid message reply
 
@@ -188,6 +216,11 @@ summaries (the trivial one-chunk case). It is
 mention-suppressed, describes the accepted forms, and **carries no runtime footer**. A
 retry resumes the unsent delivery rather than re-posting, with bounded Discord-side
 duplicate suppression **[fact:D6]**.
+
+Phase 3 persists this row only; the output dispatcher is Phase 4. The reply has four
+deterministic reason variants, echoes no user input, and describes the four supported
+forms. The transport responds `202 accepted` for both valid and invalid registrations;
+the ingestion tier does not receive the business outcome.
 
 ### Valid message — sequence
 
@@ -206,8 +239,8 @@ sequenceDiagram
 
   U->>S: message "PLAYER_ID [STATE] [NAME]"
   S->>I: POST /ingest RegistrationMessageEvent (auth, author-filtered; staging: allow-listed bot/webhook forwarded)
-  I->>DB: ONE atomic batch — INSERT processed_events(accepted_valid), upsert players, insert operations, operation_items, outbox_jobs; reopen state-dependent redemptions failures if state changed
-  Note over DB: PK conflict on processed_events => whole batch rolls back => duplicate, no-op
+  I->>DB: ONE six-statement batch — guarded T13, player upsert, cap-checked operation, processed_events(work_committed), all items, all outbox rows
+  Note over DB: Any error rolls back; existing processed_events marker => duplicate, otherwise unavailable
   I->>X: best-effort enqueue
   X->>Q: one registration job per code
   loop each code
@@ -242,8 +275,8 @@ finalisable and produces a **single-chunk** zero-result summary
 
 1. **Atomic acceptance** ([§5](#atomic-acceptance)) has already committed the `players`
    upsert, the `registration_run` operation, its `operation_items`, their `outbox_jobs`,
-   and any guarded state-dependent `redemptions` reopen in one unit (or via the resumable
-   state machine).
+   and any guarded state-dependent `redemptions` reopen in one unit. Registration
+   acceptance never leaves a deferred shell.
 2. **Dispatch** (`registration-jobs`) — inline best-effort plus the Cron dispatcher
    ([§14](data-model-and-outbox.md#14-transactional-outbox)).
 3. **Consume:** each job carries `{operation_id, item_key: code, job_id, player_id, code,

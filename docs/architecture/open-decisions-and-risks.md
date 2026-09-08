@@ -21,8 +21,20 @@
 - **Slash commands:** documented only in ADR 0001 (Option 3 / fallback), not as a secondary
   path here.
 - **Event acceptance:** atomic (`processed_events` marker only in the same batch as the
-  work or the validation-reply delivery row), with a resumable state machine as the
-  large-write-set fallback.
+  work or the validation-reply delivery row). Phase 3 uses six set-based statements for
+  valid registrations and writes `work_committed` directly, with all active-code
+  membership durable. The existing schema cannot resume a historical-code registration
+  shell, so that fallback is withdrawn. Parent rows precede the marker where required
+  by foreign keys; the event's delivery group is deterministically `evt:<event_id>`.
+- **Registration identifiers:** digit strings are preserved verbatim, including leading
+  zeros; player ids are capped at 32 digits and states at 16. Names are capped at 64
+  Unicode code points, rendered labels at 80; missing names render as `ID ` plus player id.
+- **Registration snapshot cap:** 2,000 active codes, enforced inside the acceptance
+  transaction with the existing operation `expected_count >= 0` constraint. Above the
+  cap, the insert attempts `expected_count = -1`, rolling back every event write and
+  returning `503`. This needs no migration. Raising the cap requires a separate design;
+  resumable registration expansion would need durable code membership such as a future
+  `operation_codes_snapshot` table. Distribution fan-out remains cursor-based Phase 4 work.
 - **Redemption serialization:** the global `redemptions (player_id, code)` record is the
   sole provider-call authority; operation items reuse its terminal outcome.
 - **Retry-budget identity vs invocation claim:** the durable **`attempt_id`** (queue body,
@@ -70,7 +82,8 @@
 - **D1 → Queue reliability:** per-item transactional outbox carrying `attempt_id`; `dead`
   rows are atomic-reopened (fresh `attempt_id`) while `summary_state='none'`, or the outcome
   is recorded in `operation_late_results` + handed to a `repair_run` once the snapshot is
-  sealed / finalized (no ineffective requeue).
+  sealed / finalized (no ineffective requeue). Phase 3 implements sending, backoff and
+  `dead` marking only; those recovery paths and alerts remain deferred.
 - **`nonce` / `enforce_nonce`:** confirmed — `nonce` ≤ 25 chars; `enforce_nonce` checks
   uniqueness within the past few minutes and returns the existing message for a same-author
   repeat **[fact:D6]**.
@@ -82,15 +95,12 @@
 - Whether a permanently hosted Cloudflare Gateway client (Option 1) is reliable enough —
   the ADR 0001 spike decides.
 - Where the companion runs if Option 2 stands (infra decision).
-- `player_id` canonicalisation edge cases (max length; leading zeros — current lean:
-  preserve verbatim).
 - Tuning during implementation: lease durations (`ITEM_CLAIM_LEASE_SECONDS`;
   `REDEMPTION_CLAIM_LEASE_SECONDS` — the **invocation** lease, which **must exceed the
   provider call timeout** so a lease never expires mid-call (T3 then guarantees no second
   call); `OUTPUT_CLAIM_LEASE_SECONDS`), `FANOUT_EXPANSION_PAGE_SIZE`,
   `SUMMARY_BUILD_PAGE_SIZE`, `SUMMARY_MAX_CHUNKS`, `SWEEPER_REDRIVE_BATCH`,
-  `REDEMPTION_MAX_REEVAL`, the `retry_wait` backoff schedule, and the single-batch size
-  threshold that triggers state-machine acceptance.
+  `REDEMPTION_MAX_REEVAL`, and the `retry_wait` backoff schedule.
 - Whether `repair_run` is fully automated later or stays human-triggered; whether
   `REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED` is ever enabled in production.
 - Missed-event backfill: bounded REST catch-up vs manual re-send only.
@@ -98,6 +108,19 @@
 
 ### Risks
 
+- The Free-plan Cron CPU allowance is 10 ms. The outbox scan and sends are bounded, but
+  local functional checks do not establish deployed CPU, D1 query duration, or latency;
+  measure representative payloads when provisioning is authorized. Sequential sends
+  can require up to eight serial round trips per dispatch.
+- The registration cap bounds code count, not total write bytes. More than 2,000 active
+  codes are refused with no acceptance writes until an operator resolves the cause or
+  a separately reviewed design raises the cap.
+- Compact JSON UTF-8 size plus a 100-byte per-message charge is a conservative Queue
+  body estimate with reserved headroom, not an exact envelope measurement. Any platform
+  rejection still follows bounded send-failure backoff and eventual `dead` marking.
+- Local producer bindings accept and drop messages while no consumer is configured.
+  These tests prove producer compatibility and durable outbox behavior, not real
+  end-to-end delivery; Queue consumers and the required DLQ remain future work.
 - Privileged `MESSAGE_CONTENT` intent could gate future scaling (approval needed above
   ~100 guilds / 10,000 users) **[fact:D3]**; mitigation: stay small or plan verification
   early.

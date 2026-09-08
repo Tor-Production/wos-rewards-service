@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
 
 import { ConfigurationError, loadConfig } from "../src/config";
 
@@ -8,7 +9,99 @@ const SAFE_ENV = {
   PRODUCTION_REDEMPTION_ENABLED: false,
   CODE_DISCOVERY_ENABLED: false,
   LOG_LEVEL: "info",
+  DISCORD_GUILD_ID: env.DISCORD_GUILD_ID,
+  DISCORD_REGISTRATION_CHANNEL_ID: env.DISCORD_REGISTRATION_CHANNEL_ID,
+  DISCORD_APPLICATION_ID: env.DISCORD_APPLICATION_ID,
+  DEFAULT_STATE: "0",
+  SPIKE_SENDER_ALLOWLIST: "",
+  INGESTION_SHARED_SECRET: env.INGESTION_SHARED_SECRET,
+  DISCORD_MESSAGE_MAX_LENGTH: 2000,
+  OPERATION_DEADLINE_SECONDS: 3600,
+  REDEMPTION_MAX_REEVAL: 3,
+  OUTBOX_DISPATCH_MAX_ATTEMPTS: 5,
 };
+
+describe("Phase 3 configuration guardrails", () => {
+  it.each([
+    "DISCORD_GUILD_ID",
+    "DISCORD_REGISTRATION_CHANNEL_ID",
+    "DISCORD_APPLICATION_ID",
+    "DEFAULT_STATE",
+  ])("requires bounded digit strings for %s", (name) => {
+    const max = name === "DEFAULT_STATE" ? 16 : 20;
+    for (const value of [
+      null,
+      undefined,
+      123,
+      "",
+      "12a",
+      "-1",
+      " 12",
+      "12\n",
+      "1".repeat(max + 1),
+    ]) {
+      expect(() => loadConfig({ ...SAFE_ENV, [name]: value })).toThrow(ConfigurationError);
+    }
+    expect(() => loadConfig({ ...SAFE_ENV, [name]: "0".repeat(max) })).not.toThrow();
+  });
+  it("preserves default-state zeros, accepts integer strings and deduplicates the allow-list", () => {
+    const config = loadConfig({
+      ...SAFE_ENV,
+      DEFAULT_STATE: "0007",
+      SPIKE_SENDER_ALLOWLIST: "123,456,123",
+      DISCORD_MESSAGE_MAX_LENGTH: "500",
+      OPERATION_DEADLINE_SECONDS: "604800",
+      REDEMPTION_MAX_REEVAL: "0",
+      OUTBOX_DISPATCH_MAX_ATTEMPTS: "1",
+    });
+    expect(config.defaultState).toBe("0007");
+    expect(config.spikeSenderAllowlist).toEqual(["123", "456"]);
+    expect(config.discordMessageMaxLength).toBe(500);
+    expect(config.operationDeadlineSeconds).toBe(604800);
+    expect(config.redemptionMaxReeval).toBe(0);
+    expect(config.outboxDispatchMaxAttempts).toBe(1);
+  });
+  it.each([
+    "123,",
+    ",123",
+    "123, 456",
+    "123,,456",
+    "abc",
+    "123\n",
+    env.DISCORD_APPLICATION_ID,
+    `123,${env.DISCORD_APPLICATION_ID}`,
+    null,
+  ])("rejects malformed or own-application allow-lists (%#)", (value) => {
+    expect(() => loadConfig({ ...SAFE_ENV, SPIKE_SENDER_ALLOWLIST: value })).toThrow(
+      ConfigurationError,
+    );
+  });
+  it.each([
+    ["DISCORD_MESSAGE_MAX_LENGTH", 500, 2000],
+    ["OPERATION_DEADLINE_SECONDS", 1, 604800],
+    ["REDEMPTION_MAX_REEVAL", 0, 100],
+    ["OUTBOX_DISPATCH_MAX_ATTEMPTS", 1, 5],
+  ] as const)("bounds %s", (name, min, max) => {
+    for (const value of [min, max])
+      expect(() => loadConfig({ ...SAFE_ENV, [name]: value })).not.toThrow();
+    for (const value of [min - 1, max + 1, 1.5, Infinity, NaN, "1.0", " 1", "1\n", true, null])
+      expect(() => loadConfig({ ...SAFE_ENV, [name]: value })).toThrow(ConfigurationError);
+  });
+  it("rejects unusable secrets and never echoes secret or allow-list values", () => {
+    for (const value of [undefined, null, "", " ", "synthetic\n", "synthetic value", 123])
+      expect(() => loadConfig({ ...SAFE_ENV, INGESTION_SHARED_SECRET: value })).toThrow(
+        ConfigurationError,
+      );
+    const supplied = "synthetic value never echoed";
+    const issues = issuesFor({
+      ...SAFE_ENV,
+      INGESTION_SHARED_SECRET: supplied,
+      SPIKE_SENDER_ALLOWLIST: supplied,
+    });
+    expect(issues).toHaveLength(2);
+    expect(issues.join(" ")).not.toContain(supplied);
+  });
+});
 
 function issuesFor(raw: unknown): readonly string[] {
   try {
@@ -30,6 +123,16 @@ describe("loadConfig accepts the intended staging configuration", () => {
       productionRedemptionEnabled: false,
       codeDiscoveryEnabled: false,
       logLevel: "info",
+      discordGuildId: env.DISCORD_GUILD_ID,
+      discordRegistrationChannelId: env.DISCORD_REGISTRATION_CHANNEL_ID,
+      discordApplicationId: env.DISCORD_APPLICATION_ID,
+      defaultState: "0",
+      spikeSenderAllowlist: [],
+      ingestionSharedSecret: env.INGESTION_SHARED_SECRET,
+      discordMessageMaxLength: 2000,
+      operationDeadlineSeconds: 3600,
+      redemptionMaxReeval: 3,
+      outboxDispatchMaxAttempts: 5,
     });
   });
 
@@ -111,6 +214,16 @@ describe("loadConfig rejects malformed input", () => {
       "LOG_LEVEL must be one of: debug, info, warn, error",
       "PRODUCTION_REDEMPTION_ENABLED must be false",
       "CODE_DISCOVERY_ENABLED must be false",
+      "DISCORD_GUILD_ID must be a digit string of 1 to 20 digits",
+      "DISCORD_REGISTRATION_CHANNEL_ID must be a digit string of 1 to 20 digits",
+      "DISCORD_APPLICATION_ID must be a digit string of 1 to 20 digits",
+      "DEFAULT_STATE must be a digit string of 1 to 16 digits",
+      "INGESTION_SHARED_SECRET must be a non-empty string without whitespace",
+      "SPIKE_SENDER_ALLOWLIST must be empty or comma-separated snowflakes",
+      "DISCORD_MESSAGE_MAX_LENGTH must be an integer from 500 to 2000",
+      "OPERATION_DEADLINE_SECONDS must be an integer from 1 to 604800",
+      "REDEMPTION_MAX_REEVAL must be an integer from 0 to 100",
+      "OUTBOX_DISPATCH_MAX_ATTEMPTS must be an integer from 1 to 5",
     ]);
   });
 
