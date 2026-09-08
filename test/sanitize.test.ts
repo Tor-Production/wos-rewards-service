@@ -7,7 +7,9 @@ import {
 
 describe("stored display names", () => {
   it("preserves visible syntax, emoji, and CJK and normalizes NFC", () => {
-    expect(normalizeDisplayName("  @#<>`*_~|\\ 😀 雪 e\u0301  ")).toBe("@#<>`*_~|\\ 😀 雪 é");
+    expect(normalizeDisplayName("  @#<>[]()`*_~|\\ 😀 雪 e\u0301  ")).toBe(
+      "@#<>[]()`*_~|\\ 😀 雪 é",
+    );
   });
   it("removes controls and formats, then collapses Unicode whitespace", () => {
     expect(
@@ -26,12 +28,17 @@ describe("stored display names", () => {
 
 describe("immutable display labels", () => {
   it("escapes every markdown control and mention token without deleting visible characters", () => {
-    expect(escapeDiscordMarkup("\\`*_~| @everyone @here <@12> <#34> 雪😀")).toBe(
-      "\\\\\\`\\*\\_\\~\\| \\@everyone \\@here \\<\\@12> \\<#34> 雪😀",
+    expect(escapeDiscordMarkup("\\`*_~|[] @everyone @here <@12> <#34> 雪😀")).toBe(
+      "\\\\\\`\\*\\_\\~\\|\\[\\] \\@everyone \\@here \\<\\@12> \\<#34> 雪😀",
     );
     expect(escapeDiscordMarkup(">quote")).toBe("\\>quote");
     expect(escapeDiscordMarkup("#heading")).toBe("\\#heading");
     expect(escapeDiscordMarkup("A > B #tag")).toBe("A > B #tag");
+  });
+  it("renders a complete masked link as literal visible text", () => {
+    const name = "[Frost](https://example.com)";
+    expect(normalizeDisplayName(name)).toBe(name);
+    expect(renderDisplayLabel(name, "12345")).toBe("\\[Frost\\](https://example.com)");
   });
   it("caps escaped text at 80 code points with complete escape pairs", () => {
     const label = renderDisplayLabel("😀".repeat(79) + "@", "12345");
@@ -39,6 +46,10 @@ describe("immutable display labels", () => {
     expect(label.isWellFormed()).toBe(true);
     expect(renderDisplayLabel("\\".repeat(64), "12345")).toBe("\\".repeat(80));
     expect(renderDisplayLabel("@".repeat(64), "12345")).toBe("\\@".repeat(40));
+    expect(renderDisplayLabel("a".repeat(78) + "[", "12345")).toBe("a".repeat(78) + "\\[");
+    expect(renderDisplayLabel("a".repeat(79) + "[", "12345")).toBe("a".repeat(79));
+    expect(renderDisplayLabel("a".repeat(78) + "]", "12345")).toBe("a".repeat(78) + "\\]");
+    expect(renderDisplayLabel("a".repeat(79) + "]", "12345")).toBe("a".repeat(79));
   });
   it("uses the ID fallback for absent or empty names", () => {
     expect(renderDisplayLabel(null, "0000123")).toBe("ID 0000123");

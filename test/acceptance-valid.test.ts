@@ -224,6 +224,56 @@ describe("valid atomic acceptance", () => {
     expect(JSON.parse(body!) as { player_id: string }).toMatchObject({ player_id: playerId });
   });
 
+  it("persists a masked link as an immutable literal label while preserving the stored name", async () => {
+    const playerId = uniqueId();
+    const code = `masked-link-${uniqueId()}`;
+    const name = "[Frost](https://example.com)";
+    seeded.push(code);
+    await seedCodes(db, [code]);
+    const config = testConfig();
+    const event = makeEvent({ content: `${playerId} ${name}` });
+    const accepted = await acceptRegistrationEvent({
+      db,
+      config,
+      event,
+      parsed: parseRegistration(event.content, config.defaultState),
+      now: FIXTURE_NOW,
+      attemptRunId: newAttemptRunId(),
+    });
+    if (accepted.kind !== "accepted_valid") throw new Error("acceptance failed");
+
+    expect(
+      await db
+        .prepare("SELECT display_name FROM players WHERE player_id=?")
+        .bind(playerId)
+        .first("display_name"),
+    ).toBe(name);
+    expect(
+      await db
+        .prepare("SELECT display_label FROM operation_items WHERE operation_id=? AND code=?")
+        .bind(accepted.operationId, code)
+        .first("display_label"),
+    ).toBe("\\[Frost\\](https://example.com)");
+
+    const next = makeEvent({ content: `${playerId} Renamed` });
+    expect(
+      await acceptRegistrationEvent({
+        db,
+        config,
+        event: next,
+        parsed: parseRegistration(next.content, config.defaultState),
+        now: new Date(FIXTURE_NOW.getTime() + 1_000),
+        attemptRunId: newAttemptRunId(),
+      }),
+    ).toMatchObject({ kind: "accepted_valid" });
+    expect(
+      await db
+        .prepare("SELECT display_label FROM operation_items WHERE operation_id=? AND code=?")
+        .bind(accepted.operationId, code)
+        .first("display_label"),
+    ).toBe("\\[Frost\\](https://example.com)");
+  });
+
   it("T13 reopens only eligible state failures, before the player upsert", async () => {
     const playerId = uniqueId();
     const otherPlayer = uniqueId();

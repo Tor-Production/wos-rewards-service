@@ -12,7 +12,7 @@ export function normalizeDisplayName(value: string): string | null {
 
 /** Rendering defense in depth. Future Discord delivery must also disable allowed_mentions. */
 export function escapeDiscordMarkup(value: string): string {
-  return value.replace(/[\\`*_~|@<]|^[>#]/gu, "\\$&");
+  return value.replace(/[\\`*_~|@<\[\]]|^[>#]/gu, "\\$&");
 }
 
 /** The resulting label is captured once in operation_items, never rebuilt from mutable players. */
