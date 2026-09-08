@@ -20,7 +20,11 @@ export default defineConfig(async () => {
         miniflare: {
           // Test-only binding, declared here and never in `wrangler.jsonc`, so no deployed
           // Worker can see it. `test/env.d.ts` declares its type.
-          bindings: { TEST_MIGRATIONS: migrations },
+          bindings: {
+            TEST_MIGRATIONS: migrations,
+            // Synthetic local test input; unusable as a real credential.
+            INGESTION_SHARED_SECRET: "test-only-not-a-secret",
+          },
         },
       }),
     ],

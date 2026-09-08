@@ -167,16 +167,18 @@ Re-registration = upsert on `player_id`.
 | `kind` | TEXT | `registration` |
 | `status` | TEXT | `accepted_invalid` / `accepted_valid` / `work_committed` / `finalized` |
 | `outcome` | TEXT NULL | `invalid` / `valid` |
-| `operation_id` | TEXT NULL | set in the same atomic unit when `accepted_valid` |
+| `operation_id` | TEXT NULL | set in the same atomic unit for valid acceptance (`work_committed` for the fully expanded Phase 3 registration snapshot) |
 | `validation_reason` | TEXT NULL | set in the same atomic unit when `accepted_invalid` |
-| `output_delivery_group` | TEXT | groups `discord_output_deliveries` rows for this event's validation reply (invalid) |
+| `output_delivery_group` | TEXT | deterministic `evt:<event_id>` for every event; groups `discord_output_deliveries` rows for the validation reply when invalid |
 | `received_at`, `accepted_at`, `committed_at`, `finalized_at` | TEXT NULL | lifecycle timestamps |
 
 The row is **only ever inserted in the same `db.batch()`** as the validation-reply delivery
 row (invalid) or the registration work + outbox rows (valid). No earlier bare insert
-exists. A PK conflict on insert ⇒ duplicate delivery ⇒ the whole batch rolls back ⇒ ack,
-no-op. In state-machine mode, `status` stays non-terminal (`accepted_valid`) until
-`work_committed`; the sweeper re-drives anything stuck.
+exists. After a failed batch, an existing `processed_events.event_id` identifies a duplicate
+delivery; the whole failed batch has rolled back and the event is acknowledged. With no
+marker, the failure is rejected, never silently treated as a duplicate. Phase 3 writes
+`work_committed` directly for valid registrations because their membership is completely
+expanded in that transaction. It never creates an `accepted_valid` registration shell.
 
 ### `redemptions` (global provider-call authority)
 
@@ -215,7 +217,7 @@ operation ([§15.2](redemption-state-machine.md#152-global-redemption-record--th
 | `snapshot_at` | TEXT | boundary timestamp |
 | `expected_count` | INTEGER | fixed at snapshot; `0` allowed |
 | `expansion_state` | TEXT | `pending` / `expanding` / `expanded` |
-| `expansion_cursor` | TEXT NULL | last `player_id` expanded, fixed sort order |
+| `expansion_cursor` | TEXT NULL | distribution runs: last `player_id` expanded, fixed sort order; registration snapshots are inserted completely and leave this NULL |
 | `state` | TEXT | `pending` / `in_progress` / `awaiting_summary` / `summarized` / `stale_closed` |
 | `deadline_at` | TEXT | `snapshot_at + OPERATION_DEADLINE_SECONDS` |
 | `summary_state` | TEXT | `none` / `sealing` / `building` / `built` / `delivering` / `delivered` (real per-chunk state lives in `discord_output_deliveries`) |
@@ -362,6 +364,11 @@ and a Queue enqueue. This design is **intended to prevent loss between the commi
 intent and eventual Queue enqueue, subject to the documented platform guarantees and the
 recovery process below** — it is not an absolute "no loss" claim.
 
+**Implemented Phase 3 boundary:** local producers implement `pending → enqueued`,
+backed-off `pending`, and terminal `dead` marking. Both recovery paths below, their
+alerts, Queue consumers/DLQ, and sweepers are later-phase work. No Phase 3 path leaves
+`dead`, calls a provider, or delivers a Discord message.
+
 - **Atomic write:** each page of domain rows is written together with its per-item
   `outbox_jobs` rows in a single `db.batch()` (atomic, all-or-nothing) **[fact:C9]** — the
   same unit as the `processed_events` marker for registration acceptance
@@ -372,14 +379,16 @@ recovery process below** — it is not an absolute "no loss" claim.
   carried in the queue message body alongside `operation_id`, `item_key`, `player_id`,
   `code`. The **consumer** uses it as the application-level dedup key (no producer key
   exists, [fact:C7]).
-- **Dispatch:** (a) inline best-effort `queue.send()` immediately after a page commits,
+- **Dispatch:** (a) inline best-effort `queue.sendBatch()` immediately after a page commits,
   marking sent rows `enqueued`; (b) authoritative Cron dispatcher (every minute,
   [fact:C4]) scanning `status='pending' AND available_at <= now`, enqueuing, marking
   `enqueued`, and on failure setting `available_at` with exponential backoff and
-  incrementing `attempts`. After `OUTBOX_DISPATCH_MAX_ATTEMPTS` the row is marked `dead` and
-  an alert is raised.
-- **`dead` handling — no ineffective requeue.** A `dead` outbox row means one unit of work
-  never reached its queue. The dispatcher resolves it by one of two explicit paths,
+  incrementing `attempts`. After `OUTBOX_DISPATCH_MAX_ATTEMPTS` the row is marked `dead`;
+  alerting is deferred. Phase 3 routes registration and distribution rows to their
+  respective producer bindings but only acceptance creates registration rows.
+- **`dead` handling — no ineffective requeue.** A `dead` outbox row means enqueue has not
+  been durably confirmed; send/mark ambiguity means the queue may already hold a message.
+  The dispatcher resolves it by one of two explicit paths,
   guarded on the operation's finalisation state:
   - **Atomic reopen (only while the summary has not started).** If
     `operations.summary_state = 'none'` **and**
@@ -403,3 +412,51 @@ recovery process below** — it is not an absolute "no loss" claim.
 - **Recovery:** on restart the dispatcher simply re-scans `pending`. The operation sweeper
   resets rows stuck in `enqueued` with no downstream progress past a threshold back to
   `pending`. A retention job deletes fully-accounted `enqueued` rows after a fixed period.
+
+### Phase 3 dispatch bounds and concurrency
+
+Both dispatch paths use the same deterministic pack/send/mark implementation. A scheduled
+scan reads at most 90 due `pending` rows in `(available_at, job_id)` order. Inline dispatch
+reads at most 90 due rows for the new operation with `attempts = 0`; it does not select
+rows already backed off by a competing scheduled run. Both paths send at most eight chunks, one
+awaited `sendBatch()` at a time. Surplus chunks stay pending without consuming an attempt.
+
+Cloudflare Queues uses decimal bytes: messages are limited to 128,000 bytes and batches
+to 100 messages or 256,000 bytes, with up to approximately 100 bytes of internal metadata
+per message ([official Queue limits](https://developers.cloudflare.com/queues/platform/limits/)).
+The packer charges compact JSON UTF-8 body bytes plus 100 bytes per message and caps each
+charged body at 96,000 bytes, each batch at 192,000 bytes and 90 messages. This estimates
+the body and reserves envelope headroom; it does not measure the complete platform
+envelope. A malformed or wrong-shape payload becomes `dead` / `payload_invalid`; an
+oversized payload becomes `dead` / `payload_too_large`. Neither consumes an attempt.
+Queue send failures use only `queue_send_failed`, never exception text, with deterministic
+backoff `min(60 × 2^(attempts - 1), 3600)` seconds and `dead` at the configured cap.
+
+All sends settle before bulk marking. All marks require `status = 'pending'`;
+retry marks compare the observed attempt count before writing the fixed next count.
+Exhausted marks require the cap threshold and preserve any higher counter. A stale
+failure cannot regress a newer retry count or backoff, and
+no marking resurrects a `dead` or `enqueued` row. With no outbox claim column, overlapping
+dispatchers may send duplicates. A crash after send but before mark has the same effect;
+future consumers must absorb these through their item/global-redemption guards.
+
+Marking groups use a closed set of `(status, attempts, last_error)` outcomes, with at most
+90 ids per SQL update and at most 100 bound parameters per statement. For `r` rows,
+`g = min(group_limit, r)` and `k = 90`, the exact worst-case update count is
+`g + floor((r - g) / k)` (zero for zero rows). With a five-attempt cap, scheduled dispatch
+has at most eight groups; initial inline dispatch has at most four.
+
+The four platform limits are separate
+([D1 limits](https://developers.cloudflare.com/d1/platform/limits/),
+[Workers limits](https://developers.cloudflare.com/workers/platform/limits/)):
+
+| Limit | Phase 3 bound |
+|---|---|
+| D1 queries: Free-plan floor 50; self-imposed budget 40 | Valid ingestion ≤ 11 statements; invalid acceptance 2; failed valid acceptance ≤ 8; scheduled dispatch ≤ 9 |
+| Internal-service subrequests: Free-plan floor 1,000 | Ingestion ≤ 19 and scheduled dispatch ≤ 17, conservatively counting every D1 statement plus Queue call |
+| Regular subrequests: Free-plan floor 50 | Exactly 0; implemented ingestion/outbox paths make no `fetch()` calls |
+| Simultaneous open connections: 6 | At most 1 Queue send in flight per invocation |
+
+The Free-plan Cron CPU allowance is 10 ms. Sequential I/O wait does not itself consume
+CPU time; local tests do not establish production CPU or latency. Measure dispatch with
+representative payloads when a stack is first authorized and provisioned.

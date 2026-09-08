@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
 
 import type { AppConfig } from "../src/config";
 import { loadConfig } from "../src/config";
 import { createWhiteoutProvider, MockWhiteoutProvider } from "../src/providers";
 
 const STAGING_CONFIG = loadConfig({
+  ...env,
   ENVIRONMENT: "staging",
   PROVIDER_MODE: "mock",
   PRODUCTION_REDEMPTION_ENABLED: false,

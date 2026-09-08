@@ -134,14 +134,21 @@ delivered by the same dispatcher. The runtime footer is present in that one chun
 
 ## 18. Discord output safety
 
-- **Sanitisation:** display names and any echoed user input are sanitized
-  (strip/escape backticks, `@`, `#`, `:` role/emoji triggers, zero-width and control
-  characters; cap length). The label is sanitised and stored in
+- **Sanitisation:** display names are NFC-normalized, stripped of control and format
+  characters, whitespace-collapsed, and capped at 64 Unicode code points. Visible
+  characters such as `@`, `#`, angle brackets, backticks, emoji and CJK are retained in
+  `players.display_name`. Rendered labels escape Markdown syntax and mention-token
+  delimiters without deleting those visible characters, then cap at 80 code points
+  without splitting a surrogate pair or leaving a lone escape. Missing names render as
+  `ID ` followed by the player id. The label is sanitised and stored in
   `operation_items.display_label` **when the item row is created** and is **immutable**
   thereafter; the seal copies it verbatim and the render pass never reads `players`, so a
   later `players.display_name` change cannot alter an in-progress or delivered summary.
-- **Mention suppression:** every Create Message call sets `allowed_mentions` to an empty
-  allow-list so `@everyone`, role, and user mentions never fire.
+- **Mention suppression:** every Create Message call sets `allowed_mentions: { parse: [] }`
+  so `@everyone`, role, and user mentions never fire. This is the authoritative mention
+  control; label escaping is an additional rendering safeguard. Phase 3 persists safe
+  labels and validation replies only. Discord REST delivery and its mandatory
+  `allowed_mentions` control arrive in Phase 4.
 - **No silent mutation:** the service never edits or deletes a message it did not just
   create; summaries and replies are new messages only.
 - **Deterministic chunking:** the layout pass splits on `summary_item_snapshot` row

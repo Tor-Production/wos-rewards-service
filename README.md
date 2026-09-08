@@ -3,10 +3,12 @@
 A Cloudflare-hosted Discord service for registering Whiteout Survival players and processing
 gift codes.
 
-This repository currently contains the **Phase 1 scaffold** — a strict TypeScript Worker, a
-staging-only Wrangler configuration, the `WhiteoutProvider` domain contracts, the
-deterministic `MockWhiteoutProvider`, and a Workers-runtime test harness — and the **Phase 2
-D1 schema**: a twelve-table baseline migration validated locally in the Workers runtime. See
+This repository implements **Phases 1–3**: a strict TypeScript Worker, the twelve-table D1
+baseline schema, a synthetic `POST /ingest` boundary, atomic registration acceptance,
+and a transactional outbox with local Queue producers. Valid events capture the complete
+active-code membership in one transaction; invalid registrations persist a validation reply
+for future delivery. No Gateway adapter, Queue consumer, Discord delivery, or provider call
+is implemented. See
 [`docs/README.md`](docs/README.md) for current state and documentation routing, and
 [`AGENTS.md`](AGENTS.md) for the binding safety and engineering contract.
 
@@ -40,6 +42,12 @@ Run the test suite once, in the Workers runtime:
 
 ```
 npm test
+```
+
+Run the same suite with shuffled files and tests:
+
+```
+npm run test:shuffle
 ```
 
 Validate the Worker build and the staging configuration without deploying or provisioning
@@ -103,12 +111,13 @@ committed together with a freshly generated types file.
 
 ## Safety
 
-- **No Cloudflare resources are provisioned by this repository, and deployment is not part of
-  it.** `wrangler.jsonc` declares exactly one binding — the `STAGING_DB` D1 database, whose
-  `database_id` is the all-zero local-only sentinel described above — and no queue, Durable
-  Object, KV namespace, Cron trigger, route, or custom domain. The sentinel is what stops
-  Wrangler from automatically provisioning a D1 database, and no command in this repository
-  authenticates to Cloudflare or applies a remote migration. `npm run validate` uses
+- **No Cloudflare resources have been provisioned, and deployment is outside this task.**
+  `wrangler.jsonc` declares the local-only `STAGING_DB` sentinel, producer bindings for
+  `wos-rewards-registration-jobs-staging` and `wos-rewards-code-fanout-jobs-staging`, and one
+  one-minute Cron trigger, all under `env.staging`. These names are local configuration;
+  neither Queue nor the Cron trigger has been deployed. There is no consumer or DLQ yet:
+  DLQ configuration belongs with the future Queue consumers. There is no Durable Object,
+  KV namespace, route, or custom domain. `npm run validate` uses
   `wrangler deploy --dry-run`, which compiles locally and publishes nothing.
 - Staging is the only environment. There is no production environment, and the configuration
   loader rejects any value other than `ENVIRONMENT=staging`.
@@ -119,5 +128,12 @@ committed together with a freshly generated types file.
   rejects `true` for either.
 - The Worker makes no Discord or Whiteout Survival network calls, and `MockWhiteoutProvider`
   performs no I/O and holds no secrets.
+- Ingestion is tested with synthetic events, local D1 and local Queues. It requires
+  `INGESTION_SHARED_SECRET`; tests inject an unusable test-only value. Real secrets are
+  neither required nor used by the checks. Registrations with more than 2,000 active codes
+  are refused atomically. The dispatcher marks exhausted or unsendable jobs `dead`;
+  reopening, repair, summaries, and Discord delivery remain Phase 4 work. Local Miniflare
+  accepts producer sends without a consumer and drops those messages, so these tests do
+  not exercise downstream delivery.
 - No secrets are committed. `.dev.vars` and `.env*` are ignored; never commit, print, or log a
   token, credential, cookie, or session secret.

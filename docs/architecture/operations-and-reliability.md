@@ -89,10 +89,12 @@ Migrations are applied to staging first, then production, after review.
     names, `DEFAULT_STATE` fallback, `ID <PLAYER_ID>` fallback);
   - string-identifier round-trips (no precision loss, leading zeros preserved);
   - **atomic acceptance:** valid-input batch commits marker + work + outbox together;
-    invalid-input batch commits marker + validation-reply delivery row together; a simulated
-    crash between accept and work-commit (state-machine mode) leaves `processed_events`
-    non-terminal and is re-driven; PK conflict on a duplicate delivery rolls the whole batch
-    back;
+    invalid-input batch commits marker + validation-reply delivery row together; valid
+    registration captures complete active-code membership in six statements and writes
+    `work_committed` directly. Test immutable membership through code status changes and
+    new codes, rollback above the 2,000-code cap (including a colliding operation id),
+    and rollback of prior T13/player writes on an unrelated failure. A duplicate rolls
+    the whole batch back and is identified structurally by its durable marker;
   - **global redemption serialization:** two operations referencing the same
     `(player_id, code)` result in exactly one provider call; the loser reuses the terminal
     outcome; a terminal `redemptions` row is mirrored onto every waiting `operation_items`
@@ -144,9 +146,15 @@ Migrations are applied to staging first, then production, after review.
     deterministic `"+N more not listed"` line;
   - **durable output delivery:** dispatcher resumes at the first unsent chunk after a crash;
     validation reply carries no footer; re-send within the nonce window does not duplicate;
-  - **outbox `dead`:** atomic reopen (fresh `attempt_id`) while `summary_state='none'`;
-    `repair_run` stub once the snapshot is sealed / finalized; finalized operation and its
-    snapshot never mutated in place;
+  - **outbox dispatch (Phase 3):** decimal-byte and message-count packing with metadata
+    charged, sequential sends, bounded SQL marking, deterministic retry backoff and
+    `dead` marking; malformed/oversized payloads are terminal without consuming attempts;
+    stale failure writes cannot regress attempts/backoff. Verify independent D1-query,
+    internal-subrequest and in-flight limits, and zero external `fetch()` calls;
+  - **outbox `dead` recovery (Phase 4 and later):** atomic reopen (fresh `attempt_id`)
+    while `summary_state='none'`; `repair_run` stub once the snapshot is sealed / finalized;
+    finalized operation and its snapshot never mutated in place. Phase 3 tests that
+    `dead` rows remain untouched, since it implements neither recovery path;
   - **author filtering:** bot-, system-, webhook-, and own-application-authored messages are
     dropped in production by **both** the `DiscordEventSource` and the Worker; in staging the
     source forwards `SPIKE_SENDER_ALLOWLIST` senders and the Worker re-checks the same list;
@@ -157,8 +165,9 @@ Migrations are applied to staging first, then production, after review.
 - **Runtime:** tests run under a Workers-compatible test runner; integration tests where
   available (local D1, local Queues).
 - **Pre-finish gate:** run formatting, type checking, unit tests, and available integration
-  tests. (At the time this document is authored the repository has no build yet; only
-  Markdown checks apply — see [§24](open-decisions-and-risks.md#24-unresolved-decisions-and-risks).)
+  tests, including shuffled test order, plus the local Wrangler dry-run build. The
+  implemented checks are listed in [the current-state table](../README.md#current-state).
+  Local tests and dry runs do not provision resources or validate deployed performance.
 
 ---
 
