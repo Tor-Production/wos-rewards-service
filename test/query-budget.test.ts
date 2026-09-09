@@ -1,8 +1,10 @@
-import { createExecutionContext, createScheduledController } from "cloudflare:test";
+import { loadConfig } from "../src/config";
+import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { QueueProducer, RedemptionJobBody } from "../src/domain/queue-jobs";
 import worker from "../src/index";
+import { dispatchOutbox } from "../src/outbox/dispatcher";
 import { deterministicUuid } from "../src/ingest/identity";
 import {
   D1_MAX_BOUND_PARAMETERS_PER_QUERY,
@@ -192,11 +194,13 @@ describe("four independent invocation budgets", () => {
     }
     const distribution = new TrackedFailure(tracker);
     const fetchSpy = prohibitFetch();
-    await worker.scheduled(
-      createScheduledController(),
-      invocationEnv(counted.db, registration, distribution),
-      createExecutionContext(),
-    );
+    await dispatchOutbox({
+      db: counted.db,
+      config: loadConfig(env),
+      now: new Date(),
+      queues: { registration, distribution },
+      source: { kind: "scan", limit: 90 },
+    });
     const sends = registration.calls.length + distribution.calls.length;
     expect(sends).toBe(8);
     expect(counted.stats.batchSizes).toEqual([8]);
@@ -236,6 +240,7 @@ describe("tight bulk-marking statement bound", () => {
       Array.from({ length: size }, (_, index): OutboxMark => {
         const row: OutboxRow = {
           job_id: `synthetic:${group}:${index}`,
+          attempt_id: `attempt:${group}:${index}`,
           type: "registration",
           payload_json: "{}",
           attempts: Math.max(0, group - 3),

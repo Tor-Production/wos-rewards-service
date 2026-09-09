@@ -14,7 +14,7 @@
 ## 15.3 Completion accounting and the source freeze
 
 **While deciding whether to seal:** an operation is finalisable when
-`count(operation_items.status IN ('success','already_redeemed','permanent_failure','retry_exhausted')) >= expected_count`
+every item is terminal and `count(operation_items) = expected_count`
 (and, for distribution runs, `expansion_state = 'expanded'`). `permanent_failure` here
 includes `reason_code = 'state_reevaluation_limit'` (T8) — a terminal failure that lets the
 operation finish.
@@ -58,19 +58,19 @@ force-closed at `deadline_at`, a single guarded statement moves
 wins). **That same transition freezes the source:** from this instant, mirror writes for
 this operation go to `operation_late_results`, and `operation_items.display_label` was
 already immutable, so every source row is fixed as of one logical moment. Then a **paged
-seal pass** (page size `SUMMARY_BUILD_PAGE_SIZE`) reads those frozen `operation_items` rows
+seal pass** (at most 128 rows, additionally bounded by source bytes) reads those frozen `operation_items` rows
 in **`(player_id, code)` order** and — in one **bounded** `db.batch()` per page —
 `INSERT … INTO summary_item_snapshot` (frozen `status` / `reason_code`, `display_label`
-copied verbatim from `operation_items`, `sort_key` from `status_rank(status)`) `ON CONFLICT
+copied verbatim from `operation_items`, `sort_key` from `status_rank(status)`, player ID and SHA-256 of the code) `ON CONFLICT
 (operation_id, player_id, code) DO NOTHING`, advancing `operations.snapshot_cursor` (the last
-`(player_id, code)` sealed). The seal **never reads `players`**. When the last row is copied,
+`(player_id, code)` sealed). The seal **never reads `players`**. When an empty probe proves all rows were copied,
 `summary_state: 'sealing' → 'building'` and `snapshot_sealed_at = now`. A resumed crash
 re-reads only rows after `snapshot_cursor`; all inputs are already frozen, so the result is
 byte-identical.
 
 1a. **Layout pass (paged, resumable).** Read `summary_item_snapshot` `ORDER BY sort_key` in
-    pages of `SUMMARY_BUILD_PAGE_SIZE`, resuming after `operations.summary_layout_cursor`.
-    Fold each row into the open chunk, tracking `{first_sort_key, bytes, chunk_index}`
+    pages of at most 128 rows, resuming after `operations.summary_layout_cursor`.
+    Fold each row into the open chunk, tracking first/last sort key, UTF-16 length, chunk index and listed counts
     (`operations.summary_layout_open`); when adding a row would exceed
     `DISCORD_MESSAGE_MAX_LENGTH` minus headroom for the `(part N/M)` marker **and** the
     footer (reserved on *every* chunk boundary so `chunk_total` never shifts), seal the open
@@ -78,15 +78,14 @@ byte-identical.
     `summary_chunk_layout(operation_id, chunk_index, first_sort_key, last_sort_key)` rows
     (`ON CONFLICT DO NOTHING`) **and** `summary_layout_cursor = last sort_key read` **and**
     `summary_layout_open = {current open chunk}` — atomically, so a crash resumes with the
-    partial chunk intact (no lost items, no reprocessing: the cursor always advances by a
-    whole page and the open-chunk accumulator carries the remainder). If `chunk_index`
+    partial chunk intact (no lost items, no reprocessing: the cursor advances only over rows actually folded and the open-chunk accumulator carries the remainder). If `chunk_index`
     reaches `SUMMARY_MAX_CHUNKS`, stop: the final chunk records `overflow_remaining`
     (snapshot rows beyond the cap) and will render a deterministic
     `"+<overflow_remaining> more not listed"` line. When the last snapshot row is folded,
     seal the final open chunk and set `operations.summary_chunk_total`
     (`summary_state` stays `'building'` — it covers both the layout and render passes).
 1b. **Render + persist pass (paged, resumable, idempotent).** For `chunk_index` from
-    `summary_build_cursor + 1`, in pages of `SUMMARY_BUILD_PAGE_SIZE`: read that chunk's
+    `summary_build_cursor + 1`, one chunk per invocation: read that chunk's
     `first_sort_key..last_sort_key` window from `summary_item_snapshot` (a bounded read),
     render its content with the `(part chunk_index/summary_chunk_total)` marker and — **only
     when `chunk_index = summary_chunk_total`** — the runtime footer; `INSERT` the
@@ -94,7 +93,7 @@ byte-identical.
     deterministic `nonce`) `ON CONFLICT (delivery_id) DO NOTHING`; advance
     `summary_build_cursor` in the **same** `db.batch()`. When
     `summary_build_cursor = summary_chunk_total`, set `summary_state = 'built'`.
-2. **Deliver (resumable).** The output delivery dispatcher (Cron + inline) processes the
+2. **Deliver (resumable).** The output delivery dispatcher (Cron) processes the
    group in `chunk_index` order (`summary_state`: `built → delivering → delivered`):
    - claim: `UPDATE discord_output_deliveries SET status='claimed', claim_token=:tok,
      claim_expires_at=:exp WHERE delivery_id=:id AND (status='pending' OR
@@ -110,6 +109,24 @@ byte-identical.
 
 Each pass does O(items) total work but a **strictly bounded** amount per invocation and per
 `db.batch()`, keeping within D1 statement / bound-parameter / CPU limits **[fact:C9][fact:C10]**.
+
+Phase 4 captures `summary_context` at acceptance: version, destination, player label/ID or
+code, maximum message length and chunk cap. These inputs also survive zero-item runs.
+New distributions freeze membership and display names in `operation_players_snapshot` in
+the opening transaction. Deadline closure seals absent expansion items from that snapshot
+as `still_pending`, never from live player names. Existing item labels are copied verbatim;
+rendering abbreviates them safely when the configured 500–2,000 UTF-16 character boundary
+requires it. Counts always cover the complete sealed snapshot, including overflow rows.
+Long/control-bearing codes receive a bounded sanitized `code_label` at sealing; original
+codes remain in the snapshot, and fixed-size hashed sort keys avoid oversized cursors.
+
+The output client is injectable and no live transport or bot-token lookup exists. Missing
+transport leaves attempts untouched. A global durable claim serializes dispatch and stores
+a conservative shared cooldown; lower unsent chunks block later chunks in their group.
+Persisted `blocked_at` / `alerted_at` flags surface authentication, permission, malformed
+request and attempt-exhaustion failures for human attention. Restart uses the same nonce
+and content hash; a stale claim token cannot save a late result. Raw response/error bodies
+are never logged. Tests model a suppression window; its length is not a Discord guarantee.
 
 **Delivery guarantee.** One logical result per operation (or per invalid event), **delivered
 at least once with bounded Discord nonce suppression**. Within Discord's few-minute
@@ -146,9 +163,8 @@ delivered by the same dispatcher. The runtime footer is present in that one chun
   later `players.display_name` change cannot alter an in-progress or delivered summary.
 - **Mention suppression:** every Create Message call sets `allowed_mentions: { parse: [] }`
   so `@everyone`, role, and user mentions never fire. This is the authoritative mention
-  control; label escaping is an additional rendering safeguard. Phase 3 persists safe
-  labels and validation replies only. Discord REST delivery and its mandatory
-  `allowed_mentions` control arrive in Phase 4.
+  control; label escaping is an additional rendering safeguard. The Phase 4 injectable
+  Create Message client applies this to summaries and validation replies alike.
 - **No silent mutation:** the service never edits or deletes a message it did not just
   create; summaries and replies are new messages only.
 - **Deterministic chunking:** the layout pass splits on `summary_item_snapshot` row

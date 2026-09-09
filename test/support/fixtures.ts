@@ -360,6 +360,7 @@ export async function seedOutbox(
     operationId,
     rows: data.map((entry) => ({
       job_id: entry.jobId,
+      attempt_id: entry.body.attempt_id,
       type: entry.type,
       payload_json: entry.payload,
       attempts: entry.attempts,

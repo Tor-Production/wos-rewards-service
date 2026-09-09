@@ -13,3 +13,8 @@ import { env } from "cloudflare:workers";
  * database is contacted and no Cloudflare credentials are used.
  */
 await applyD1Migrations(env.STAGING_DB, env.TEST_MIGRATIONS);
+
+await applyD1Migrations(env.BASELINE_DB, env.TEST_MIGRATIONS.slice(0, 1));
+
+await applyD1Migrations(env.PHASE4_DB, env.TEST_MIGRATIONS);
+await applyD1Migrations(env.THROUGHPUT_DB, env.TEST_MIGRATIONS);

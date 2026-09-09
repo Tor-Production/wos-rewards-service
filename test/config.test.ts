@@ -4,6 +4,7 @@ import { env } from "cloudflare:workers";
 import { ConfigurationError, loadConfig } from "../src/config";
 
 const SAFE_ENV = {
+  ...env,
   ENVIRONMENT: "staging",
   PROVIDER_MODE: "mock",
   PRODUCTION_REDEMPTION_ENABLED: false,
@@ -133,6 +134,16 @@ describe("loadConfig accepts the intended staging configuration", () => {
       operationDeadlineSeconds: 3600,
       redemptionMaxReeval: 3,
       outboxDispatchMaxAttempts: 5,
+      providerMaxInvocations: 4,
+      providerMaxRetries: 3,
+      itemLeaseSeconds: 120,
+      redemptionLeaseSeconds: 120,
+      providerTimeoutSeconds: 10,
+      outputLeaseSeconds: 60,
+      outputTimeoutSeconds: 10,
+      outputMaxAttempts: 5,
+      summaryMaxChunks: 10,
+      discordDeliveryEnabled: false,
     });
   });
 
@@ -224,6 +235,17 @@ describe("loadConfig rejects malformed input", () => {
       "OPERATION_DEADLINE_SECONDS must be an integer from 1 to 604800",
       "REDEMPTION_MAX_REEVAL must be an integer from 0 to 100",
       "OUTBOX_DISPATCH_MAX_ATTEMPTS must be an integer from 1 to 5",
+      "PROVIDER_MAX_INVOCATIONS must be an integer from 1 to 101",
+      "PROVIDER_MAX_RETRIES must be an integer from 0 to 100",
+      "ITEM_CLAIM_LEASE_SECONDS must be an integer from 30 to 3600",
+      "REDEMPTION_CLAIM_LEASE_SECONDS must be an integer from 30 to 3600",
+      "PROVIDER_TIMEOUT_SECONDS must be an integer from 1 to 60",
+      "OUTPUT_CLAIM_LEASE_SECONDS must be an integer from 30 to 3600",
+      "OUTPUT_TIMEOUT_SECONDS must be an integer from 1 to 60",
+      "OUTPUT_DISPATCH_MAX_ATTEMPTS must be an integer from 1 to 20",
+      "SUMMARY_MAX_CHUNKS must be an integer from 1 to 100",
+      "DISCORD_DELIVERY_ENABLED must be false",
+      "REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED must be false",
     ]);
   });
 

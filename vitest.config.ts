@@ -18,6 +18,10 @@ export default defineConfig(async () => {
         // Miniflare D1 database; no remote database is ever contacted.
         wrangler: { configPath: "./wrangler.jsonc", environment: "staging" },
         miniflare: {
+          d1Databases: ["BASELINE_DB", "PHASE4_DB", "THROUGHPUT_DB", "UPGRADE_DB"],
+          outboundService: () => {
+            throw new Error("unmatched outbound network request prohibited");
+          },
           // Test-only binding, declared here and never in `wrangler.jsonc`, so no deployed
           // Worker can see it. `test/env.d.ts` declares its type.
           bindings: {

@@ -27,24 +27,25 @@ Wrangler vars (non-secret) and Wrangler secrets (secret).
 | `DISCORD_GUILD_ID` | ingestion tier, ingestion Worker | expected guild |
 | `DISCORD_APPLICATION_ID` | ingestion Worker, output builder | own application id; used by the author filter |
 | `DEFAULT_STATE` | registration parser | state used when the message omits a numeric state (contract in `AGENTS.md`) |
-| `DISCORD_MESSAGE_MAX_LENGTH` | validation-reply guard, future output builder | chunking threshold; Phase 3 accepts 500–2,000 so its fixed validation replies fit |
+| `DISCORD_MESSAGE_MAX_LENGTH` | validation-reply guard, output builder | chunking threshold; accepts 500–2,000; builders reserve footer, part marker and truthful overflow before selecting rows |
 | `OPERATION_DEADLINE_SECONDS` | ingestion Worker, consumers, sweeper | max wall time before an operation is force-closed with a partial summary; local guardrail 1–604,800 seconds |
 | `ITEM_CLAIM_LEASE_SECONDS` | consumers, sweeper | `operation_items` lease TTL |
 | `REDEMPTION_CLAIM_LEASE_SECONDS` | consumers, sweeper | **invocation** lease TTL (`redemptions.invocation_expires_at`); also the `retry_wait` "must be re-picked-up by" grace. **Set above the provider call timeout** so a lease does not expire mid-call ([§15.2](redemption-state-machine.md#152-global-redemption-record--the-sole-provider-call-authority)) |
 | `OUTPUT_CLAIM_LEASE_SECONDS` | output dispatcher, sweeper | `discord_output_deliveries` claim lease TTL |
-| `FANOUT_EXPANSION_PAGE_SIZE` | fan-out expansion worker | rows per bounded expansion page |
-| `SWEEPER_REDRIVE_BATCH` | operation sweeper | max stuck `(player_id, code)` pairs re-driven per sweeper run |
 | `REDEMPTION_MAX_REEVAL` | ingestion Worker, sweeper, repair | cap on `redemptions.reeval_count`; Phase 3 accepts 0–100; beyond the configured cap only an operator `repair_run` may reopen the row |
-| `REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED` | operation sweeper | default `false`; when `true`, the sweeper may reopen a `retry_exhausted` global row once per cooldown (bounded by `REDEMPTION_MAX_REEVAL`) |
-| `SUMMARY_BUILD_PAGE_SIZE` | summary builder | `operation_items` per layout page / chunks per render page |
+| `REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED` | operation sweeper | must be `false`; automatic reopening is rejected; T14 operator repair is the only retry-exhausted reopening path |
 | `SUMMARY_MAX_CHUNKS` | summary builder | hard cap on chunks per summary; overflow becomes a deterministic `"+N more not listed"` line in the final chunk |
 | `OUTBOX_DISPATCH_MAX_ATTEMPTS` | outbox dispatcher | attempts before an outbox row is marked `dead`; Phase 3 accepts 1–5 to retain the bounded marking/query proof |
 | `OUTPUT_DISPATCH_MAX_ATTEMPTS` | output dispatcher | send attempts before a delivery row is alerted |
 | `CODE_DISCOVERY_ENABLED` | code-discovery scheduler | master switch; `false` until a source is authorized |
 | `PRODUCTION_REDEMPTION_ENABLED` | provider adapter | must be `false` unless an authorized provider is documented and approved |
 | `PROVIDER_MODE` | provider adapter | `mock` (default) or a named authorized provider |
-| `REGISTRATION_JOBS_QUEUE` / `CODE_FANOUT_JOBS_QUEUE` / `REDEMPTION_DLQ_QUEUE` | producers/consumers | binding names, not scalar vars; the first two are staging-only local producers; the DLQ binding is deferred until consumers |
-| `PROVIDER_MAX_RETRIES` | consumers | retry cap for retryable provider failures (≤ Queues max, [fact:C8]) |
+| `REGISTRATION_JOBS_QUEUE` / `CODE_FANOUT_JOBS_QUEUE` | producers | staging bindings, not scalar vars; the redemption DLQ is configured through consumer queue names and `dead_letter_queue`, with no direct producer binding |
+| `PROVIDER_MAX_RETRIES` | configuration / Queue contract | physical-message retry configuration, fixed at 3 in Wrangler; independent of logical invocation authority |
+| `PROVIDER_MAX_INVOCATIONS` | consumers, acceptance, repair | 1–101; default 4 **including the first invocation**, captured per budget generation; atomically charged before calling the provider |
+| `PROVIDER_TIMEOUT_SECONDS` | consumers | provider timeout, default 10 seconds; invocation and item leases must exceed it |
+| `OUTPUT_TIMEOUT_SECONDS` | output client | default 10 seconds; output lease must exceed it |
+| `DISCORD_DELIVERY_ENABLED` | fail-closed configuration | must remain false; only an explicitly injected synthetic transport can deliver locally |
 | `PROVIDER_RATE_LIMIT_PER_SECOND` | provider adapter | client-side rate limiting toward the provider |
 | `SPIKE_SENDER_ALLOWLIST` | `DiscordEventSource` **and** ingestion Worker (**staging only**) | strictly comma-separated dedicated spike bot/webhook snowflake ids without whitespace; duplicates are collapsed; empty means strict filtering; source and Worker both check it; system and own-application messages always drop; the application id is rejected in the list; never set in production |
 | `LOG_LEVEL` | all | structured-log verbosity |
@@ -53,6 +54,8 @@ Phase 3 preserves identifiers as digit strings, including leading zeros: Discord
 1–20 digits, `PLAYER_ID` has 1–32, and `STATE` / `DEFAULT_STATE` has 1–16. Names are normalized
 and capped at 64 Unicode code points; immutable rendered labels are capped at 80 code
 points. These are application constants, not new configuration variables.
+
+Phase 4 page sizes are fixed application bounds: expansion 128, outbox 90, seal/layout and terminal reconciliation at most 128, render one chunk, stuck-item repair one pair. Summary and terminal pages also enforce a 262,144-byte cumulative source budget (one larger legacy row may advance alone). The default operation deadline is 3,600 seconds; separate scheduler lanes preserve expansion throughput. `SUMMARY_MAX_CHUNKS` defaults to 10 and output attempts to 5.
 
 Integer configuration accepts either an integer number or a digit-only string within
 the documented range. The ranges are local implementation guardrails, not claims about

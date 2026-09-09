@@ -432,13 +432,13 @@ oversized payload becomes `dead` / `payload_too_large`. Neither consumes an atte
 Queue send failures use only `queue_send_failed`, never exception text, with deterministic
 backoff `min(60 × 2^(attempts - 1), 3600)` seconds and `dead` at the configured cap.
 
-All sends settle before bulk marking. All marks require `status = 'pending'`;
+All sends settle before bulk marking. All marks require `status = 'pending'` and the selected `(job_id, attempt_id)` generation;
 retry marks compare the observed attempt count before writing the fixed next count.
 Exhausted marks require the cap threshold and preserve any higher counter. A stale
 failure cannot regress a newer retry count or backoff, and
 no marking resurrects a `dead` or `enqueued` row. With no outbox claim column, overlapping
 dispatchers may send duplicates. A crash after send but before mark has the same effect;
-future consumers must absorb these through their item/global-redemption guards.
+consumers absorb these through their item/global-redemption guards.
 
 Marking groups use a closed set of `(status, attempts, last_error)` outcomes, with at most
 90 ids per SQL update and at most 100 bound parameters per statement. For `r` rows,
@@ -460,3 +460,39 @@ The four platform limits are separate
 The Free-plan Cron CPU allowance is 10 ms. Sequential I/O wait does not itself consume
 CPU time; local tests do not establish production CPU or latency. Measure dispatch with
 representative payloads when a stack is first authorized and provisioned.
+
+
+### Implemented additive Phase 4 migration (0002)
+
+`0001_initial_schema.sql` and root instruction files remain byte-for-byte unchanged.
+Migration 0002 adds:
+
+- `operations.summary_context`, `repair_authorized_at`, `frozen_at`, plus frozen distribution
+  snapshot names and bounded `summary_item_snapshot.code_label` for rendering.
+- Redemption `budget_generation`, `provider_invocations`, captured limit, current terminal
+  generation pointer, monotonic observation timestamp, and last-attempt generation fence.
+- Immutable `terminal_observations` and per-generation/item `terminal_receipts`, indexed for
+  unfinished traversal and missing-receipt lookup.
+- `scheduler_progress` for separate round-robin lanes and recovery turns, `dispatch_control`
+  for durable output serialization/cooldown, and output due/error/block/attention fields.
+
+Existing audit `attempts` remain unchanged. Migration charges `MIN(attempts,4)` into the
+new logical budget, creates observations for existing terminal outcomes, and leaves
+invocation ownership unchanged. A recorded migration is not executed twice; reapplication
+uses D1's migration journal, not raw repeated `ALTER TABLE` execution. Tests cover a populated
+baseline upgrade, unchanged frozen rows, foreign keys, and no fresh retry allowance.
+
+Legacy Phase 3 operations lack destination/header context, especially zero-item runs.
+The migration leaves that missing context explicit (`NULL`) instead of inventing historical
+labels or channels; they are not rendered until a human supplies verified immutable
+context. No real staging database exists, so this affects retained synthetic local data.
+Previously frozen snapshots remain untouched. Legacy distribution membership cannot acquire
+historical names from today's players; a human must resolve that missing historical context
+before using such a pre-Phase-4 synthetic run.
+
+Outbox re-drive rotates a physical attempt and preserves the logical budget. Marks bind
+observed job/attempt tuples via bounded `VALUES` rows, so an old send result cannot mark a
+reopened attempt. Dead jobs before freeze may reopen atomically; after freeze they produce
+a one-pair parked `repair_run` and late audit. `openRepairRun` can create a parked one-pair operation for a human-selected failed redemption; its request ID makes retries idempotent. `authorizeRepair` is an internal human-selected
+helper, never a public endpoint or a scheduler action. It creates fresh work only after
+explicit authorization and cannot reset a successful redemption.
