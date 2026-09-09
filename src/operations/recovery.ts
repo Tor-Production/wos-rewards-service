@@ -36,17 +36,19 @@ export async function recover(db: D1Database, config: AppConfig, now: string): P
     )
     .bind(now)
     .run();
-  switch ((tick?.turn ?? 0) % 4) {
+  const turn = tick?.turn ?? 0;
+  if (turn % 2 === 0) {
+    await reuseTerminal(db, now);
+    return;
+  }
+  switch (Math.floor(turn / 2) % 3) {
     case 0:
-      await reuseTerminal(db, now);
-      break;
-    case 1:
       await mirrorObservation(db, now);
       break;
-    case 2:
+    case 1:
       await redrive(db, config, now);
       break;
-    case 3:
+    case 2:
       await deadOutbox(db, now);
       break;
   }

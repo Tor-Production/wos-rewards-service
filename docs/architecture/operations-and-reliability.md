@@ -26,7 +26,7 @@ round-robin operation ordering, so expansion and summary do not share one slot.
 |---|---|---|
 | Expansion | 6 | one operation, up to 128 snapshot members |
 | Outbox | 10 | one fair operation, up to 90 rows; at most eight sequential `sendBatch` calls |
-| Recovery | 8 | close at most 128 deadlines, then rotate item reuse / observation mirror / one stuck pair / one dead outbox repair |
+| Recovery | 8 | close at most 128 deadlines; run terminal-item reuse every other minute, and rotate observation mirror / one stuck pair / one dead outbox repair through the intervening minutes |
 | Summary | 6 | one operation: freeze, seal page, layout page, or render one chunk |
 | Output | 9 | one ordered chunk, including claim, cooldown, result and completion recovery; zero requests unless a synthetic transport is injected |
 | **Complete scheduled handler** | **39** | at most eight Queue sends and one injected output request; no provider calls |
@@ -58,6 +58,13 @@ mock service envelope, not a guarantee under arbitrary backlog, provider latency
 rates. More competition or a deliberately short deadline closes incomplete work truthfully
 as `stale_closed`; unexpanded snapshot members appear as unfinished. The deadline covers
 redemption accounting, not eventual summary delivery while transport is disabled.
+
+Terminal-result reuse processes 128 items on every other minute. An isolated accepted
+registration containing 2,000 pairs whose outcomes are already terminal therefore needs 16
+reuse pages and completes its item accounting by minute 31, before the default deadline.
+Observation mirroring, stuck-pair redrive and dead-outbox handling each run every sixth
+minute in the intervening slots. Their cursors remain independent, so none can consume the
+reuse reservation or another recovery class's turn.
 
 Retention, discovery, adaptive provider rate limiting and operational dashboards remain
 later work. Required correctness recovery above is implemented now. Operator repairs are
@@ -134,7 +141,12 @@ Migrations are applied to staging first, then production, after review.
   - **global redemption serialization:** two operations referencing the same
     `(player_id, code)` result in exactly one provider call; the loser reuses the terminal
     outcome; a terminal `redemptions` row is mirrored onto every waiting `operation_items`
-    row (via consumer and via sweeper);
+    row (via consumer and via sweeper). A provider-terminal write atomically records its
+    observation, accounts for its initiating item, and runs the operation freeze guard;
+    crashing immediately after that transaction cannot leave the initiating operation
+    unaccounted. A validated physical message whose outbox attempt is superseded before its
+    claim transaction cannot mutate the item, acquire an invocation grant, or call the
+    provider;
   - **concurrent same-`attempt_id` deliveries (T3):** two overlapping deliveries of the same
     queue body → **exactly one** provider call; the second finds a live
     `current_invocation_token` and `ack`s without calling the provider, `message.retry`, or
@@ -221,6 +233,7 @@ Migrations are applied to staging first, then production, after review.
 | Durable output / bounded nonce suppression | synthetic 429/5xx/4xx, shared cooldown, exhausted attempts, crash after response before sent mark, stable nonce inside and outside a synthetic suppression window |
 | End-to-end local processing | real local Queue producer binding plus Workers Queue harness, accepted registration → consumer ack → sealed summary → synthetic transport → finalized event; unmatched outbound network is blocked |
 | Complete-handler budgets | combined scheduled failure and healthy paths, every throughput Cron and two-message consumer invocation measured, binding cap, original outbox send/mark budget suites retained |
+| Review regressions F1–F4 | `phase4-review-regressions.test.ts`: superseded outbox authority at the claim boundary; crash after a terminal commit; 128 older blocked delivery groups ahead of an eligible group; and all 2,000 already-terminal late joiners reconciled before the default deadline with zero provider calls |
 | Migration compatibility | unchanged baseline suite on a baseline-only binding; `phase4-upgrade.test.ts` populates 0001 then upgrades and reapplies, preserving audit counts and terminal records; local Wrangler upgrade/reapplication plus FK checks |
 
 ## 22. Failure modes and recovery

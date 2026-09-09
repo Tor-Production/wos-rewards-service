@@ -246,8 +246,10 @@ refer to their explicitly split a/b transitions above.
 Each terminal write atomically creates an immutable observation identified by
 `(player_id, code, budget_generation)`. `current_terminal_generation` identifies the
 applicable observation. The observation carries outcome, reason, attempted state and a
-monotonic observation timestamp. A guarded page applies at most 128 recipients and writes
-per-item receipts in the same transaction; frozen or expired operations receive an
+monotonic observation timestamp. The provider-result transaction also accounts for the
+initiating item and runs its operation freeze guard, so a crash after the terminal commit
+cannot strand that item. A guarded page applies at most 128 additional recipients and
+writes per-item receipts in the same transaction; frozen or expired operations receive an
 idempotent late-result audit instead. A reopening invalidates the old pointer immediately.
 `player_ineligible` also requires that the attempted state still matches the current
 player state. Returning to an older state never revives an older generation.
@@ -286,9 +288,17 @@ consulted); the lease-expiry comparison applies only to an `in_progress` row sti
 writes a terminal status, and its `status IN ('in_progress','retry_wait')` guard skips the
 `retry_exhausted` row T10 produced.
 
+The T1/T2 claim transaction also revalidates that the message's exact `job_id`,
+`attempt_id`, operation, item and route still identify the current outbox row. Validation
+before the transaction is only structural. If T12 supersedes that attempt between
+validation and claim, all claim statements affect zero rows and T3 acknowledges the stale
+physical message without a mutation or provider call.
+
 ### Crash-safe re-drive (Operation sweeper)
 
-The recovery reservation rotates four independent work classes across minute ticks. The stuck-pair class processes one pair per turn:
+The recovery reservation runs terminal-item reuse every other minute. Observation mirror,
+stuck-pair redrive and dead-outbox handling rotate through the intervening minutes, so each
+of those classes runs every sixth minute. The stuck-pair class processes one pair per turn:
 
 - **T12:** resets `redemptions` rows in `in_progress` / `retry_wait` whose
   `invocation_expires_at` has passed (crashed invocation, or a `retry_wait` whose retried

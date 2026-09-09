@@ -11,6 +11,51 @@ export interface Recipient {
   budget_generation: number;
 }
 
+/**
+ * Account for the item that produced a terminal result in the same transaction as
+ * the result and observation. This closes the crash window before asynchronous
+ * mirror/reuse reconciliation while retaining the same applicability guards.
+ */
+export function initiatingRecipientStatements(
+  db: D1Database,
+  now: string,
+  operationId: string,
+  itemKey: string,
+): D1PreparedStatement[] {
+  const cte = `WITH c AS (SELECT i.*,o.summary_state,o.deadline_at,t.status AS outcome,t.reason_code AS reason,
+    t.observed_at,t.budget_generation FROM operation_items i
+    JOIN operations o ON o.operation_id=i.operation_id
+    JOIN redemptions r ON r.player_id=i.player_id AND r.code=i.code
+    JOIN players p ON p.player_id=i.player_id
+    JOIN terminal_observations t ON t.player_id=r.player_id AND t.code=r.code
+    WHERE i.operation_id=?1 AND i.item_key=?2 AND ${applicable}
+    AND (o.type<>'repair_run' OR o.repair_authorized_at IS NOT NULL))`;
+  return [
+    db
+      .prepare(
+        `${cte} UPDATE operation_items AS i SET status=c.outcome,reason_code=c.reason,claim_token=NULL,claim_expires_at=NULL,updated_at=?3
+      FROM c WHERE i.operation_id=c.operation_id AND i.item_key=c.item_key AND i.status IN ('pending','in_progress')
+      AND c.summary_state='none' AND c.deadline_at>?3`,
+      )
+      .bind(operationId, itemKey, now),
+    db
+      .prepare(
+        `${cte} INSERT INTO operation_late_results(operation_id,player_id,code,observed_at,status,reason_code)
+      SELECT operation_id,player_id,code,observed_at,outcome,reason FROM c WHERE summary_state<>'none' OR deadline_at<=?3
+      ON CONFLICT(operation_id,player_id,code,observed_at) DO NOTHING`,
+      )
+      .bind(operationId, itemKey, now),
+    db
+      .prepare(
+        `${cte} INSERT INTO terminal_receipts(player_id,code,budget_generation,operation_id,item_key,disposition)
+      SELECT player_id,code,budget_generation,operation_id,item_key,
+        CASE WHEN summary_state<>'none' OR deadline_at<=?3 THEN 'audited' ELSE 'applied' END FROM c WHERE true
+      ON CONFLICT DO NOTHING`,
+      )
+      .bind(operationId, itemKey, now),
+  ];
+}
+
 /** Each page is revalidated inside its transaction, including a reopen/freeze after selection. */
 export async function applyRecipients(
   db: D1Database,

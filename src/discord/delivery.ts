@@ -234,8 +234,16 @@ function finalizeOperations(db: D1Database, now: string): D1PreparedStatement {
   return db
     .prepare(
       `UPDATE operations AS o SET summary_state='delivered',state=CASE WHEN state='stale_closed' THEN state ELSE 'summarized' END,updated_at=?1
-    WHERE operation_id IN (SELECT operation_id FROM operations WHERE summary_state IN ('built','delivering') ORDER BY updated_at LIMIT 128)
-    AND summary_build_cursor=summary_chunk_total AND summary_chunk_total=(SELECT COUNT(*) FROM discord_output_deliveries d WHERE d.operation_id=o.operation_id AND d.status='sent')`,
+    WHERE operation_id IN (SELECT candidate.operation_id FROM operations candidate
+      WHERE candidate.summary_state IN ('built','delivering')
+      AND candidate.summary_build_cursor=candidate.summary_chunk_total
+      AND candidate.summary_chunk_total=(SELECT COUNT(*) FROM discord_output_deliveries d
+        WHERE d.operation_id=candidate.operation_id AND d.status='sent')
+      ORDER BY candidate.updated_at LIMIT 128)
+    AND o.summary_state IN ('built','delivering')
+    AND o.summary_build_cursor=o.summary_chunk_total
+    AND o.summary_chunk_total=(SELECT COUNT(*) FROM discord_output_deliveries d
+      WHERE d.operation_id=o.operation_id AND d.status='sent')`,
     )
     .bind(now);
 }

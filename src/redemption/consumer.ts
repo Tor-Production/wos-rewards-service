@@ -2,7 +2,7 @@ import type { AppConfig } from "../config";
 import { isRedemptionJobBody, type RedemptionJobBody } from "../domain/queue-jobs";
 import type { RedeemResult, WhiteoutProvider } from "../domain/whiteout-provider";
 import { budgetDatabase, freeze, mutableOperation } from "../runtime/db";
-import { applyRecipients, recipients } from "./reconcile";
+import { applyRecipients, initiatingRecipientStatements, recipients } from "./reconcile";
 
 export interface Delivery {
   body: unknown;
@@ -84,19 +84,31 @@ export async function closeBudget(
   job: RedemptionJobBody,
   now: string,
   recovery = false,
+  route?: "registration" | "distribution",
 ): Promise<void> {
   const eligibility = recovery
     ? `(${due} OR (r.current_attempt_id=?1 AND r.status IN ('in_progress','retry_wait') AND (r.invocation_expires_at IS NULL OR r.invocation_expires_at<?2)))`
     : due;
+  const outboxAuthority = route
+    ? `AND EXISTS(SELECT 1 FROM outbox_jobs b WHERE b.job_id=?5 AND b.attempt_id=?1
+      AND b.operation_id=?6 AND b.item_key=?7 AND b.type=?8)`
+    : "";
   await db.batch([
     db
       .prepare(
         `UPDATE redemptions AS r SET status='retry_exhausted',reason_code='provider_retry_exhausted',
       current_attempt_id=NULL,current_invocation_token=NULL,invocation_expires_at=NULL,retry_due_at=NULL,
       current_terminal_generation=budget_generation,last_observation_at=${observationTime},terminal_at=?2,updated_at=?2
-      WHERE player_id=?3 AND code=?4 AND provider_invocations>=provider_invocation_limit AND ${eligibility}`,
+      WHERE player_id=?3 AND code=?4 AND provider_invocations>=provider_invocation_limit AND ${eligibility}
+      ${outboxAuthority}`,
       )
-      .bind(job.attempt_id, now, job.player_id, job.code),
+      .bind(
+        job.attempt_id,
+        now,
+        job.player_id,
+        job.code,
+        ...(route ? [job.job_id, job.operation_id, job.item_key, route] : []),
+      ),
     insertObservation(db, job.player_id, job.code, "logical_budget_exhausted"),
   ]);
 }
@@ -117,8 +129,11 @@ export async function consume(
     const now = input.now().toISOString();
     const token = (input.token ?? (() => crypto.randomUUID()))();
     const exp = new Date(Date.parse(now) + config.redemptionLeaseSeconds * 1000).toISOString();
+    const currentOutbox = `EXISTS(SELECT 1 FROM outbox_jobs b WHERE b.job_id=?8 AND b.attempt_id=?1
+      AND b.operation_id=?5 AND b.item_key=?6 AND b.type=?9)`;
     const eligibleItem = `EXISTS(SELECT 1 FROM operation_items i JOIN operations o ON o.operation_id=i.operation_id
       WHERE i.operation_id=?5 AND i.item_key=?6 AND ${mutableOperation} AND o.deadline_at>?2
+      AND i.job_id=?8 AND ${currentOutbox}
       AND (i.status='pending' OR (i.status='in_progress' AND (i.claim_token=?1 OR i.claim_expires_at<?2))))`;
     const results = await db.batch([
       db
@@ -135,6 +150,8 @@ export async function consume(
           job.operation_id,
           job.item_key,
           config.providerMaxInvocations,
+          job.job_id,
+          route,
         ),
       db
         .prepare(
@@ -150,10 +167,12 @@ export async function consume(
           job.operation_id,
           job.item_key,
           new Date(Date.parse(now) + config.itemLeaseSeconds * 1000).toISOString(),
+          job.job_id,
+          route,
         ),
       db
         .prepare(
-          `UPDATE redemptions AS r SET status='in_progress',current_invocation_token=?7,invocation_expires_at=?8,
+          `UPDATE redemptions AS r SET status='in_progress',current_invocation_token=?7,invocation_expires_at=?10,
         retry_due_at=NULL,attempt_state=(SELECT state FROM players WHERE player_id=?3),provider_invocations=provider_invocations+1,
         attempts=CASE WHEN current_attempt_id=?1 THEN attempts+1 ELSE 1 END,
         attempt_generation=attempt_generation+CASE WHEN current_attempt_id=?1 THEN 0 ELSE 1 END,
@@ -169,6 +188,8 @@ export async function consume(
           job.operation_id,
           job.item_key,
           token,
+          job.job_id,
+          route,
           exp,
         ),
     ]);
@@ -179,11 +200,23 @@ export async function consume(
       // T3 must be write-free; close only the separately classified exhausted eligible row.
       const exhausted = await db
         .prepare(
-          `SELECT 1 FROM redemptions r WHERE player_id=?3 AND code=?4 AND ${due} AND provider_invocations>=provider_invocation_limit`,
+          `SELECT 1 FROM redemptions r WHERE player_id=?3 AND code=?4 AND ${due}
+          AND provider_invocations>=provider_invocation_limit
+          AND EXISTS(SELECT 1 FROM outbox_jobs b WHERE b.job_id=?5 AND b.attempt_id=?1
+            AND b.operation_id=?6 AND b.item_key=?7 AND b.type=?8)`,
         )
-        .bind(job.attempt_id, now, job.player_id, job.code)
+        .bind(
+          job.attempt_id,
+          now,
+          job.player_id,
+          job.code,
+          job.job_id,
+          job.operation_id,
+          job.item_key,
+          route,
+        )
         .first();
-      if (exhausted) await closeBudget(db, job, now);
+      if (exhausted) await closeBudget(db, job, now, false, route);
       message.ack();
       return;
     }
@@ -295,16 +328,13 @@ export async function consume(
         job.code,
         outcome.outcome === "retryable" ? "logical_budget_exhausted" : "provider",
       ),
+      ...initiatingRecipientStatements(db, stamp, job.operation_id, job.item_key),
+      freeze(db, stamp, job.operation_id),
     ]);
     const terminalReason = terminalResult[0]?.results[0] as
       { reason_code: string | null } | undefined;
     if (terminalReason?.reason_code === "state_reevaluation_limit")
       console.warn("redemption_state_reevaluation_limit");
-    const page = await recipients(db, "i.operation_id=?1 AND i.item_key=?2", [
-      job.operation_id,
-      job.item_key,
-    ]);
-    await applyRecipients(db, stamp, page, [freeze(db, stamp, job.operation_id)]);
     message.ack();
   } catch {
     message.retry({ delaySeconds: 60 });
