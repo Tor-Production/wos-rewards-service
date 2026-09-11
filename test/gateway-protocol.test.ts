@@ -48,13 +48,17 @@ const CLASSIFY_MESSAGE: GatewayMessageClassifier = (event) =>
 
 function create(
   options: Partial<
-    Pick<CreateGatewayProtocolOptions, "persistedSession" | "sessionStartLimit" | "classifyMessage">
+    Pick<
+      CreateGatewayProtocolOptions,
+      "persistedSession" | "sessionStartLimit" | "classifyMessage" | "shardId"
+    >
   > = {},
 ): GatewayProtocolState {
   return createGatewayProtocolState({
     sessionStartLimit: options.sessionStartLimit ?? LIMIT,
     sessionStartLimitObservedAtMs: 0,
     classifyMessage: options.classifyMessage ?? CLASSIFY_MESSAGE,
+    shardId: options.shardId ?? 0,
     ...(options.persistedSession === undefined
       ? {}
       : { persistedSession: options.persistedSession }),
@@ -253,6 +257,25 @@ describe("Gateway lifecycle, heartbeat and reconnect policy", () => {
     expect(requested.state.outbound.connectionAuthorized).toBe(3); // IDENTIFY + two heartbeats.
   });
 
+  it("accepts both ACKs when a requested heartbeat overlaps an outstanding regular heartbeat", () => {
+    let state = startFresh();
+    state = completeOnlySend(gatewayHeartbeatDue(state, 1_000));
+
+    const requested = receiveGatewayText(state, gatewayPayload(1), { nowMs: 1_001 });
+    expect(command(requested, "send_gateway_event").event.kind).toBe("heartbeat_requested");
+    state = completeOnlySend(requested);
+    expect(state.heartbeat?.ackOutstanding).toBe(true);
+
+    const firstAck = receiveGatewayText(state, gatewayPayload(11), { nowMs: 1_002 });
+    expect(firstAck.state.heartbeat?.ackOutstanding).toBe(false);
+    const secondAck = receiveGatewayText(firstAck.state, gatewayPayload(11), { nowMs: 1_003 });
+
+    expect(secondAck.state.phase).toBe("identifying");
+    expect(secondAck.state.heartbeat?.ackOutstanding).toBe(false);
+    expect(secondAck.commands).toEqual([]);
+    expect(secondAck.diagnostics).toEqual([]);
+  });
+
   it("uses the volatile last-received sequence for heartbeat semantics", () => {
     let state = active();
     const target = receiveGatewayText(state, dispatch("MESSAGE_CREATE", 17, message()), {
@@ -370,6 +393,57 @@ describe("Gateway lifecycle, heartbeat and reconnect policy", () => {
     expect(command(cleared, "reconnect_gateway").mode).toBe("fresh");
   });
 
+  it("keeps the Opcode 9 d=false durable-clear fence across a connection close", () => {
+    const state = active();
+    const nonResumable = receiveGatewayText(state, gatewayPayload(9, false), { nowMs: 2 });
+    const clear = command(nonResumable, "clear_gateway_session");
+
+    const closedBeforeClear = gatewayConnectionClosed(nonResumable.state, 1006);
+    expect(closedBeforeClear.state).toMatchObject({
+      phase: "non_resumable",
+      lastReceivedSequence: 10,
+      lastCheckpointedSequence: 10,
+      pendingEffect: {
+        kind: "clear_session",
+        effectId: clear.effectId,
+        connectionClosed: true,
+      },
+    });
+    expect(closedBeforeClear.state.session).toBe(state.session);
+    expect(closedBeforeClear.commands).toEqual([]);
+    expect(closedBeforeClear.diagnostics[0]?.category).toBe("gateway_close");
+
+    const cleared = completeGatewayEffect(closedBeforeClear.state, {
+      effectId: clear.effectId,
+      type: "session_clear",
+      outcome: "cleared",
+    });
+    expect(cleared.state).toMatchObject({
+      phase: "reconnecting",
+      connectionIntent: "fresh",
+      session: null,
+      lastReceivedSequence: null,
+      lastCheckpointedSequence: null,
+      pendingEffect: null,
+    });
+    expect(cleared.commands).toEqual([{ type: "reconnect_gateway", mode: "fresh" }]);
+
+    const opened = gatewayConnectionOpened(cleared.state, 6_000);
+    const hello = receiveGatewayText(
+      opened.state,
+      gatewayPayload(10, { heartbeat_interval: 10_000 }),
+      { nowMs: 6_000, firstHeartbeatJitter: 1 },
+    );
+    const handshake = beginGatewayHandshake(hello.state, {
+      nowMs: 6_000,
+      deadlineAtMs: 6_000,
+    });
+    expect(command(handshake, "send_gateway_event").event).toEqual({
+      kind: "identify",
+      opcode: 2,
+    });
+  });
+
   it("classifies documented close-code groups and preserves the resume-first ADR policy", () => {
     expect(classifyGatewayCloseCode(null)).toMatchObject({
       category: "no_close_code",
@@ -397,10 +471,10 @@ describe("Gateway lifecycle, heartbeat and reconnect policy", () => {
     expect(gatewayConnectionClosed(active(), 4004).state.phase).toBe("halted");
   });
 
-  it("accounts IDENTIFY separately from outbound events and honors reset/concurrency data", () => {
+  it("accounts IDENTIFY separately and exposes its shard concurrency bucket", () => {
     const limit = { total: 7, remaining: 2, reset_after: 10_000, max_concurrency: 3 };
     const hello = receiveGatewayText(
-      create({ sessionStartLimit: limit }),
+      create({ sessionStartLimit: limit, shardId: 7 }),
       gatewayPayload(10, { heartbeat_interval: 1_000 }),
       { nowMs: 0, firstHeartbeatJitter: 1 },
     );
@@ -410,6 +484,8 @@ describe("Gateway lifecycle, heartbeat and reconnect policy", () => {
         remaining: 2,
         resetAfterMs: 10_000,
         maxConcurrency: 3,
+        shardId: 7,
+        concurrencyBucket: 1,
         authorizedThisRun: 0,
       },
       outbound: { connectionAuthorized: 0 },
@@ -433,8 +509,57 @@ describe("Gateway lifecycle, heartbeat and reconnect policy", () => {
       remaining: 8,
       resetAfterMs: 20_000,
       maxConcurrency: 2,
+      shardId: 7,
+      concurrencyBucket: 1,
       authorizedThisRun: 1,
     });
+  });
+
+  it("limits one shard bucket to one IDENTIFY every five seconds", () => {
+    const limit = { total: 7, remaining: 7, reset_after: 10_000, max_concurrency: 3 };
+    const firstHello = receiveGatewayText(
+      create({ sessionStartLimit: limit, shardId: 4 }),
+      gatewayPayload(10, { heartbeat_interval: 10_000 }),
+      { nowMs: 0, firstHeartbeatJitter: 1 },
+    );
+    const firstIdentify = beginGatewayHandshake(firstHello.state, {
+      nowMs: 0,
+      deadlineAtMs: 0,
+    });
+    let state = completeOnlySend(firstIdentify);
+    expect(state.identify).toMatchObject({
+      maxConcurrency: 3,
+      shardId: 4,
+      concurrencyBucket: 1,
+      remaining: 6,
+    });
+
+    state = gatewayConnectionClosed(state, 1006).state;
+    state = gatewayConnectionOpened(state, 1_000).state;
+    const secondHello = receiveGatewayText(
+      state,
+      gatewayPayload(10, { heartbeat_interval: 10_000 }),
+      { nowMs: 1_000, firstHeartbeatJitter: 1 },
+    );
+    const scheduled = beginGatewayHandshake(secondHello.state, {
+      nowMs: 1_000,
+      deadlineAtMs: 5_000,
+    });
+    expect(scheduled.commands).toEqual([
+      {
+        type: "schedule_handshake",
+        atMs: 5_000,
+        deadlineAtMs: 5_000,
+        mode: "identify",
+      },
+    ]);
+
+    const secondIdentify = beginGatewayHandshake(scheduled.state, {
+      nowMs: 5_000,
+      deadlineAtMs: 5_000,
+    });
+    expect(command(secondIdentify, "send_gateway_event").event.kind).toBe("identify");
+    expect(secondIdentify.state.identify.remaining).toBe(5);
   });
 
   it("schedules IDENTIFY within a deadline and fails closed when the session-start gate cannot fit", () => {
@@ -763,6 +888,35 @@ describe("RESUME replay", () => {
       lastCheckpointedSequence: 17,
     });
     expect(command(failed, "reconnect_gateway").mode).toBe("resume");
+  });
+
+  it("keeps an equal-sequence RESUMED in replay until a greater RESUMED checkpoint persists", () => {
+    let state = startResume(10);
+    const equal = receiveGatewayText(state, dispatch("RESUMED", 10), { nowMs: 2 });
+    expect(equal.state).toMatchObject({
+      phase: "resuming",
+      lastReceivedSequence: 10,
+      lastCheckpointedSequence: 10,
+      replayTelemetryCount: 1,
+    });
+    expect(equal.commands).toEqual([]);
+    expect(equal.diagnostics[0]).toMatchObject({
+      category: "replayed_dispatch",
+      sequenceRelation: "equal",
+    });
+
+    const greater = receiveGatewayText(equal.state, dispatch("RESUMED", 17), { nowMs: 3 });
+    expect(greater.state).toMatchObject({
+      phase: "resumed",
+      lastCheckpointedSequence: 10,
+      pendingDispatchSequence: 17,
+    });
+    state = completeCheckpoint(greater);
+    expect(state).toMatchObject({
+      phase: "active",
+      lastCheckpointedSequence: 17,
+      pendingDispatchSequence: null,
+    });
   });
 
   it("keeps fresh pre-READY Dispatch invalid while accepting the equivalent replay Dispatch", () => {

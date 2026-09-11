@@ -357,6 +357,8 @@ export interface GatewayStateSummary {
     remaining: number;
     resetAfterMs: number;
     maxConcurrency: number;
+    shardId: number;
+    concurrencyBucket: number;
     authorizedThisRun: number;
   }>;
   readonly outbound: Readonly<{

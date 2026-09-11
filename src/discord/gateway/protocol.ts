@@ -51,7 +51,9 @@ interface IdentifyState {
   readonly resetAfterMs: number;
   readonly resetAtMs: number;
   readonly maxConcurrency: number;
-  readonly recentAuthorizationsMs: readonly number[];
+  readonly shardId: number;
+  readonly concurrencyBucket: number;
+  readonly lastBucketAuthorizationAtMs: number | null;
   readonly authorizedThisRun: number;
 }
 
@@ -90,6 +92,7 @@ interface PendingCheckpoint {
 interface PendingSessionClear {
   readonly kind: "clear_session";
   readonly effectId: number;
+  readonly connectionClosed: boolean;
 }
 
 export type PendingGatewayEffect =
@@ -135,6 +138,8 @@ export interface CreateGatewayProtocolOptions {
   readonly sessionStartLimitObservedAtMs: number;
   readonly classifyMessage: GatewayMessageClassifier;
   readonly connectionGeneration?: number;
+  /** Discord's unsharded default is shard 0. */
+  readonly shardId?: number;
   readonly persistedSession?: Readonly<{
     handle: GatewaySessionHandle;
     checkpoint: number;
@@ -202,17 +207,22 @@ function validateSessionStartLimit(limit: GatewaySessionStartLimit): void {
 function makeIdentifyState(
   limit: GatewaySessionStartLimit,
   observedAtMs: number,
+  shardId: number,
   previous?: IdentifyState,
 ): IdentifyState {
   validateSessionStartLimit(limit);
   if (!validTime(observedAtMs)) throw new RangeError("invalid_gateway_time");
+  if (!Number.isSafeInteger(shardId) || shardId < 0)
+    throw new RangeError("invalid_gateway_shard_id");
   return {
     total: limit.total,
     remaining: limit.remaining,
     resetAfterMs: limit.reset_after,
     resetAtMs: observedAtMs + limit.reset_after,
     maxConcurrency: limit.max_concurrency,
-    recentAuthorizationsMs: previous?.recentAuthorizationsMs ?? [],
+    shardId,
+    concurrencyBucket: shardId % limit.max_concurrency,
+    lastBucketAuthorizationAtMs: previous?.lastBucketAuthorizationAtMs ?? null,
     authorizedThisRun: previous?.authorizedThisRun ?? 0,
   };
 }
@@ -240,7 +250,11 @@ export function createGatewayProtocolState(
     session: options.persistedSession?.handle ?? null,
     pendingEffect: null,
     outstandingOutbound: [],
-    identify: makeIdentifyState(options.sessionStartLimit, options.sessionStartLimitObservedAtMs),
+    identify: makeIdentifyState(
+      options.sessionStartLimit,
+      options.sessionStartLimitObservedAtMs,
+      options.shardId ?? 0,
+    ),
     outbound: createGatewayOutboundRateState(generation),
     classifyMessage: options.classifyMessage,
     violationTracker: { checkpoint, count: 0 },
@@ -266,6 +280,8 @@ export function summarizeGatewayState(state: GatewayProtocolState): GatewayState
       remaining: state.identify.remaining,
       resetAfterMs: state.identify.resetAfterMs,
       maxConcurrency: state.identify.maxConcurrency,
+      shardId: state.identify.shardId,
+      concurrencyBucket: state.identify.concurrencyBucket,
       authorizedThisRun: state.identify.authorizedThisRun,
     },
     outbound: {
@@ -361,7 +377,7 @@ function protocolViolation(
   });
   const report = diagnostic(state, category, count, knownOpcodeCategory, sequenceRelation);
   if (state.phase === "halted") return { state, commands: [], diagnostics: [report] };
-  if (state.phase === "non_resumable" && count < MALFORMED_HALT_THRESHOLD)
+  if (state.phase === "non_resumable")
     return { state: tracked, commands: [], diagnostics: [report] };
   if (count >= MALFORMED_HALT_THRESHOLD)
     return {
@@ -383,19 +399,23 @@ export function updateGatewaySessionStartLimit(
   limit: GatewaySessionStartLimit,
   observedAtMs: number,
 ): GatewayProtocolState {
-  return evolve(state, { identify: makeIdentifyState(limit, observedAtMs, state.identify) });
+  return evolve(state, {
+    identify: makeIdentifyState(limit, observedAtMs, state.identify.shardId, state.identify),
+  });
 }
 
 function refreshIdentify(state: IdentifyState, nowMs: number): IdentifyState {
-  const recent = state.recentAuthorizationsMs.filter(
-    (timestamp) => timestamp > nowMs - IDENTIFY_CONCURRENCY_WINDOW_MS,
-  );
-  if (nowMs < state.resetAtMs) return { ...state, recentAuthorizationsMs: recent };
+  const lastBucketAuthorizationAtMs =
+    state.lastBucketAuthorizationAtMs !== null &&
+    state.lastBucketAuthorizationAtMs > nowMs - IDENTIFY_CONCURRENCY_WINDOW_MS
+      ? state.lastBucketAuthorizationAtMs
+      : null;
+  if (nowMs < state.resetAtMs) return { ...state, lastBucketAuthorizationAtMs };
   return {
     ...state,
     remaining: state.total,
     resetAtMs: nowMs + state.resetAfterMs,
-    recentAuthorizationsMs: recent,
+    lastBucketAuthorizationAtMs,
   };
 }
 
@@ -442,11 +462,13 @@ function authorizeOutbound(
   };
 }
 
-function nextIdentifyAvailability(state: IdentifyState, nowMs: number): number | null {
-  if (state.remaining <= 0) return state.resetAtMs;
-  if (state.recentAuthorizationsMs.length < state.maxConcurrency) return nowMs;
-  const oldest = state.recentAuthorizationsMs[0];
-  return oldest === undefined ? null : oldest + IDENTIFY_CONCURRENCY_WINDOW_MS;
+function nextIdentifyAvailability(state: IdentifyState, nowMs: number): number {
+  const sessionLimitReadyAt = state.remaining <= 0 ? state.resetAtMs : nowMs;
+  const bucketReadyAt =
+    state.lastBucketAuthorizationAtMs === null
+      ? nowMs
+      : state.lastBucketAuthorizationAtMs + IDENTIFY_CONCURRENCY_WINDOW_MS;
+  return Math.max(sessionLimitReadyAt, bucketReadyAt);
 }
 
 export function beginGatewayHandshake(
@@ -497,7 +519,7 @@ export function beginGatewayHandshake(
   const identify = refreshIdentify(state.identify, input.nowMs);
   const identifyReadyAt = nextIdentifyAvailability(identify, input.nowMs);
   const refreshed = evolve(state, { identify });
-  if (identifyReadyAt === null || identifyReadyAt > input.deadlineAtMs)
+  if (identifyReadyAt > input.deadlineAtMs)
     return haltForLocalPolicy(refreshed, "identify_session_start_limit_violation");
   if (identifyReadyAt > input.nowMs)
     return {
@@ -542,7 +564,7 @@ export function beginGatewayHandshake(
       identify: {
         ...identify,
         remaining: identify.remaining - 1,
-        recentAuthorizationsMs: [...identify.recentAuthorizationsMs, input.nowMs],
+        lastBucketAuthorizationAtMs: input.nowMs,
         authorizedThisRun: identify.authorizedThisRun + 1,
       },
     }),
@@ -728,10 +750,7 @@ function handleDispatch(
   const relation = sequenceRelation(state.lastCheckpointedSequence, sequence);
   if (relation === "equal") {
     const count = Math.min(state.replayTelemetryCount + 1, MAX_REPLAY_TELEMETRY);
-    const next = evolve(state, {
-      replayTelemetryCount: count,
-      phase: state.phase === "resuming" && eventName === "RESUMED" ? "active" : state.phase,
-    });
+    const next = evolve(state, { replayTelemetryCount: count });
     return {
       state: next,
       commands: [],
@@ -925,8 +944,9 @@ function requestedHeartbeat(state: GatewayProtocolState, nowMs: number): Gateway
 }
 
 function heartbeatAcknowledged(state: GatewayProtocolState): GatewayTransition {
-  if (!heartbeatAllowed(state) || state.heartbeat === null || !state.heartbeat.ackOutstanding)
+  if (!heartbeatAllowed(state) || state.heartbeat === null)
     return protocolViolation(state, "illegal_lifecycle_transition", "heartbeat_ack");
+  if (!state.heartbeat.ackOutstanding) return emptyTransition(state);
   return emptyTransition(
     evolve(state, { heartbeat: { ...state.heartbeat, ackOutstanding: false } }),
   );
@@ -944,7 +964,7 @@ function handleInvalidSession(state: GatewayProtocolState, resumable: boolean): 
     state: evolve(state, {
       phase: "non_resumable",
       heartbeat: null,
-      pendingEffect: { kind: "clear_session", effectId },
+      pendingEffect: { kind: "clear_session", effectId, connectionClosed: false },
       pendingDispatchSequence: null,
       outstandingOutbound: [],
       nextId: effectId + 1,
@@ -1109,6 +1129,24 @@ export function gatewayConnectionClosed(
   code: number | null,
 ): GatewayTransition {
   if (state.phase === "halted") return emptyTransition(state);
+  if (state.phase === "non_resumable") {
+    const pending = state.pendingEffect;
+    if (pending === null || pending.kind !== "clear_session")
+      return {
+        state,
+        commands: [],
+        diagnostics: [diagnostic(state, "impossible_effect_completion")],
+      };
+    return {
+      state: evolve(state, {
+        heartbeat: null,
+        outstandingOutbound: [],
+        pendingEffect: { ...pending, connectionClosed: true },
+      }),
+      commands: [],
+      diagnostics: [diagnostic(state, "gateway_close")],
+    };
+  }
   const policy = classifyGatewayCloseCode(code);
   const report = diagnostic(state, "gateway_close");
   if (policy.projectAction === "halt")
@@ -1260,7 +1298,10 @@ export function completeGatewayEffect(
   });
   return {
     state: cleared,
-    commands: [closeCommand("server_reconnect"), { type: "reconnect_gateway", mode: "fresh" }],
+    commands: [
+      ...(pending.connectionClosed ? [] : [closeCommand("server_reconnect")]),
+      { type: "reconnect_gateway", mode: "fresh" },
+    ],
     diagnostics: [],
   };
 }
