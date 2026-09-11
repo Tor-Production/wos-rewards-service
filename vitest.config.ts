@@ -33,6 +33,12 @@ export default defineConfig(async () => {
       }),
     ],
     test: {
+      // A Workers pool is substantially heavier than a normal Vitest worker. Keep high-core
+      // developer machines and CI runners from trying to boot every test file at once.
+      maxWorkers: 1,
+      // D1 migration and crash-recovery integration cases can exceed Vitest's five-second
+      // default on Windows while remaining comfortably bounded.
+      testTimeout: 30_000,
       // Applies the migrations to the test database before any test runs.
       setupFiles: ["./test/apply-migrations.ts"],
     },
