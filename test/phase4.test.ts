@@ -80,6 +80,7 @@ async function register(pid = uniqueId(), state = "0", eventId = uniqueId()) {
     config,
     event,
     parsed: parseRegistration(event.content, state),
+    acceptanceClass: "normal",
     now: clock,
     attemptRunId: crypto.randomUUID(),
   });
@@ -467,6 +468,7 @@ describe("distribution, summaries, durable delivery and repair", () => {
       config,
       event,
       parsed: parseRegistration(event.content, "0"),
+      acceptanceClass: "normal",
       now: clock,
       attemptRunId: crypto.randomUUID(),
     });
@@ -691,6 +693,7 @@ it.each([61, 301])(
       config,
       event,
       parsed: parseRegistration(event.content, "0"),
+      acceptanceClass: "normal",
       now: clock,
       attemptRunId: crypto.randomUUID(),
     });
@@ -728,6 +731,7 @@ it("Discord cooldown blocks other groups and exhausted attempts require human at
       config,
       event,
       parsed: parseRegistration(event.content, "0"),
+      acceptanceClass: "normal",
       now: clock,
       attemptRunId: crypto.randomUUID(),
     });

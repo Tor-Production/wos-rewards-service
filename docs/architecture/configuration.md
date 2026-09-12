@@ -47,7 +47,7 @@ Wrangler vars (non-secret) and Wrangler secrets (secret).
 | `OUTPUT_TIMEOUT_SECONDS` | output client | default 10 seconds; output lease must exceed it |
 | `DISCORD_DELIVERY_ENABLED` | fail-closed configuration | must remain false; only an explicitly injected synthetic transport can deliver locally |
 | `PROVIDER_RATE_LIMIT_PER_SECOND` | provider adapter | client-side rate limiting toward the provider |
-| `SPIKE_SENDER_ALLOWLIST` | `DiscordEventSource` **and** ingestion Worker (**staging only**) | strictly comma-separated dedicated spike bot/webhook snowflake ids without whitespace; duplicates are collapsed; empty means strict filtering; source and Worker both check it; system and own-application messages always drop; the application id is rejected in the list; never set in production |
+| `SPIKE_SENDER_ALLOWLIST` | `DiscordEventSource` **and** ingestion Worker (**staging only**) | strictly comma-separated dedicated spike bot/webhook snowflake ids without whitespace; duplicates are collapsed; empty means strict filtering; after authentication the Worker classifies a bot by `author_id` or webhook by `webhook_id`; a human is always normal even if its id matches; system and own-application messages always drop; the application id is rejected in the list; never set in production; accepted invalid spike output is retained only in the immutable migration-0003 suppressed shape |
 | `LOG_LEVEL` | all | structured-log verbosity |
 
 Phase 3 preserves identifiers as digit strings, including leading zeros: Discord ids have

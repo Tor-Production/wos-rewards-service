@@ -176,10 +176,21 @@ webhook-authored messages
 `SPIKE_SENDER_ALLOWLIST` (the dedicated spike sender's bot / webhook id(s)) is consulted by
 **both** the `DiscordEventSource` and the Ingestion Worker: the source **forwards** an
 allow-listed sender's message (flags intact) instead of dropping it — otherwise it would
-never reach the Worker — and the Worker re-checks the same list as the **authoritative
-gate** and asserts `ENVIRONMENT !== "production"` before reading it. The variable is
+never reach the Worker — and, only after ingestion authentication succeeds, the Worker
+re-checks the same list as the **authoritative gate** and asserts
+`ENVIRONMENT === "staging"` before reading it. Bot messages match their author id; webhook
+messages match their webhook id. The variable is
 **never defined in the production config of either tier**, and it can only ever admit a bot
 account or incoming webhook. The production author filter is therefore never weakened.
+
+**Acceptance/output containment.** Every planned probe is intentionally invalid registration
+syntax. In the same two-statement D1 acceptance batch, the Worker writes one immediately
+finalized `staging_spike` marker plus one deterministic validation-reply evidence row born
+`superseded`, ineligible, permanently blocked, and without any claim, attempt, sent state,
+operation, outbox, Queue, provider, or Discord work. Migration 0003 uses OLD-aware triggers
+to make both retained rows immutable and to reject dispatchable inserts or relinks. This
+safety boundary is prerequisite infrastructure; it does not build the Gateway adapter,
+poster, observer, or expected-message ledger described below.
 
 **Test-message generation.** The dedicated spike bot / webhook posts messages
 `SPIKE-<seq>-<uuid>` into a dedicated staging channel at a defined cadence: 1 message/minute
@@ -253,8 +264,10 @@ evidence for this decision; they are not platform commitments.
 
 ### Either way
 
-- The backend, D1 model, queues, operation aggregation, and Discord output are unchanged —
-  they depend only on `RegistrationMessageEvent`.
+- The registration/redemption business path, queues, and operation aggregation continue to
+  depend only on `RegistrationMessageEvent`. The D1/output boundary retains immutable,
+  permanently non-dispatchable evidence for the staging spike exception; normal human
+  acceptance and delivery are unchanged.
 
 ---
 

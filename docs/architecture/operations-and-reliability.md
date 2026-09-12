@@ -91,6 +91,134 @@ Trigger budget.
 
 Migrations are applied to staging first, then production, after review.
 
+### Staging-spike reconciliation, abort, and cleanup invariants
+
+Migration 0003 is still applied locally only in the current repository state. After a
+reviewed staging migration and before any future spike traffic, run the following read-only
+queries; repeat them during the run, after any abort, at completion, and after cleanup.
+Every count must be zero. `?1` in the dispatcher query is the current ISO-8601 timestamp.
+
+```sql
+-- Zero spike markers outside their finalized terminal shape.
+SELECT COUNT(*) AS unsafe_spike_markers
+FROM processed_events
+WHERE acceptance_class = 'staging_spike'
+  AND NOT (
+    status = 'finalized'
+    AND outcome = 'invalid'
+    AND operation_id IS NULL
+    AND validation_reason IS NOT NULL
+    AND output_delivery_group <> ''
+    AND received_at IS NOT NULL
+    AND accepted_at IS NOT NULL
+    AND committed_at IS NULL
+    AND finalized_at IS accepted_at
+  );
+```
+
+```sql
+-- Zero missing or malformed spike output-evidence rows.
+SELECT COUNT(*) AS unsafe_spike_outputs
+FROM processed_events e
+LEFT JOIN discord_output_deliveries d ON d.event_id = e.event_id
+WHERE e.acceptance_class = 'staging_spike'
+  AND (
+    d.delivery_id IS NULL
+    OR NOT (
+      d.delivery_group = e.output_delivery_group
+      AND d.operation_id IS NULL
+      AND d.output_type = 'validation_reply'
+      AND d.chunk_index = 1
+      AND d.chunk_total = 1
+      AND d.content <> ''
+      AND d.content_hash <> ''
+      AND d.nonce <> ''
+      AND d.has_footer = 0
+      AND d.status = 'superseded'
+      AND d.dispatch_eligible = 0
+      AND d.suppression_reason = 'staging_spike_sender'
+      AND d.suppressed_at IS e.accepted_at
+      AND d.permanent_dispatch_block = 1
+      AND d.blocked_at IS e.accepted_at
+      AND d.claim_token IS NULL
+      AND d.claim_expires_at IS NULL
+      AND d.attempts = 0
+      AND d.discord_message_id IS NULL
+      AND d.sent_at IS NULL
+      AND d.available_at IS NULL
+      AND d.last_error IS NULL
+      AND d.alerted_at IS NULL
+      AND d.created_at IS e.accepted_at
+      AND d.updated_at IS e.accepted_at
+    )
+  );
+```
+
+```sql
+-- Zero spike rows matching the dispatcher's complete selection predicate.
+SELECT COUNT(*) AS dispatchable_spike_outputs
+FROM discord_output_deliveries d
+JOIN processed_events e ON e.event_id = d.event_id
+LEFT JOIN operations o ON o.operation_id = d.operation_id
+WHERE e.acceptance_class = 'staging_spike'
+  AND d.status IN ('pending', 'claimed')
+  AND d.blocked_at IS NULL
+  AND d.dispatch_eligible = 1
+  AND d.permanent_dispatch_block = 0
+  AND d.suppression_reason IS NULL
+  AND d.suppressed_at IS NULL
+  AND COALESCE(d.available_at, d.created_at) <= ?1
+  AND (d.status = 'pending' OR d.claim_expires_at < ?1)
+  AND (d.operation_id IS NULL OR o.summary_state IN ('built', 'delivering'))
+  AND NOT EXISTS (
+    SELECT 1
+    FROM discord_output_deliveries prior
+    WHERE prior.delivery_group = d.delivery_group
+      AND prior.chunk_index < d.chunk_index
+      AND prior.status <> 'sent'
+  );
+```
+
+```sql
+-- Zero spike outputs with any claim, attempt, Discord id, or sent timestamp.
+SELECT COUNT(*) AS delivered_or_attempted_spike_outputs
+FROM discord_output_deliveries d
+JOIN processed_events e ON e.event_id = d.event_id
+WHERE e.acceptance_class = 'staging_spike'
+  AND (
+    d.claim_token IS NOT NULL
+    OR d.claim_expires_at IS NOT NULL
+    OR d.attempts <> 0
+    OR d.discord_message_id IS NOT NULL
+    OR d.sent_at IS NOT NULL
+  );
+```
+
+For the expected-message ledger, bind every accepted expected event id as a `VALUES` row
+(extend the placeholder list without embedding message content). This query must return
+zero rows; it proves exactly one marker and one associated output-evidence row per id. Run
+the same query after duplicate delivery attempts—the result must remain empty.
+
+```sql
+WITH expected(event_id) AS (VALUES (?1), (?2), (?3))
+SELECT x.event_id,
+       CASE WHEN e.event_id IS NULL THEN 0 ELSE 1 END AS marker_count,
+       COUNT(d.delivery_id) AS output_count
+FROM expected x
+LEFT JOIN processed_events e
+  ON e.event_id = x.event_id AND e.acceptance_class = 'staging_spike'
+LEFT JOIN discord_output_deliveries d ON d.event_id = e.event_id
+GROUP BY x.event_id, e.event_id
+HAVING (CASE WHEN e.event_id IS NULL THEN 0 ELSE 1 END) <> 1
+    OR COUNT(d.delivery_id) <> 1;
+```
+
+Any non-zero safety count or returned ledger row is an immediate abort condition before
+deployment, during the eventual spike, after an aborted run, at completion, and after
+cleanup. Cleanup may remove only separately authorized temporary spike infrastructure and
+configuration; it must retain these database rows. Migration-0003 delete/update triggers
+prevent cleanup from removing or re-enabling the evidence. No query above writes data.
+
 ---
 
 ## 20. Observability without leaking secrets
@@ -193,7 +321,10 @@ Migrations are applied to staging first, then production, after review.
     `db.batch()` exceeds a bounded row count; a summary over `SUMMARY_MAX_CHUNKS` emits a
     deterministic `"+N more not listed"` line;
   - **durable output delivery:** dispatcher resumes at the first unsent chunk after a crash;
-    validation reply carries no footer; re-send within the nonce window does not duplicate;
+    a normal validation reply carries no footer; re-send within the nonce window does not
+    duplicate; selection and claim both exclude staging-spike suppression metadata and
+    require the eligibility/permanent-block guards; a synthetic transport sends a normal
+    row while immutable spike evidence remains untouched;
   - **outbox dispatch (Phase 3):** decimal-byte and message-count packing with metadata
     charged, sequential sends, bounded SQL marking, deterministic retry backoff and
     `dead` marking; malformed/oversized payloads are terminal without consuming attempts;
@@ -205,8 +336,11 @@ Migrations are applied to staging first, then production, after review.
     `dead` rows remain untouched, since it implements neither recovery path;
   - **author filtering:** bot-, system-, webhook-, and own-application-authored messages are
     dropped in production by **both** the `DiscordEventSource` and the Worker; in staging the
-    source forwards `SPIKE_SENDER_ALLOWLIST` senders and the Worker re-checks the same list;
-    with the list unset (production config) both filters are strict;
+    source forwards `SPIKE_SENDER_ALLOWLIST` senders and the authenticated Worker re-checks
+    the appropriate bot-author or webhook id; humans remain normal even on an id match; with
+    the list unset (production config) both filters are strict. Migration/acceptance tests
+    prove exact terminal evidence, OLD-aware rejection, atomic rollback, duplicates, and no
+    operation/outbox/Queue/provider/Discord/network side effect;
   - item-lease concurrency (two workers, one winner; expired-lease steal);
   - zero-result operation finalisation; bounded-expansion resume from cursor.
 - **Provider:** `MockWhiteoutProvider` in every automated test and in staging.

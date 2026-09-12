@@ -68,6 +68,12 @@
 - **Staging spike exception:** reachable at **both** the `DiscordEventSource` (forwards
   allow-listed bot/webhook senders) and the Ingestion Worker (authoritative gate); the
   production filter is unconditional because `SPIKE_SENDER_ALLOWLIST` is absent there.
+  The Worker classifies only after authentication, requires exact `staging`, distinguishes
+  bot author ids from webhook ids, and never classifies a human as a spike sender. Invalid
+  probes atomically retain an immediately finalized `staging_spike` marker and one
+  validation-reply evidence row born superseded, dispatch-ineligible, and permanently
+  blocked. OLD-aware D1 triggers make both rows immutable and prevent insert/relink escape;
+  dispatcher selection and claim repeat all suppression guards.
 - **Genuinely frozen summary source:** the instant `summary_state` leaves `none`,
   `operation_items` for that operation is frozen — a later redemption outcome goes to
   **`operation_late_results`**, and `display_label` was immutable from item creation. The
@@ -131,6 +137,11 @@
   long an active outbound connection *prevents* eviction) are documented but operational
   **[fact:C1][fact:C2]**; the spike must observe actual behaviour and must not be read as a
   platform guarantee.
+- The immutable staging-spike acceptance boundary is implemented locally, but it does not
+  prove Gateway residency or event delivery: the Durable Object adapter, poster, observer,
+  expected-message ledger, provisioning, and live 72-hour spike remain separate,
+  explicitly authorized work. Retained spike rows must survive cleanup and every documented
+  reconciliation count must remain zero.
 - Discord documents no exactly-once message creation; a summary chunk or validation reply
   re-sent outside the few-minute `enforce_nonce` window can duplicate **[fact:D6]** —
   mitigated, not eliminated.

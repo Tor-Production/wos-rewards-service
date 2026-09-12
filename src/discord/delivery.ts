@@ -147,7 +147,10 @@ export async function dispatchOutput(
   const row = await db
     .prepare(
       `SELECT d.* FROM discord_output_deliveries d LEFT JOIN operations o ON o.operation_id=d.operation_id
-    WHERE d.status IN ('pending','claimed') AND d.blocked_at IS NULL AND COALESCE(d.available_at,d.created_at)<=?1
+    WHERE d.status IN ('pending','claimed') AND d.blocked_at IS NULL
+    AND d.dispatch_eligible=1 AND d.permanent_dispatch_block=0
+    AND d.suppression_reason IS NULL AND d.suppressed_at IS NULL
+    AND COALESCE(d.available_at,d.created_at)<=?1
     AND (d.status='pending' OR d.claim_expires_at<?1)
     AND (d.operation_id IS NULL OR o.summary_state IN ('built','delivering'))
     AND NOT EXISTS(SELECT 1 FROM discord_output_deliveries prior WHERE prior.delivery_group=d.delivery_group AND prior.chunk_index<d.chunk_index AND prior.status<>'sent')
@@ -167,7 +170,10 @@ export async function dispatchOutput(
   const claimed = await db
     .prepare(
       `UPDATE discord_output_deliveries SET status='claimed',claim_token=?1,claim_expires_at=?2,attempts=attempts+1,updated_at=?3
-    WHERE delivery_id=?4 AND blocked_at IS NULL AND attempts<?5 AND (status='pending' OR (status='claimed' AND claim_expires_at<?3))`,
+    WHERE delivery_id=?4 AND blocked_at IS NULL
+    AND dispatch_eligible=1 AND permanent_dispatch_block=0
+    AND suppression_reason IS NULL AND suppressed_at IS NULL
+    AND attempts<?5 AND (status='pending' OR (status='claimed' AND claim_expires_at<?3))`,
     )
     .bind(token, expiry, stamp, row.delivery_id, config.outputMaxAttempts)
     .run();

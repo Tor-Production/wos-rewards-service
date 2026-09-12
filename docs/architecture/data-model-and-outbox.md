@@ -117,7 +117,10 @@ another order.
    documented default, and the `content_hash`-only variant noted below would be a separate
    decision with its own migration.
 3. `nonce` is bounded to **1–25** characters, not merely `<= 25`.
-4. There are **no unique constraints or unique indexes other than the primary keys**.
+4. In migration 0001 there are **no unique constraints or unique indexes other than the
+   primary keys**. Migration 0003 later adds one partial unique evidence index,
+   `uq_staging_spike_output_event`, so an accepted staging-spike event can retain exactly
+   one suppressed output row.
    [§15.4](summary-and-delivery.md#154-deterministic-bounded-crash-resumable-summary-build-and-per-chunk-delivery)
    specifies *targeted* upserts (`ON CONFLICT (operation_id, player_id, code) DO NOTHING`,
    `ON CONFLICT (delivery_id) DO NOTHING`), and in SQLite a targeted `DO NOTHING` aborts on a
@@ -165,10 +168,11 @@ Re-registration = upsert on `player_id`.
 |---|---|---|
 | `event_id` | TEXT PK | Discord message id; the atomic marker |
 | `kind` | TEXT | `registration` |
+| `acceptance_class` | TEXT | migration 0003: `normal` (safe default/backfill) / `staging_spike`; immutable after insertion |
 | `status` | TEXT | `accepted_invalid` / `accepted_valid` / `work_committed` / `finalized` |
 | `outcome` | TEXT NULL | `invalid` / `valid` |
 | `operation_id` | TEXT NULL | set in the same atomic unit for valid acceptance (`work_committed` for the fully expanded Phase 3 registration snapshot) |
-| `validation_reason` | TEXT NULL | set in the same atomic unit when `accepted_invalid` |
+| `validation_reason` | TEXT NULL | set in the same atomic unit for normal `accepted_invalid` and terminal `staging_spike` evidence |
 | `output_delivery_group` | TEXT | deterministic `evt:<event_id>` for every event; groups `discord_output_deliveries` rows for the validation reply when invalid |
 | `received_at`, `accepted_at`, `committed_at`, `finalized_at` | TEXT NULL | lifecycle timestamps |
 
@@ -179,6 +183,13 @@ delivery; the whole failed batch has rolled back and the event is acknowledged. 
 marker, the failure is rejected, never silently treated as a duplicate. Phase 3 writes
 `work_committed` directly for valid registrations because their membership is completely
 expanded in that transaction. It never creates an `accepted_valid` registration shell.
+
+An authenticated, allow-listed staging bot/webhook with invalid spike syntax is inserted
+directly as `acceptance_class = 'staging_spike'`, `status = 'finalized'`,
+`outcome = 'invalid'`, `operation_id = NULL`, `committed_at = NULL`, and
+`finalized_at = accepted_at`. It retains `received_at`, `accepted_at`,
+`validation_reason`, and `output_delivery_group`. OLD-aware migration-0003 triggers reject
+changing or deleting the marker; every pre-0003 row is backfilled/defaulted to `normal`.
 
 ### `redemptions` (global provider-call authority)
 
@@ -335,9 +346,17 @@ re-derives identical rows (`ON CONFLICT DO NOTHING`).
 | `attempts` | INTEGER | send attempts |
 | `discord_message_id` | TEXT NULL | recorded after Create Message |
 | `sent_at`, `created_at`, `updated_at` | TEXT NULL | |
+| `available_at` | TEXT NULL | Phase 4 due time; NULL on staging-spike evidence and never an authority to bypass permanent guards |
+| `last_error`, `blocked_at`, `alerted_at` | TEXT NULL | Phase 4 retry/attention state; staging-spike evidence sets only `blocked_at = accepted_at` |
+| `dispatch_eligible` | INTEGER | migration 0003 boolean; existing/normal output defaults to 1, spike evidence is 0 |
+| `suppression_reason` | TEXT NULL | `staging_spike_sender` only for retained spike evidence |
+| `suppressed_at` | TEXT NULL | acceptance timestamp for spike evidence |
+| `permanent_dispatch_block` | INTEGER | migration 0003 boolean; existing/normal output defaults to 0, spike evidence is 1 |
 
 All chunks of a logical message are built and persisted **before any are sent**. The
-dispatcher sends them in `chunk_index` order and resumes at the first non-`sent` row.
+dispatcher sends them in `chunk_index` order and resumes at the first non-`sent` row. Its
+selection and claim both require `dispatch_eligible = 1`,
+`permanent_dispatch_block = 0`, and NULL suppression metadata.
 
 ### `outbox_jobs`
 
@@ -496,3 +515,21 @@ reopened attempt. Dead jobs before freeze may reopen atomically; after freeze th
 a one-pair parked `repair_run` and late audit. `openRepairRun` can create a parked one-pair operation for a human-selected failed redemption; its request ID makes retries idempotent. `authorizeRepair` is an internal human-selected
 helper, never a public endpoint or a scheduler action. It creates fresh work only after
 explicit authorization and cannot reset a successful redemption.
+
+### Implemented additive Phase 5 safety migration (0003)
+
+`0003_phase5_spike_output_suppression.sql` adds `processed_events.acceptance_class` and the
+four output suppression fields described above. Safe defaults preserve every existing row
+as `normal`, dispatch eligible, and not permanently blocked; no existing status or timestamp
+is rewritten.
+
+Stable D1-compatible triggers enforce insertion of complete staging-spike terminal shapes,
+make the marker and its output evidence update/delete-immutable based on `OLD` state, reject
+attaching spike-only metadata to a normal row, reject relinking a normal output to a spike
+event, and reject a dispatchable output newly associated with a spike event. A simultaneous
+UPDATE that clears every suppression field still sees the protected OLD association and
+aborts. The partial unique index permits exactly one suppressed evidence output per spike
+event. Tests inspect the trigger definitions in `sqlite_schema`, exercise each forbidden
+mutation, upgrade representative Phase 4 rows, inject a failing migration statement to
+prove atomic DDL/data/ledger rollback, reapply safely through the migration journal, and run
+`PRAGMA foreign_key_check`.

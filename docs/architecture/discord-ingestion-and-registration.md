@@ -68,16 +68,20 @@ messages would be dropped by the production rule before reaching the Worker. In 
 is consulted by **both** tiers:
 
 - The **`DiscordEventSource`** (companion in Option 2, or the DO in Option 1) does **not**
-  drop a bot/webhook message whose `author_id` or `webhook_id` is in
-  `SPIKE_SENDER_ALLOWLIST`; it forwards it with all flags intact. This is the only change
-  that lets the spike message *reach* the Worker.
-- The **Ingestion Worker** remains the **authoritative staging gate**: it re-checks the
-  same `SPIKE_SENDER_ALLOWLIST`, drops any bot/webhook sender not on it, and **asserts
-  `ENVIRONMENT !== "production"`** before consulting the list at all.
+  drop a non-webhook bot whose `author_id` is allow-listed or a webhook message whose
+  `webhook_id` is allow-listed; it forwards the event with all flags intact. This is the
+  only change that lets the spike message *reach* the Worker.
+- The **Ingestion Worker** remains the **authoritative staging gate**: only after the request
+  passes `INGESTION_SHARED_SECRET` authentication does it re-check the same
+  `SPIKE_SENDER_ALLOWLIST`, drop any bot/webhook sender not on it, and **assert
+  `ENVIRONMENT === "staging"`** before consulting the list at all. Bot-authored messages
+  match on `author_id`; webhook-authored messages match on `webhook_id` and cannot borrow
+  the webhook author's bot id.
 
-The allow-list can only ever hold dedicated bot-account or incoming-webhook ids, never a
-normal user. System-authored and own-application messages are always ignored, including
-when an author or webhook is allow-listed. Configuration rejects an allow-list containing
+The allow-list can only ever hold dedicated bot-account or incoming-webhook ids. A normal
+human remains classed as `normal` even if its `author_id` happens to match an entry.
+System-authored and own-application messages are always ignored, including when an author
+or webhook is allow-listed. Configuration rejects an allow-list containing
 `DISCORD_APPLICATION_ID`. The list is never defined in the production config of either tier. See
 [ADR 0001 §6](../adr/0001-discord-event-ingestion.md#6-decision-proposed-spike-gated).
 
@@ -161,6 +165,17 @@ primary key before it reaches the marker; the same marker lookup still applies.
   1. `processed_events` row with `status = 'accepted_invalid'` and `validation_reason`;
   2. the `discord_output_deliveries` row for the validation reply (single chunk,
      deterministic ≤ 25-char nonce, `status = 'pending'`, **no footer**).
+- **Invalid input from an authenticated, allow-listed staging spike sender** — the same
+  two-statement atomic unit retains deterministic evidence but creates no deliverable work:
+  1. `processed_events.acceptance_class = 'staging_spike'`, immediately terminal as
+     `status = 'finalized'`, `outcome = 'invalid'`, `operation_id = NULL`, and
+     `finalized_at = accepted_at`; `committed_at` remains NULL;
+  2. one validation-reply evidence row inserted directly as `status = 'superseded'`,
+     `dispatch_eligible = 0`, `suppression_reason = 'staging_spike_sender'`, and
+     `permanent_dispatch_block = 1`, with no claim, attempt, Discord message, sent timestamp,
+     or due time. It is never first inserted as `pending` or `claimed`.
+  A valid-looking message from that automated identity fails closed with no acceptance or
+  registration work; the spike's planned `SPIKE-<seq>-<uuid>` probes are intentionally invalid.
 - **Valid input** — the atomic unit persists, together:
   1. **if the accepted registration changes `players.state`**, the guarded **T13** reopen of
      any state-dependent (`player_ineligible`, under cap) `redemptions` failures for this
@@ -205,11 +220,14 @@ bounds row count; it is not a proof of maximum write bytes or query duration, wh
 be measured with representative code sizes before an authorized deployment.
 
 **A crash cannot commit an event marker without its complete registration work or its
-validation-reply delivery row**, because each branch writes them in the same transaction.
+validation-reply/evidence row**, because each branch writes them in the same transaction.
+Migration 0003 additionally makes a staging-spike marker and its associated output row
+immutable through OLD-aware triggers. No later conforming dispatcher or simultaneous field
+reset can turn the evidence into deliverable output.
 
 ### Invalid message reply
 
-The validation reply is delivered by the **output delivery dispatcher**
+For a normal human, the validation reply is delivered by the **output delivery dispatcher**
 ([§15.4](summary-and-delivery.md#154-deterministic-bounded-crash-resumable-summary-build-and-per-chunk-delivery))
 from its persisted `discord_output_deliveries` row — the same durable mechanism as
 summaries (the trivial one-chunk case). It is
@@ -221,6 +239,11 @@ Phase 3 persists this row only; the output dispatcher is Phase 4. The reply has 
 deterministic reason variants, echoes no user input, and describes the four supported
 forms. The transport responds `202 accepted` for both valid and invalid registrations;
 the ingestion tier does not receive the business outcome.
+
+For an authenticated staging-spike sender, the same deterministic reply text, hash, nonce,
+delivery identity, and timestamps are retained only as evidence in the immutable suppressed
+shape above. Building the Durable Object/Gateway adapter, sender/observer harness, or
+expected-message ledger remains later Phase 5 work and is outside this acceptance boundary.
 
 ### Valid message — sequence
 

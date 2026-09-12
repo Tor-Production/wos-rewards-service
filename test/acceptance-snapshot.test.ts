@@ -34,6 +34,7 @@ async function accept(database = db) {
     config: testConfig(),
     event,
     parsed: parseRegistration(event.content, "0"),
+    acceptanceClass: "normal",
     now: FIXTURE_NOW,
     attemptRunId: newAttemptRunId(),
   });
@@ -185,6 +186,7 @@ describe("transactional registration snapshot", () => {
           config: testConfig(),
           event,
           parsed: parseRegistration(event.content, "0"),
+          acceptanceClass: "normal",
           now: FIXTURE_NOW,
           attemptRunId: newAttemptRunId(),
         }),

@@ -8,12 +8,14 @@ import {
   eventDeliveryGroup,
   nonceFor,
 } from "./identity";
+import type { AcceptanceClass } from "./author-filter";
 import type { ParseRegistrationResult } from "./registration-parser";
 import { renderDisplayLabel } from "./sanitize";
 import { validationReply } from "./validation-reply";
 
 export type AcceptanceOutcome =
   | { kind: "accepted_invalid" }
+  | { kind: "accepted_staging_spike" }
   | { kind: "accepted_valid"; operationId: string }
   | { kind: "duplicate" }
   | { kind: "rejected"; reason: "snapshot_too_large" | "d1_failure" };
@@ -23,6 +25,7 @@ interface AcceptanceInput {
   config: AppConfig;
   event: RegistrationMessageEvent;
   parsed: ParseRegistrationResult;
+  acceptanceClass: AcceptanceClass;
   now: Date;
   attemptRunId: string;
 }
@@ -33,34 +36,66 @@ interface AcceptanceInput {
  * when an orphan operation already has this event's deterministic ID. No advisory preflight read.
  */
 export async function acceptRegistrationEvent(input: AcceptanceInput): Promise<AcceptanceOutcome> {
-  const { db, config, event, parsed, now, attemptRunId } = input;
+  const { db, config, event, parsed, acceptanceClass, now, attemptRunId } = input;
   const timestamp = now.toISOString();
   const group = eventDeliveryGroup(event.event_id);
   const operationId = await deterministicUuid(`registration:${event.event_id}`);
+  // The allow-listed automation exists only to emit the deliberately invalid spike probes.
+  // Fail closed if it ever emits valid registration syntax: it must not create player/provider work.
+  if (acceptanceClass === "staging_spike" && parsed.ok) {
+    return { kind: "rejected", reason: "d1_failure" };
+  }
   let statements: D1PreparedStatement[];
   if (!parsed.ok) {
     const id = deliveryId(group, 1);
     const content = validationReply(parsed.reason);
     const [hash, nonce] = await Promise.all([contentHash(content), nonceFor(id)]);
+    const stagingSpike = acceptanceClass === "staging_spike";
     statements = [
       db
         .prepare(
           `INSERT INTO processed_events
         (event_id, kind, status, outcome, operation_id, validation_reason,
-         output_delivery_group, received_at, accepted_at, committed_at, finalized_at)
-        VALUES (?1, 'registration', 'accepted_invalid', 'invalid', NULL, ?2, ?3, ?4, ?4, NULL, NULL)`,
+         output_delivery_group, received_at, accepted_at, committed_at, finalized_at,
+         acceptance_class)
+        VALUES (?1, 'registration', ?5, 'invalid', NULL, ?2, ?3, ?4, ?4, NULL, ?6, ?7)`,
         )
-        .bind(event.event_id, parsed.reason, group, timestamp),
+        .bind(
+          event.event_id,
+          parsed.reason,
+          group,
+          timestamp,
+          stagingSpike ? "finalized" : "accepted_invalid",
+          stagingSpike ? timestamp : null,
+          acceptanceClass,
+        ),
       db
         .prepare(
           `INSERT INTO discord_output_deliveries
         (delivery_id, delivery_group, event_id, operation_id, channel_id, output_type,
          chunk_index, chunk_total, content, content_hash, has_footer, nonce, status,
-         claim_token, claim_expires_at, attempts, discord_message_id, sent_at, created_at, updated_at)
-        VALUES (?1, ?2, ?3, NULL, ?4, 'validation_reply', 1, 1, ?5, ?6, 0, ?7, 'pending',
-                NULL, NULL, 0, NULL, NULL, ?8, ?8)`,
+         claim_token, claim_expires_at, attempts, discord_message_id, sent_at, created_at,
+         updated_at, available_at, last_error, blocked_at, alerted_at, dispatch_eligible,
+         suppression_reason, suppressed_at, permanent_dispatch_block)
+        VALUES (?1, ?2, ?3, NULL, ?4, 'validation_reply', 1, 1, ?5, ?6, 0, ?7, ?9,
+                NULL, NULL, 0, NULL, NULL, ?8, ?8, NULL, NULL, ?10, NULL, ?11, ?12, ?13, ?14)`,
         )
-        .bind(id, group, event.event_id, event.channel_id, content, hash, nonce, timestamp),
+        .bind(
+          id,
+          group,
+          event.event_id,
+          event.channel_id,
+          content,
+          hash,
+          nonce,
+          timestamp,
+          stagingSpike ? "superseded" : "pending",
+          stagingSpike ? timestamp : null,
+          stagingSpike ? 0 : 1,
+          stagingSpike ? "staging_spike_sender" : null,
+          stagingSpike ? timestamp : null,
+          stagingSpike ? 1 : 0,
+        ),
     ];
   } else {
     const { playerId, state, displayName } = parsed;
@@ -124,8 +159,10 @@ export async function acceptRegistrationEvent(input: AcceptanceInput): Promise<A
         .prepare(
           `INSERT INTO processed_events
         (event_id, kind, status, outcome, operation_id, validation_reason,
-         output_delivery_group, received_at, accepted_at, committed_at, finalized_at)
-        VALUES (?1, 'registration', 'work_committed', 'valid', ?2, NULL, ?3, ?4, ?4, ?4, NULL)`,
+         output_delivery_group, received_at, accepted_at, committed_at, finalized_at,
+         acceptance_class)
+        VALUES (?1, 'registration', 'work_committed', 'valid', ?2, NULL, ?3, ?4, ?4, ?4, NULL,
+                'normal')`,
         )
         .bind(event.event_id, operationId, group, timestamp),
       db
@@ -155,7 +192,10 @@ export async function acceptRegistrationEvent(input: AcceptanceInput): Promise<A
 
   try {
     await db.batch(statements);
-    return parsed.ok ? { kind: "accepted_valid", operationId } : { kind: "accepted_invalid" };
+    if (parsed.ok) return { kind: "accepted_valid", operationId };
+    return acceptanceClass === "staging_spike"
+      ? { kind: "accepted_staging_spike" }
+      : { kind: "accepted_invalid" };
   } catch {
     // Never inspect an error string. A durable marker is the only evidence of a duplicate.
     try {

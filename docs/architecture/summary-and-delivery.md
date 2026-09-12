@@ -95,9 +95,14 @@ byte-identical.
     `summary_build_cursor = summary_chunk_total`, set `summary_state = 'built'`.
 2. **Deliver (resumable).** The output delivery dispatcher (Cron) processes the
    group in `chunk_index` order (`summary_state`: `built → delivering → delivered`):
+   - selection requires `dispatch_eligible = 1`, `permanent_dispatch_block = 0`,
+     `suppression_reason IS NULL`, and `suppressed_at IS NULL`, in addition to the existing
+     pending/expired-claim, due-time, group-order, and operation-state predicates;
    - claim: `UPDATE discord_output_deliveries SET status='claimed', claim_token=:tok,
-     claim_expires_at=:exp WHERE delivery_id=:id AND (status='pending' OR
-     (status='claimed' AND claim_expires_at < :now))`;
+     claim_expires_at=:exp WHERE delivery_id=:id AND dispatch_eligible=1 AND
+     permanent_dispatch_block=0 AND suppression_reason IS NULL AND suppressed_at IS NULL
+     AND (status='pending' OR (status='claimed' AND claim_expires_at < :now))`; the claim
+     repeats the selection's safety guards rather than trusting the earlier read;
    - send via Create Message with the row's `nonce` and `enforce_nonce = true`;
    - record: `UPDATE ... SET status='sent', discord_message_id=:mid, sent_at=:now WHERE
      delivery_id=:id AND claim_token=:tok`.
@@ -128,8 +133,15 @@ request and attempt-exhaustion failures for human attention. Restart uses the sa
 and content hash; a stale claim token cannot save a late result. Raw response/error bodies
 are never logged. Tests model a suppression window; its length is not a Discord guarantee.
 
-**Delivery guarantee.** One logical result per operation (or per invalid event), **delivered
-at least once with bounded Discord nonce suppression**. Within Discord's few-minute
+Migration 0003's staging-spike validation-reply rows are evidence, not queued output. They
+are inserted directly as `superseded`, dispatch-ineligible, suppression-marked and
+permanently blocked; database triggers prohibit every later update or delete based on the
+OLD event association. The dispatcher predicates above are defense in depth: enabling or
+injecting a future Discord transport cannot make retained spike evidence claimable.
+
+**Delivery guarantee.** One logical result per operation (or per normal invalid event),
+**delivered at least once with bounded Discord nonce suppression**. Staging-spike evidence
+is deliberately excluded from delivery. Within Discord's few-minute
 `enforce_nonce` window a re-send of the same chunk returns the existing message
 **[fact:D6]**; **outside that window a duplicate chunk is possible**. Mitigations: short
 dispatcher lease (`OUTPUT_CLAIM_LEASE_SECONDS`), deterministic content per chunk, and the
