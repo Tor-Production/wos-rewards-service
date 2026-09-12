@@ -48,6 +48,7 @@ async function register(playerId = "100") {
     config,
     event,
     parsed: parseRegistration(event.content, "0"),
+    acceptanceClass: "normal",
     now: clock,
     attemptRunId: crypto.randomUUID(),
   });

@@ -12,6 +12,9 @@ declare namespace Cloudflare {
     PHASE4_DB: D1Database;
     THROUGHPUT_DB: D1Database;
     UPGRADE_DB: D1Database;
+    PHASE5_UPGRADE_DB: D1Database;
+    PHASE5_FAILURE_DB: D1Database;
+    PHASE5_DISPATCH_DB: D1Database;
     /** The migrations read from `migrations/` by `vitest.config.ts`. */
     TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
   }

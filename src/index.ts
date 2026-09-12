@@ -3,7 +3,7 @@ import { ConfigurationError, loadConfig } from "./config";
 import { acknowledgement, errorResponse } from "./http/responses";
 import { acceptRegistrationEvent } from "./ingest/acceptance";
 import { verifyIngestionAuth } from "./ingest/auth";
-import { shouldAcceptAuthor } from "./ingest/author-filter";
+import { classifyAcceptedAuthor } from "./ingest/author-filter";
 import { newAttemptRunId } from "./ingest/identity";
 import { parseRegistration } from "./ingest/registration-parser";
 import { readRegistrationEvent } from "./ingest/transport";
@@ -22,18 +22,20 @@ export default {
     }
     if (new URL(request.url).pathname !== "/ingest" || request.method !== "POST")
       return errorResponse("not_found");
-    if (!(await verifyIngestionAuth(request, config.ingestionSharedSecret)))
-      return errorResponse("unauthorized");
+    const authenticated = await verifyIngestionAuth(request, config.ingestionSharedSecret);
+    if (!authenticated) return errorResponse("unauthorized");
     const now = new Date();
     const transport = await readRegistrationEvent(request, now);
     if (!transport.ok) return errorResponse(transport.error);
     const event = transport.event;
-    if (!shouldAcceptAuthor(event, config)) return acknowledgement("ignored");
+    const acceptanceClass = classifyAcceptedAuthor(event, config, authenticated);
+    if (acceptanceClass === null) return acknowledgement("ignored");
     const outcome = await acceptRegistrationEvent({
       db: env.STAGING_DB,
       config,
       event,
       parsed: parseRegistration(event.content, config.defaultState),
+      acceptanceClass,
       now,
       attemptRunId: newAttemptRunId(),
     });

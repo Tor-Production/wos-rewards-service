@@ -20,7 +20,7 @@ it("upgrades populated 0001 without renewing retries or changing frozen records;
     ),
   ]);
   const old = await db.prepare("SELECT * FROM operations").first();
-  await applyD1Migrations(db, env.TEST_MIGRATIONS);
+  await applyD1Migrations(db, env.TEST_MIGRATIONS.slice(0, 2));
   expect(
     await db
       .prepare(
@@ -42,7 +42,7 @@ it("upgrades populated 0001 without renewing retries or changing frozen records;
       .first(),
   ).toEqual({ status: "success", cause: "migration", budget_generation: 1, mirror_complete: 0 });
   const before = (await db.prepare("SELECT * FROM redemptions ORDER BY code").all()).results;
-  await applyD1Migrations(db, env.TEST_MIGRATIONS);
+  await applyD1Migrations(db, env.TEST_MIGRATIONS.slice(0, 2));
   expect((await db.prepare("SELECT * FROM redemptions ORDER BY code").all()).results).toEqual(
     before,
   );

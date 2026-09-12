@@ -2,41 +2,53 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index";
-import { shouldAcceptAuthor } from "../src/ingest/author-filter";
+import {
+  classifyAcceptedAuthor,
+  shouldAcceptAuthor,
+  type AcceptanceClass,
+} from "../src/ingest/author-filter";
 import type { RegistrationMessageEvent } from "../src/domain/discord-event";
 import { countD1, ingestRequest, makeEvent, testConfig, uniqueId } from "./support/fixtures";
 
 describe("author and channel filter", () => {
   const author = uniqueId();
   const webhook = uniqueId();
-  const cases: [string, Partial<RegistrationMessageEvent>, string[], boolean][] = [
-    ["user", {}, [], true],
-    ["bot", { author_is_bot: true }, [], false],
-    ["system", { author_is_system: true }, [], false],
-    ["webhook", { webhook_id: webhook }, [], false],
-    ["own author", { author_id: env.DISCORD_APPLICATION_ID }, [], false],
-    ["own app", { application_id: env.DISCORD_APPLICATION_ID }, [], false],
-    ["listed bot", { author_is_bot: true }, [author], true],
-    ["listed webhook", { webhook_id: webhook }, [webhook], true],
-    ["listed system", { author_is_system: true }, [author], false],
-    ["listed system bot", { author_is_system: true, author_is_bot: true }, [author], false],
-    ["listed system webhook", { author_is_system: true, webhook_id: webhook }, [webhook], false],
+  const cases: [string, Partial<RegistrationMessageEvent>, string[], AcceptanceClass | null][] = [
+    ["user", {}, [], "normal"],
+    ["listed human identifier", {}, [author], "normal"],
+    ["bot", { author_is_bot: true }, [], null],
+    ["system", { author_is_system: true }, [], null],
+    ["webhook", { webhook_id: webhook }, [], null],
+    ["own author", { author_id: env.DISCORD_APPLICATION_ID }, [], null],
+    ["own app", { application_id: env.DISCORD_APPLICATION_ID }, [], null],
+    ["listed bot", { author_is_bot: true }, [author], "staging_spike"],
+    ["listed webhook", { webhook_id: webhook }, [webhook], "staging_spike"],
+    [
+      "webhook cannot match only its author id",
+      { author_is_bot: true, webhook_id: webhook },
+      [author],
+      null,
+    ],
+    ["listed system", { author_is_system: true }, [author], null],
+    ["listed system bot", { author_is_system: true, author_is_bot: true }, [author], null],
+    ["listed system webhook", { author_is_system: true, webhook_id: webhook }, [webhook], null],
     [
       "listed own author",
       { author_id: env.DISCORD_APPLICATION_ID },
       [env.DISCORD_APPLICATION_ID],
-      false,
+      null,
     ],
-    ["unlisted bot", { author_is_bot: true }, [webhook], false],
-    ["wrong guild", { guild_id: uniqueId() }, [], false],
-    ["wrong channel", { channel_id: uniqueId() }, [], false],
+    ["unlisted bot", { author_is_bot: true }, [webhook], null],
+    ["wrong guild", { guild_id: uniqueId() }, [], null],
+    ["wrong channel", { channel_id: uniqueId() }, [], null],
   ];
-  it.each(cases)("%s", async (_label, overrides, allowlist, accepted) => {
+  it.each(cases)("%s", async (_label, overrides, allowlist, acceptanceClass) => {
     const event = makeEvent({ author_id: author, ...overrides });
-    expect(shouldAcceptAuthor(event, testConfig({ spikeSenderAllowlist: allowlist }))).toBe(
-      accepted,
-    );
-    if (!accepted && !allowlist.includes(env.DISCORD_APPLICATION_ID)) {
+    const config = testConfig({ spikeSenderAllowlist: allowlist });
+    expect(classifyAcceptedAuthor(event, config, true)).toBe(acceptanceClass);
+    expect(shouldAcceptAuthor(event, config, true)).toBe(acceptanceClass !== null);
+    expect(classifyAcceptedAuthor(event, config, false)).toBeNull();
+    if (acceptanceClass === null && !allowlist.includes(env.DISCORD_APPLICATION_ID)) {
       const counted = countD1(env.STAGING_DB);
       const response = await worker.fetch(
         ingestRequest(event),
@@ -57,8 +69,9 @@ describe("author and channel filter", () => {
       ...testConfig({ spikeSenderAllowlist: [author] }),
       environment: "production",
     } as unknown as ReturnType<typeof testConfig>;
-    expect(shouldAcceptAuthor(makeEvent({ author_id: author, author_is_bot: true }), config)).toBe(
-      false,
-    );
+    expect(
+      classifyAcceptedAuthor(makeEvent({ author_id: author, author_is_bot: true }), config, true),
+    ).toBeNull();
+    expect(classifyAcceptedAuthor(makeEvent({ author_id: author }), config, true)).toBe("normal");
   });
 });

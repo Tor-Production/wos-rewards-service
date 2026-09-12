@@ -40,6 +40,7 @@ describe("duplicate event acceptance", () => {
       config,
       event,
       parsed: parseRegistration(event.content, config.defaultState),
+      acceptanceClass: "normal" as const,
       now: FIXTURE_NOW,
       attemptRunId: newAttemptRunId(),
     };
@@ -101,6 +102,7 @@ describe("duplicate event acceptance", () => {
       config: testConfig(),
       event,
       parsed: parseRegistration(event.content, "0"),
+      acceptanceClass: "normal" as const,
       now: FIXTURE_NOW,
       attemptRunId: newAttemptRunId(),
     };
