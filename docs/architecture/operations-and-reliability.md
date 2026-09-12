@@ -70,9 +70,31 @@ Retention, discovery, adaptive provider rate limiting and operational dashboards
 later work. Required correctness recovery above is implemented now. Operator repairs are
 parked and never auto-authorized or selected by a consumer before explicit authorization.
 
-Durable Object **alarms** ([fact:C3]) are an implementation option for per-operation timers
-if Option 1 is chosen or if per-operation precision is needed; they do not consume the Cron
-Trigger budget.
+### Local-only Gateway alarm and restart proof
+
+Task 08C uses the one platform alarm per Durable Object as a persisted multiplexer for first and
+regular heartbeats, delayed handshakes, reconnect backoff, and the Hello watchdog. Each logical
+item has a stable id, generation, logical deadline, wall-clock alarm time, and `pending` or
+`claimed` status. The constructor uses `blockConcurrencyWhile` only for the short versioned-state
+hydration, checks an existing platform alarm before setting one, and never holds the block across
+WebSocket- or D1-style I/O. After due work, the adapter persists and schedules the earliest
+remaining item. Late delivery is counted separately; protocol deadlines use their logical time
+and never assume exact platform timing.
+
+Cloudflare documents one alarm, at-least-once execution, persistence across restarts, and
+constructor-before-alarm ordering **[fact:C3]**. Idempotency and conservative ambiguity handling
+are project policy: a due item is durably claimed before its effect; repeated delivery after
+completion finds no item, while a claim surviving an indeterminate handler is never re-sent. The
+adapter atomically completes that item while advancing the generation, closes any still-known
+socket best-effort, and schedules recovery on a replacement lifecycle. The durable session,
+checkpoint, retry/IDENTIFY safety state, logical work, metrics, and constructor count survive
+local re-instantiation. Cloudflare's local `evictDurableObject(..., { webSockets: "close" })`
+also verifies constructor re-entry, retained checkpoint/session, and an unchanged existing alarm.
+After local eviction, delivery of an orphaned lifecycle alarm fences that vanished generation and
+uses the same persisted scheduler to establish a replacement Resume lifecycle.
+This local behavior is not evidence that an outbound Gateway WebSocket remains resident in a
+deployed Durable Object; outbound WebSockets do not hibernate and only defer eviction for a
+documented bounded interval **[fact:C1][fact:C2]**.
 
 ---
 
@@ -241,7 +263,11 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
   operations `stale_closed`; seal / layout / render cursor lag; **summaries capped at
   `SUMMARY_MAX_CHUNKS`**; `discord_output_deliveries` by `status`; unsent-chunk age; DLQ
   depth; queue backlog; outbox backlog and `dead` count; `repair_run` count; Gateway
-  reconnect / RESUME / IDENTIFY counts (ingestion tier).
+  lifecycle/constructor, connection-generation, heartbeat/ACK, schedule/late/stale-alarm,
+  reconnect / RESUME / IDENTIFY, outbound-gate pressure, checkpoint, acceptance/duplicate,
+  and stale-callback counts (ingestion tier). Task 08C exposes only closed categories and
+  counts; it excludes message/sender/guild/channel ids, raw payload/content, session material,
+  URLs, headers, credentials, exception text, and stack traces.
 - **Alerts:** DLQ depth > 0, outbox `dead` count > 0, `dlq_stale_attempt` /
   `dlq_invocation_active` rate, **`state_reevaluation_limit` recorded**,
   `discord_output_deliveries` stuck `pending`/`claimed` beyond a threshold, operations stuck
@@ -341,6 +367,16 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
     the list unset (production config) both filters are strict. Migration/acceptance tests
     prove exact terminal evidence, OLD-aware rejection, atomic rollback, duplicates, and no
     operation/outbox/Queue/provider/Discord/network side effect;
+  - **local Durable Object Gateway adapter:** real local namespace/storage/alarm execution,
+    true local eviction, short constructor hydration, retained alarm/session/checkpoint and
+    constructor evidence; serialized command ordering; one generation-fenced connection;
+    stale callbacks; pending/claimed alarm crash recovery; exact READY persistence; target
+    acceptance before checkpoint; ignored evidence before checkpoint; non-contiguous and replay
+    sequences; lost acceptance/checkpoint acknowledgements; retry and IDENTIFY safety across
+    reconstruction; exact staging-spike duplicate evidence; normal-human behavior; closed
+    diagnostics and command serialization. The deterministic protocol suites retain the full
+    Hello/heartbeat/ACK, outbound-rate, close/Invalid Session, Resume replay, and malformed-input
+    matrix. Every transport is fake and unmatched outbound network remains blocked;
   - item-lease concurrency (two workers, one winner; expired-lease steal);
   - zero-result operation finalisation; bounded-expansion resume from cursor.
 - **Provider:** `MockWhiteoutProvider` in every automated test and in staging.
@@ -375,6 +411,8 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
 | Failure | Effect | Recovery |
 |---|---|---|
 | `DiscordEventSource` down | Live `MESSAGE_CREATE` events missed while down | Supervised restart; on reconnect, Discord replays only within session/Resume limits [fact:D1]; missed events need bounded REST catch-up or manual re-send ([§24](open-decisions-and-risks.md#24-unresolved-decisions-and-risks)) |
+| Local Gateway alarm handler becomes indeterminate after claiming work | Repeating a send or reconnect would be unsafe | Persist the claim first; on reconstruction, complete the item and advance the connection generation in one durable state write, never repeat the ambiguous effect, then reconnect on a fenced lifecycle. This is project policy layered over Cloudflare's at-least-once alarm guarantee [fact:C3]. |
+| D1 acceptance commits but its adapter completion or later DO checkpoint does not | Durable evidence exists while Resume starts from the previous checkpoint | Acceptance-first ordering leaves the DO checkpoint unchanged; replay re-enters Task 08B idempotency, verifies exact spike evidence when applicable, and only then advances monotonically. No cross-store atomicity is claimed. |
 | Gateway Resume fails (Invalid Session `d=false`) | Fresh IDENTIFY required | Reconnect + IDENTIFY; watch the 1000/24 h IDENTIFY budget [fact:D1] |
 | Ingestion Worker `/ingest` unavailable | Companion cannot forward | Companion retries with bounded local buffer; the atomic accept + PK conflict makes re-sends safe |
 | Crash between event accept and work commit | Event `accepted_valid` but work incomplete | State-machine mode: `processed_events.status` non-terminal; sweeper re-drives expansion; marker never `finalized` without work. Single-batch mode: the marker only exists if the work committed |

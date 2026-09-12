@@ -66,6 +66,13 @@ under `env.staging`, making generated types deterministic without local credenti
 Runtime configuration requires a nonempty, whitespace-free value and never includes it in validation errors.
 Tests inject only a synthetic value through the local Miniflare environment.
 
+`LOCAL_GATEWAY_ADAPTER` is a Task 08C test binding, not an application variable or deployable
+resource. It exists only in `vitest.config.ts`'s explicit Miniflare `durableObjects` map and the
+test-only environment declaration. It is absent from `wrangler.jsonc`; no class migration,
+namespace id, route, alarm trigger, token input, or production/staging configuration was added.
+The same test configuration injects a synthetic spike-sender id solely for local integration
+coverage.
+
 ### Secrets (names only — never values, never logged)
 
 | Name | Held by | Purpose |

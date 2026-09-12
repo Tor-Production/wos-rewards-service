@@ -74,6 +74,10 @@
   validation-reply evidence row born superseded, dispatch-ineligible, and permanently
   blocked. OLD-aware D1 triggers make both rows immutable and prevent insert/relink escape;
   dispatcher selection and claim repeat all suppression guards.
+- **Local Option 1 mechanics:** Task 08C supplies a real local-test Durable Object wrapper over
+  Task 08A, with versioned state, generation fencing, one-alarm scheduling, conservative claimed
+  alarm recovery, and a trusted in-process route into Task 08B. Its namespace exists only in
+  Vitest/Miniflare; this resolves local integration mechanics, not the ingestion-topology choice.
 - **Genuinely frozen summary source:** the instant `summary_state` leaves `none`,
   `operation_items` for that operation is frozen — a later redemption outcome goes to
   **`operation_late_results`**, and `display_label` was immutable from item creation. The
@@ -137,10 +141,13 @@
   long an active outbound connection *prevents* eviction) are documented but operational
   **[fact:C1][fact:C2]**; the spike must observe actual behaviour and must not be read as a
   platform guarantee.
-- The immutable staging-spike acceptance boundary is implemented locally, but it does not
-  prove Gateway residency or event delivery: the Durable Object adapter, poster, observer,
-  expected-message ledger, provisioning, and live 72-hour spike remain separate,
-  explicitly authorized work. Retained spike rows must survive cleanup and every documented
+- The immutable staging-spike acceptance boundary and local-only Durable Object adapter are
+  implemented and integrated locally, but they do not prove Gateway residency or live event
+  delivery. A deployable binding/transport, poster, observer, expected-message ledger,
+  provisioning, and live 72-hour spike remain separate, explicitly authorized work. Local
+  eviction proves the test runtime reconstructs stored state; it cannot establish deployed
+  outbound-WebSocket survival, alarm latency, CPU duration, Discord replay coverage, or
+  reconciliation timing. Retained spike rows must survive cleanup and every documented
   reconciliation count must remain zero.
 - Discord documents no exactly-once message creation; a summary chunk or validation reply
   re-sent outside the few-minute `enforce_nonce` window can duplicate **[fact:D6]** —
