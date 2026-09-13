@@ -116,13 +116,21 @@ The adapter executes Task 08A's commands in order through one serialized fence. 
 increasing durable generation owns the one active physical lifecycle; callbacks and alarm work
 carry that generation, and replacement invalidates it durably before another connection can
 become active. Transient sockets, promises, injected functions, raw protocol state, payloads,
-and message content are never stored. A version-1 Durable Object record contains only opaque
-session material and handle reference, the durable checkpoint, generation, retry count,
-pending/claimed logical schedules, session-start-limit observation, the core's narrow
-IDENTIFY/outbound safety snapshot, constructor count, and low-cardinality counters. Sanitized
-ignored-dispatch evidence is stored separately by sequence. Session ids and resume URLs are
-available only to the persistence/transport adapter and are absent from inspection and
-diagnostic shapes.
+and message content are never stored. A validated version-2 Durable Object record contains only
+opaque session material and handle reference, the durable checkpoint, generation, retry count,
+pending/claimed logical schedules, a closed start disposition, session-start-limit observation,
+the core's narrow IDENTIFY/outbound safety snapshot, constructor count, and low-cardinality
+counters. Sanitized ignored-dispatch evidence is stored separately by sequence. Session ids and
+resume URLs are available only to the persistence/transport adapter and are absent from
+inspection and diagnostic shapes.
+
+The start disposition binds lifecycle authority to durable state. `reconnect_pending` preserves
+recovery intent across a crash before schedule creation, and `reconnect_scheduled` identifies the
+one persisted reconnect item that its due alarm may execute. `start()` cannot bypass either state
+or create a second connection. Fatal Gateway closure, any Task 08A local-policy halt, and exhausted
+retry budget persist a terminal reason, remove scheduled work, and prohibit later start or
+reconnect after reconstruction. Task 08C intentionally exposes no reset or operator mutation
+surface; authorization and design of any future terminal reset remain outside this task.
 
 For a target `MESSAGE_CREATE`, the only trusted in-process acceptance path begins after the
 established lifecycle's deterministic core emits `accept_target_message`. The adapter itself
@@ -140,7 +148,10 @@ evidence is rejected and leaves the checkpoint unchanged.
 
 READY session material and its READY checkpoint are one Durable Object write before the core is
 completed. Resume reconstruction uses only that durable checkpoint, while a live heartbeat uses
-the core's latest received sequence. Increasing sequence gaps are accepted without inferring
+the core's latest received sequence. A heartbeat alarm supplies its observed monotonic execution
+time to Task 08A; the persisted scheduled time remains the deadline only. Execution exactly at the
+deadline is valid, while execution after it enters the existing local-policy halt without sending
+or backdating outbound-rate evidence. Increasing sequence gaps are accepted without inferring
 loss; target, ignored, and other replay Dispatches execute before `RESUMED`. These are project
 safety rules around Discord's documented Resume behavior, not claims of contiguous or
 exactly-once delivery. Live residency, missed-event reconciliation, and 72-hour behavior remain

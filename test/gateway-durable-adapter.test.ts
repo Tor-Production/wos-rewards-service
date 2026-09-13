@@ -66,6 +66,35 @@ class MemoryGatewayStorage implements GatewayAdapterStorage {
     return value?.checkpoint ?? null;
   }
 
+  persistedSafetyEvidence(): {
+    readonly startDisposition:
+      | { readonly kind: "startable" }
+      | { readonly kind: "reconnect_pending"; readonly mode: "resume" | "fresh" }
+      | {
+          readonly kind: "reconnect_scheduled";
+          readonly mode: "resume" | "fresh";
+          readonly scheduleId: number;
+        }
+      | {
+          readonly kind: "terminal";
+          readonly reason: "fatal_gateway_close" | "local_policy_halt" | "retry_exhausted";
+        };
+    readonly safety: {
+      readonly outbound: {
+        readonly lastObservedAtMs: number | null;
+        readonly telemetry: {
+          readonly authorized: number;
+          readonly denied: number;
+          readonly authorizedByKind: Readonly<Record<string, number>>;
+        };
+      };
+    } | null;
+  } {
+    const value = this.values.get("gateway-adapter-state");
+    if (value === undefined) throw new Error("missing persisted adapter state");
+    return value as ReturnType<MemoryGatewayStorage["persistedSafetyEvidence"]>;
+  }
+
   ignoredEvidenceCount(): number {
     return [...this.values.keys()].filter((key) => key.startsWith("gateway-ignored:")).length;
   }
@@ -390,7 +419,7 @@ describe("durable Gateway adapter fencing, alarms and reconstruction", () => {
   it("fails closed on an incompatible durable-state version without reflecting stored data", async () => {
     const canary = "CANARY_CORRUPT_GATEWAY_STATE";
     const storage = new MemoryGatewayStorage();
-    storage.values.set("gateway-adapter-state", { version: 2, unexpected: canary });
+    storage.values.set("gateway-adapter-state", { version: 1, unexpected: canary });
     const adapter = new GatewayDurableAdapter(storage, env);
 
     let failure: unknown;
@@ -402,6 +431,22 @@ describe("durable Gateway adapter fencing, alarms and reconstruction", () => {
     expect(failure).toBeInstanceOf(TypeError);
     expect(String(failure)).toContain("invalid_gateway_adapter_state");
     expect(String(failure)).not.toContain(canary);
+  });
+
+  it("rejects a persisted reconnect disposition without its matching schedule authority", async () => {
+    const storage = new MemoryGatewayStorage();
+    const clock = new MutableClock();
+    const adapter = await configuredAdapter(storage, clock, new FakeGatewaySocketFactory());
+    await adapter.inspect();
+    const persisted = storage.values.get("gateway-adapter-state") as Record<string, unknown>;
+    storage.values.set("gateway-adapter-state", {
+      ...persisted,
+      startDisposition: { kind: "reconnect_scheduled", mode: "fresh", scheduleId: 999 },
+    });
+
+    await expect(new GatewayDurableAdapter(storage, env).hydrate()).rejects.toThrow(
+      "invalid_gateway_adapter_state",
+    );
   });
 
   it("converges simultaneous starts and ignores callbacks from the fenced socket", async () => {
@@ -447,6 +492,92 @@ describe("durable Gateway adapter fencing, alarms and reconstruction", () => {
     expect((await adapter.inspect()).logicalSchedules).toEqual(
       expect.arrayContaining([expect.objectContaining({ kind: "heartbeat" })]),
     );
+  });
+
+  it("executes a heartbeat exactly at its deadline with the observed authorization time", async () => {
+    const storage = new MemoryGatewayStorage();
+    const clock = new MutableClock();
+    const factory = new FakeGatewaySocketFactory();
+    const adapter = await configuredAdapter(storage, clock, factory, { jitter: 0.5 });
+    const socket = await startFresh(adapter, factory);
+    const before = socket.sent.filter((event) => event.kind === "heartbeat_regular").length;
+
+    clock.advance(500);
+    await adapter.alarm();
+
+    expect(socket.sent.filter((event) => event.kind === "heartbeat_regular")).toHaveLength(
+      before + 1,
+    );
+    const evidence = storage.persistedSafetyEvidence();
+    expect(evidence.startDisposition).toEqual({ kind: "startable" });
+    expect(evidence.safety?.outbound.lastObservedAtMs).toBe(NOW + 500);
+    expect(evidence.safety?.outbound.telemetry.authorized).toBe(2);
+    expect(evidence.safety?.outbound.telemetry.authorizedByKind.heartbeat_regular).toBe(1);
+  });
+
+  it("halts a late heartbeat without sending or backdating authorization and stays halted after reconstruction", async () => {
+    const storage = new MemoryGatewayStorage();
+    const clock = new MutableClock();
+    const firstFactory = new FakeGatewaySocketFactory();
+    const first = await configuredAdapter(storage, clock, firstFactory, { jitter: 0.5 });
+    const socket = await startFresh(first, firstFactory);
+    const before = socket.sent.filter((event) => event.kind === "heartbeat_regular").length;
+
+    clock.advance(501);
+    await first.alarm();
+
+    expect(socket.sent.filter((event) => event.kind === "heartbeat_regular")).toHaveLength(before);
+    expect(socket.closeCodes).toContain(4000);
+    const halted = await first.inspect();
+    expect(halted.startDisposition).toEqual({
+      kind: "terminal",
+      reason: "local_policy_halt",
+    });
+    expect((halted.protocol as { phase: string }).phase).toBe("halted");
+    expect(halted.metrics.late_alarm).toBe(1);
+    const evidence = storage.persistedSafetyEvidence();
+    expect(evidence.safety?.outbound.lastObservedAtMs).toBe(NOW);
+    expect(evidence.safety?.outbound.telemetry.authorized).toBe(1);
+    expect(evidence.safety?.outbound.telemetry.denied).toBe(0);
+    expect(evidence.safety?.outbound.telemetry.authorizedByKind.heartbeat_regular).toBe(0);
+
+    const replacementFactory = new FakeGatewaySocketFactory();
+    const replacement = await configuredAdapter(storage, clock, replacementFactory, {
+      jitter: 0.5,
+    });
+    await Promise.all([replacement.start(), replacement.start(), replacement.start()]);
+    await replacement.alarm();
+
+    expect(replacementFactory.connections).toHaveLength(0);
+    expect((await replacement.inspect()).startDisposition).toEqual({
+      kind: "terminal",
+      reason: "local_policy_halt",
+    });
+  });
+
+  it("keeps a fatal Gateway close terminal across hydrate, configure and concurrent starts", async () => {
+    const storage = new MemoryGatewayStorage();
+    const clock = new MutableClock();
+    const firstFactory = new FakeGatewaySocketFactory();
+    const first = await configuredAdapter(storage, clock, firstFactory);
+    const socket = await startFresh(first, firstFactory);
+
+    await socket.callbacks.closed(4004);
+    expect((await first.inspect()).startDisposition).toEqual({
+      kind: "terminal",
+      reason: "fatal_gateway_close",
+    });
+
+    const replacementFactory = new FakeGatewaySocketFactory();
+    const replacement = await configuredAdapter(storage, clock, replacementFactory);
+    await Promise.all([replacement.start(), replacement.start(), replacement.start()]);
+    await replacement.alarm();
+
+    expect(replacementFactory.connections).toHaveLength(0);
+    expect((await replacement.inspect()).startDisposition).toEqual({
+      kind: "terminal",
+      reason: "fatal_gateway_close",
+    });
   });
 
   it("counts ACKs and preserves only closed protocol fields for missing-ACK recovery", async () => {
@@ -524,7 +655,53 @@ describe("durable Gateway adapter fencing, alarms and reconstruction", () => {
     },
   );
 
-  it("preserves an existing alarm, constructor evidence, retry state and IDENTIFY safety", async () => {
+  it("recovers a claimed reconnect without allowing start or creating duplicate connections", async () => {
+    const storage = new MemoryGatewayStorage();
+    const clock = new MutableClock();
+    const firstFactory = new FakeGatewaySocketFactory();
+    let interrupt = true;
+    const first = await configuredAdapter(storage, clock, firstFactory, {
+      backoff: () => 0,
+      scheduleFault: (kind) => {
+        if (kind !== "reconnect" || !interrupt) return "proceed";
+        interrupt = false;
+        return "fail_before";
+      },
+    });
+    const firstSocket = await startFresh(first, firstFactory);
+    await firstSocket.callbacks.closed(4000);
+
+    await expect(first.alarm()).rejects.toThrow("modeled_schedule_interruption");
+    expect(firstFactory.connections).toHaveLength(1);
+    expect((await first.inspect()).logicalSchedules).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: "reconnect", status: "claimed" })]),
+    );
+
+    const replacementFactory = new FakeGatewaySocketFactory();
+    const replacement = await configuredAdapter(storage, clock, replacementFactory, {
+      backoff: () => 0,
+    });
+    await Promise.all([replacement.start(), replacement.start(), replacement.start()]);
+    expect(replacementFactory.connections).toHaveLength(0);
+
+    await replacement.alarm();
+    expect(replacementFactory.connections).toHaveLength(0);
+    expect((await replacement.inspect()).startDisposition).toMatchObject({
+      kind: "reconnect_scheduled",
+      mode: "resume",
+    });
+
+    await Promise.all([
+      replacement.alarm(),
+      replacement.alarm(),
+      replacement.start(),
+      replacement.start(),
+    ]);
+    expect(replacementFactory.connections).toHaveLength(1);
+    expect(replacementFactory.modes).toEqual(["resume"]);
+  });
+
+  it("preserves reconnect-alarm authority, constructor evidence, retry state and IDENTIFY safety", async () => {
     const storage = new MemoryGatewayStorage();
     const clock = new MutableClock();
     const firstFactory = new FakeGatewaySocketFactory();
@@ -556,7 +733,23 @@ describe("durable Gateway adapter fencing, alarms and reconstruction", () => {
         backoff: () => 5_000,
       }),
     );
-    await second.start();
+    await Promise.all([second.start(), second.start(), second.start()]);
+    expect(secondFactory.connections).toHaveLength(0);
+    expect((await second.inspect()).startDisposition).toMatchObject({
+      kind: "reconnect_scheduled",
+      mode: "fresh",
+    });
+
+    clock.advance(4_999);
+    await second.alarm();
+    expect(secondFactory.connections).toHaveLength(0);
+
+    clock.advance(1);
+    await second.alarm();
+    expect(secondFactory.connections).toHaveLength(1);
+    expect(secondFactory.modes).toEqual(["fresh"]);
+    await Promise.all([second.alarm(), second.alarm(), second.start(), second.start()]);
+    expect(secondFactory.connections).toHaveLength(1);
     const secondSocket = secondFactory.connections[0]!;
     await secondSocket.callbacks.text(gatewayPayload(10, { heartbeat_interval: 1_000 }));
 
@@ -565,6 +758,10 @@ describe("durable Gateway adapter fencing, alarms and reconstruction", () => {
     expect(inspection.reconnectAttempts).toBe(1);
     expect(secondSocket.sent.some((event) => event.kind === "identify")).toBe(false);
     expect((inspection.protocol as { phase: string }).phase).toBe("halted");
+    expect(inspection.startDisposition).toEqual({
+      kind: "terminal",
+      reason: "local_policy_halt",
+    });
   });
 
   it("keeps retry exhaustion finite across reconstruction", async () => {
@@ -580,14 +777,22 @@ describe("durable Gateway adapter fencing, alarms and reconstruction", () => {
     await secondSocket.callbacks.closed(4000);
     expect((await adapter.inspect()).metrics.retry_exhausted).toBe(1);
 
+    const replacementFactory = new FakeGatewaySocketFactory();
     const reconstructed = new GatewayDurableAdapter(storage, env);
     await reconstructed.hydrate();
     await reconstructed.configure(
-      dependencies(clock, new FakeGatewaySocketFactory(), {
+      dependencies(clock, replacementFactory, {
         backoff: (attempt) => (attempt <= 1 ? 0 : null),
       }),
     );
-    expect((await reconstructed.inspect()).reconnectAttempts).toBe(2);
+    await Promise.all([reconstructed.start(), reconstructed.start(), reconstructed.start()]);
+    await reconstructed.alarm();
+
+    expect(replacementFactory.connections).toHaveLength(0);
+    expect(await reconstructed.inspect()).toMatchObject({
+      reconnectAttempts: 2,
+      startDisposition: { kind: "terminal", reason: "retry_exhausted" },
+    });
   });
 
   it("redacts session, payload, IDs and exception-like sentinels from every summary", async () => {

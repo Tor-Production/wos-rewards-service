@@ -78,8 +78,10 @@ item has a stable id, generation, logical deadline, wall-clock alarm time, and `
 `claimed` status. The constructor uses `blockConcurrencyWhile` only for the short versioned-state
 hydration, checks an existing platform alarm before setting one, and never holds the block across
 WebSocket- or D1-style I/O. After due work, the adapter persists and schedules the earliest
-remaining item. Late delivery is counted separately; protocol deadlines use their logical time
-and never assume exact platform timing.
+remaining item. Late delivery is counted separately. For a heartbeat, the scheduled monotonic
+time remains the protocol deadline, while the adapter passes the observed monotonic alarm-
+execution time to Task 08A. Exact-deadline execution is valid; execution after the deadline
+fails closed without a send or an earlier outbound authorization timestamp.
 
 Cloudflare documents one alarm, at-least-once execution, persistence across restarts, and
 constructor-before-alarm ordering **[fact:C3]**. Idempotency and conservative ambiguity handling
@@ -92,6 +94,14 @@ local re-instantiation. Cloudflare's local `evictDurableObject(..., { webSockets
 also verifies constructor re-entry, retained checkpoint/session, and an unchanged existing alarm.
 After local eviction, delivery of an orphaned lifecycle alarm fences that vanished generation and
 uses the same persisted scheduler to establish a replacement Resume lifecycle.
+
+The validated version-2 record also persists start authority. A pending or scheduled reconnect
+blocks direct starts; the scheduled item's due alarm is the sole authority for that retry, and its
+stable id prevents duplicate connections under repeated alarms or starts. Fatal Gateway closure,
+Task 08A local-policy halt, and retry exhaustion persist a terminal disposition that survives
+reconstruction and clears remaining work. There is no Task 08C reset or operator mutation path;
+any future reset requires separately authorized design and implementation.
+
 This local behavior is not evidence that an outbound Gateway WebSocket remains resident in a
 deployed Durable Object; outbound WebSockets do not hibernate and only defer eviction for a
 documented bounded interval **[fact:C1][fact:C2]**.
@@ -372,8 +382,10 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
     constructor evidence; serialized command ordering; one generation-fenced connection;
     stale callbacks; pending/claimed alarm crash recovery; exact READY persistence; target
     acceptance before checkpoint; ignored evidence before checkpoint; non-contiguous and replay
-    sequences; lost acceptance/checkpoint acknowledgements; retry and IDENTIFY safety across
-    reconstruction; exact staging-spike duplicate evidence; normal-human behavior; closed
+    sequences; lost acceptance/checkpoint acknowledgements; exact and late heartbeat execution;
+    non-backdated outbound authorization evidence; durable fatal/local-policy/retry-exhausted
+    terminal states; reconnect-backoff authority and idempotency across reconstruction; retry and
+    IDENTIFY safety; exact staging-spike duplicate evidence; normal-human behavior; closed
     diagnostics and command serialization. The deterministic protocol suites retain the full
     Hello/heartbeat/ACK, outbound-rate, close/Invalid Session, Resume replay, and malformed-input
     matrix. Every transport is fake and unmatched outbound network remains blocked;
@@ -412,6 +424,9 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
 |---|---|---|
 | `DiscordEventSource` down | Live `MESSAGE_CREATE` events missed while down | Supervised restart; on reconnect, Discord replays only within session/Resume limits [fact:D1]; missed events need bounded REST catch-up or manual re-send ([§24](open-decisions-and-risks.md#24-unresolved-decisions-and-risks)) |
 | Local Gateway alarm handler becomes indeterminate after claiming work | Repeating a send or reconnect would be unsafe | Persist the claim first; on reconstruction, complete the item and advance the connection generation in one durable state write, never repeat the ambiguous effect, then reconnect on a fenced lifecycle. This is project policy layered over Cloudflare's at-least-once alarm guarantee [fact:C3]. |
+| Heartbeat alarm executes after its scheduled deadline | A backdated send could evade the deadline and understate rolling-window pressure | Pass observed monotonic execution time to Task 08A. The core enters its durable local-policy halt; no heartbeat is sent and no authorization is recorded at the earlier deadline. |
+| Gateway lifecycle reaches fatal closure, local-policy halt, or retry exhaustion | Reconstruction could otherwise erase the terminal state and reconnect | Persist a terminal start disposition and clear logical work. Hydration, configuration, starts, and alarms cannot reconnect; Task 08C intentionally provides no reset path. |
+| Reconnect is waiting in durable backoff | A direct or repeated start could connect before the authorized due alarm | Persist the pending/scheduled disposition and exact schedule id. Direct starts are inert; only the one claimed due item may create the connection, and completion is idempotent. |
 | D1 acceptance commits but its adapter completion or later DO checkpoint does not | Durable evidence exists while Resume starts from the previous checkpoint | Acceptance-first ordering leaves the DO checkpoint unchanged; replay re-enters Task 08B idempotency, verifies exact spike evidence when applicable, and only then advances monotonically. No cross-store atomicity is claimed. |
 | Gateway Resume fails (Invalid Session `d=false`) | Fresh IDENTIFY required | Reconnect + IDENTIFY; watch the 1000/24 h IDENTIFY budget [fact:D1] |
 | Ingestion Worker `/ingest` unavailable | Companion cannot forward | Companion retries with bounded local buffer; the atomic accept + PK conflict makes re-sends safe |

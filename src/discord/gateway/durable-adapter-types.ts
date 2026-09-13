@@ -95,9 +95,24 @@ export type GatewayAdapterFaultAction = "proceed" | "fail_before" | "lose_after"
 
 export type GatewayAdapterScheduleKind = "heartbeat" | "handshake" | "reconnect" | "watchdog";
 
+export type GatewayAdapterTerminalReason =
+  "fatal_gateway_close" | "local_policy_halt" | "retry_exhausted";
+
+export type GatewayAdapterStartDisposition =
+  | Readonly<{ kind: "startable" }>
+  | Readonly<{ kind: "reconnect_pending"; mode: "resume" | "fresh" }>
+  | Readonly<{
+      kind: "reconnect_scheduled";
+      mode: "resume" | "fresh";
+      scheduleId: number;
+    }>
+  | Readonly<{ kind: "terminal"; reason: GatewayAdapterTerminalReason }>;
+
 export type GatewayAdapterMetricCategory =
   | "constructor"
   | "start"
+  | "start_blocked_terminal"
+  | "start_blocked_reconnect"
   | "concurrent_start"
   | "socket_open"
   | "socket_close"
@@ -132,6 +147,7 @@ export type GatewayAdapterMetricCategory =
   | "session_cleared"
   | "reconnect_scheduled"
   | "retry_exhausted"
+  | "terminal_disposition"
   | "protocol_diagnostic";
 
 export interface GatewayAdapterDiagnostic {
@@ -156,7 +172,8 @@ export interface GatewayAdapterDiagnostic {
     | "timeout"
     | "ambiguous"
     | "stale"
-    | "exhausted";
+    | "exhausted"
+    | "terminal";
   readonly protocolCategory?: GatewayDiagnosticCategory;
   readonly knownOpcodeCategory?: GatewayOpcodeCategory;
   readonly sequenceRelation?: GatewaySequenceRelation;
@@ -180,10 +197,11 @@ export interface GatewayAdapterDependencies {
 }
 
 export interface GatewayAdapterInspection {
-  readonly version: 1;
+  readonly version: 2;
   readonly hydrated: boolean;
   readonly configured: boolean;
   readonly hasActiveConnection: boolean;
+  readonly startDisposition: GatewayAdapterStartDisposition;
   readonly connectionGeneration: number;
   readonly checkpoint: number | null;
   readonly hasSession: boolean;
@@ -192,7 +210,9 @@ export interface GatewayAdapterInspection {
   readonly logicalSchedules: readonly Readonly<{
     id: number;
     kind: GatewayAdapterScheduleKind;
+    status: "pending" | "claimed";
     connectionGeneration: number;
+    dueWallMs: number;
   }>[];
   readonly metrics: Readonly<Partial<Record<GatewayAdapterMetricCategory, number>>>;
   readonly protocol: unknown;

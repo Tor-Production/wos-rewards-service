@@ -43,7 +43,9 @@ import {
   type GatewayAdapterInspection,
   type GatewayAdapterMetricCategory,
   type GatewayAdapterScheduleKind,
+  type GatewayAdapterStartDisposition,
   type GatewayAdapterStorage,
+  type GatewayAdapterTerminalReason,
   type GatewayTargetAcceptanceOutcome,
   type GatewayWebSocketConnection,
 } from "./durable-adapter-types";
@@ -56,6 +58,8 @@ const DEFAULT_HELLO_WATCHDOG_MS = 30_000;
 const METRIC_CATEGORIES = new Set<GatewayAdapterMetricCategory>([
   "constructor",
   "start",
+  "start_blocked_terminal",
+  "start_blocked_reconnect",
   "concurrent_start",
   "socket_open",
   "socket_close",
@@ -90,6 +94,7 @@ const METRIC_CATEGORIES = new Set<GatewayAdapterMetricCategory>([
   "session_cleared",
   "reconnect_scheduled",
   "retry_exhausted",
+  "terminal_disposition",
   "protocol_diagnostic",
 ]);
 
@@ -117,7 +122,8 @@ interface PersistedLogicalSchedule {
 }
 
 interface PersistedGatewayAdapterState {
-  readonly version: 1;
+  readonly version: 2;
+  startDisposition: GatewayAdapterStartDisposition;
   session: PersistedSession | null;
   checkpoint: number | null;
   connectionGeneration: number;
@@ -147,7 +153,8 @@ interface ActiveConnection {
 
 function initialState(): PersistedGatewayAdapterState {
   return {
-    version: 1,
+    version: 2,
+    startDisposition: { kind: "startable" },
     session: null,
     checkpoint: null,
     connectionGeneration: 0,
@@ -169,6 +176,33 @@ function validInteger(value: unknown, minimum = 0): value is number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function validStartDisposition(value: unknown): value is GatewayAdapterStartDisposition {
+  if (!isRecord(value)) return false;
+  if (value.kind === "startable") return hasExactKeys(value, ["kind"]);
+  if (value.kind === "reconnect_pending")
+    return (
+      hasExactKeys(value, ["kind", "mode"]) && (value.mode === "resume" || value.mode === "fresh")
+    );
+  if (value.kind === "reconnect_scheduled")
+    return (
+      hasExactKeys(value, ["kind", "mode", "scheduleId"]) &&
+      (value.mode === "resume" || value.mode === "fresh") &&
+      validInteger(value.scheduleId, 1)
+    );
+  return (
+    value.kind === "terminal" &&
+    hasExactKeys(value, ["kind", "reason"]) &&
+    (value.reason === "fatal_gateway_close" ||
+      value.reason === "local_policy_halt" ||
+      value.reason === "retry_exhausted")
+  );
 }
 
 function validSession(value: unknown): value is PersistedSession | null {
@@ -232,7 +266,8 @@ function validatePersistedState(value: unknown): PersistedGatewayAdapterState {
   if (!isRecord(value)) throw new TypeError("invalid_gateway_adapter_state");
   const state = value as Partial<PersistedGatewayAdapterState>;
   if (
-    state.version !== 1 ||
+    state.version !== 2 ||
+    !validStartDisposition(state.startDisposition) ||
     !validSession(state.session) ||
     !validInteger(state.connectionGeneration) ||
     !validInteger(state.constructorInvocations) ||
@@ -260,6 +295,8 @@ function validatePersistedState(value: unknown): PersistedGatewayAdapterState {
     throw new TypeError("invalid_gateway_adapter_state");
   const schedules = state.schedules as PersistedLogicalSchedule[];
   const scheduleIds = schedules.map((schedule) => schedule.id);
+  const reconnectSchedules = schedules.filter((schedule) => schedule.kind === "reconnect");
+  const reconnectAuthority = reconnectSchedules[0];
   if (
     new Set(scheduleIds).size !== scheduleIds.length ||
     schedules.some(
@@ -268,7 +305,28 @@ function validatePersistedState(value: unknown): PersistedGatewayAdapterState {
         schedule.connectionGeneration > (state.connectionGeneration as number) ||
         state.completedScheduleIds?.includes(schedule.id),
     ) ||
-    state.completedScheduleIds.some((id) => id >= (state.nextScheduleId as number))
+    state.completedScheduleIds.some((id) => id >= (state.nextScheduleId as number)) ||
+    reconnectSchedules.length > 1
+  )
+    throw new TypeError("invalid_gateway_adapter_state");
+  const disposition = state.startDisposition;
+  if (
+    disposition.kind === "terminal"
+      ? schedules.length !== 0
+      : disposition.kind === "reconnect_scheduled"
+        ? reconnectSchedules.length !== 1 ||
+          reconnectAuthority === undefined ||
+          reconnectAuthority.id !== disposition.scheduleId ||
+          reconnectAuthority.mode !== disposition.mode ||
+          reconnectAuthority.connectionGeneration !== state.connectionGeneration
+        : disposition.kind === "reconnect_pending"
+          ? reconnectSchedules.some(
+              (schedule) =>
+                schedule.status !== "claimed" ||
+                schedule.mode !== disposition.mode ||
+                schedule.connectionGeneration !== state.connectionGeneration,
+            )
+          : reconnectSchedules.length !== 0
   )
     throw new TypeError("invalid_gateway_adapter_state");
   return state as PersistedGatewayAdapterState;
@@ -276,6 +334,12 @@ function validatePersistedState(value: unknown): PersistedGatewayAdapterState {
 
 function scheduleOrder(left: PersistedLogicalSchedule, right: PersistedLogicalSchedule): number {
   return left.dueWallMs - right.dueWallMs || left.id - right.id;
+}
+
+function reconnectMode(schedule: PersistedLogicalSchedule): "resume" | "fresh" {
+  if (schedule.kind !== "reconnect" || (schedule.mode !== "resume" && schedule.mode !== "fresh"))
+    throw new Error("invalid_gateway_reconnect_schedule");
+  return schedule.mode;
 }
 
 function unhandledGatewayCommand(command: never): never {
@@ -396,12 +460,28 @@ export class GatewayDurableAdapter {
         };
         await this.#persist();
       }
+      const disposition = this.#state.startDisposition;
+      if (
+        disposition.kind === "reconnect_pending" &&
+        !this.#state.schedules.some((schedule) => schedule.kind === "reconnect")
+      )
+        await this.#scheduleReconnect(disposition.mode);
     });
   }
 
   start(): Promise<void> {
     return this.#serialize(async () => {
       this.#dependenciesOrThrow();
+      if (this.#state.startDisposition.kind === "terminal") {
+        this.#metric("start_blocked_terminal", "reconnect", "terminal");
+        await this.#persist();
+        return;
+      }
+      if (this.#state.startDisposition.kind !== "startable") {
+        this.#metric("start_blocked_reconnect", "reconnect", "stale");
+        await this.#persist();
+        return;
+      }
       if (this.#active?.valid || (this.#core !== null && this.#core.phase === "reconnecting")) {
         this.#metric("concurrent_start", "reconnect", "stale");
         await this.#persist();
@@ -468,10 +548,11 @@ export class GatewayDurableAdapter {
     return this.#serialize(async () => {
       this.#requireHydrated();
       return {
-        version: 1,
+        version: 2,
         hydrated: this.#hydrated,
         configured: this.#dependencies !== null,
         hasActiveConnection: this.#active?.valid === true,
+        startDisposition: { ...this.#state.startDisposition },
         connectionGeneration: this.#state.connectionGeneration,
         checkpoint: this.#state.checkpoint,
         hasSession: this.#state.session !== null,
@@ -480,7 +561,9 @@ export class GatewayDurableAdapter {
         logicalSchedules: [...this.#state.schedules].sort(scheduleOrder).map((schedule) => ({
           id: schedule.id,
           kind: schedule.kind,
+          status: schedule.status,
           connectionGeneration: schedule.connectionGeneration,
+          dueWallMs: schedule.dueWallMs,
         })),
         metrics: { ...this.#state.metrics },
         protocol: this.#core === null ? null : summarizeGatewayState(this.#core),
@@ -535,6 +618,22 @@ export class GatewayDurableAdapter {
     } catch {
       // Diagnostics are observational and never participate in protocol correctness.
     }
+  }
+
+  #enterTerminal(
+    reason: GatewayAdapterTerminalReason,
+    commandCategory: GatewayAdapterDiagnostic["commandCategory"],
+  ): boolean {
+    if (this.#state.startDisposition.kind === "terminal") return false;
+    this.#state.startDisposition = { kind: "terminal", reason };
+    this.#state.schedules = [];
+    this.#metric("terminal_disposition", commandCategory, "terminal");
+    return true;
+  }
+
+  #setReconnectPending(mode: "resume" | "fresh"): void {
+    if (this.#state.startDisposition.kind !== "terminal")
+      this.#state.startDisposition = { kind: "reconnect_pending", mode };
   }
 
   #monotonicNow(): number {
@@ -620,6 +719,7 @@ export class GatewayDurableAdapter {
 
   async #addSchedule(
     input: Omit<PersistedLogicalSchedule, "id" | "status" | "dueWallMs">,
+    beforePersist?: (schedule: PersistedLogicalSchedule) => void,
   ): Promise<void> {
     const monotonicNow = this.#monotonicNow();
     const wallNow = this.#wallNow();
@@ -631,19 +731,29 @@ export class GatewayDurableAdapter {
     };
     this.#state.nextScheduleId += 1;
     this.#state.schedules.push(schedule);
+    beforePersist?.(schedule);
     this.#metric("schedule_added", "schedule", "success");
     await this.#persist();
     await this.#synchronizeAlarm();
   }
 
   async #finishSchedule(id: number): Promise<void> {
+    this.#completeScheduleInMemory(id);
+    await this.#persist();
+  }
+
+  #completeScheduleInMemory(id: number): void {
     this.#state.schedules = this.#state.schedules.filter((candidate) => candidate.id !== id);
     if (!this.#state.completedScheduleIds.includes(id)) {
       this.#state.completedScheduleIds = [...this.#state.completedScheduleIds, id].slice(
         -MAX_COMPLETED_SCHEDULE_IDS,
       );
     }
-    await this.#persist();
+    if (
+      this.#state.startDisposition.kind === "reconnect_scheduled" &&
+      this.#state.startDisposition.scheduleId === id
+    )
+      this.#state.startDisposition = { kind: "startable" };
   }
 
   async #recoverClaimedSchedule(schedule: PersistedLogicalSchedule): Promise<void> {
@@ -653,14 +763,14 @@ export class GatewayDurableAdapter {
     this.#core = null;
     if (this.#state.connectionGeneration <= schedule.connectionGeneration)
       this.#state.connectionGeneration = schedule.connectionGeneration + 1;
-    this.#state.schedules = this.#state.schedules.filter(
-      (candidate) => candidate.id !== schedule.id,
-    );
-    if (!this.#state.completedScheduleIds.includes(schedule.id)) {
-      this.#state.completedScheduleIds = [...this.#state.completedScheduleIds, schedule.id].slice(
-        -MAX_COMPLETED_SCHEDULE_IDS,
-      );
-    }
+    this.#completeScheduleInMemory(schedule.id);
+    const mode =
+      schedule.kind === "reconnect"
+        ? reconnectMode(schedule)
+        : this.#state.session !== null && this.#state.checkpoint !== null
+          ? "resume"
+          : "fresh";
+    this.#setReconnectPending(mode);
     this.#metric("schedule_ambiguous_recovery", "schedule", "ambiguous");
     await this.#persist();
     try {
@@ -668,9 +778,7 @@ export class GatewayDurableAdapter {
     } catch {
       // The durable generation fence precedes this best-effort transport cleanup.
     }
-    await this.#scheduleReconnect(
-      this.#state.session !== null && this.#state.checkpoint !== null ? "resume" : "fresh",
-    );
+    await this.#scheduleReconnect(mode);
   }
 
   async #removeSchedules(
@@ -807,6 +915,16 @@ export class GatewayDurableAdapter {
     if (lifecycle === null) return null;
     lifecycle.valid = false;
     this.#active = null;
+    const disposition = this.#state.startDisposition;
+    if (disposition.kind === "reconnect_scheduled") {
+      const authority = this.#state.schedules.find(
+        (schedule) => schedule.id === disposition.scheduleId && schedule.status === "claimed",
+      );
+      if (authority !== undefined) {
+        this.#completeScheduleInMemory(authority.id);
+        this.#setReconnectPending(disposition.mode);
+      }
+    }
     if (this.#state.connectionGeneration <= generation)
       this.#state.connectionGeneration = generation + 1;
     await this.#persist();
@@ -818,11 +936,22 @@ export class GatewayDurableAdapter {
       this.#core?.heartbeat?.ackOutstanding === true &&
       transition.state.heartbeat?.ackOutstanding === false;
     this.#core = transition.state;
+    const enteredTerminal =
+      this.#core.phase === "halted"
+        ? this.#enterTerminal(
+            transition.diagnostics.some((diagnostic) => diagnostic.category === "gateway_close")
+              ? "fatal_gateway_close"
+              : "local_policy_halt",
+            "close",
+          )
+        : false;
+    if (this.#core.phase === "reconnecting") this.#setReconnectPending(this.#core.connectionIntent);
     if (heartbeatAcknowledged) this.#metric("heartbeat_ack");
     for (const _diagnostic of transition.diagnostics) this.#recordProtocolDiagnostic(_diagnostic);
     if (this.#core.phase === "active") this.#state.reconnectAttempts = 0;
     await this.#persistCore();
     for (const command of transition.commands) await this.#executeCommand(command);
+    if (enteredTerminal) await this.#synchronizeAlarm();
   }
 
   #recordProtocolDiagnostic(diagnostic: GatewayDiagnostic): void {
@@ -1191,23 +1320,57 @@ export class GatewayDurableAdapter {
   }
 
   async #scheduleReconnect(mode: "resume" | "fresh"): Promise<void> {
+    if (this.#state.startDisposition.kind === "terminal") return;
     const dependencies = this.#dependenciesOrThrow();
-    const attempt = this.#state.reconnectAttempts + 1;
-    const delay = dependencies.reconnectBackoffMs(attempt);
-    this.#state.reconnectAttempts = attempt;
-    if (delay === null || !validInteger(delay)) {
-      this.#metric("retry_exhausted", "reconnect", "exhausted");
+    const existingPending = this.#state.schedules.find(
+      (schedule) => schedule.kind === "reconnect" && schedule.status === "pending",
+    );
+    if (existingPending !== undefined) {
+      this.#state.startDisposition = {
+        kind: "reconnect_scheduled",
+        mode: reconnectMode(existingPending),
+        scheduleId: existingPending.id,
+      };
+      this.#metric("start_blocked_reconnect", "reconnect", "stale");
       await this.#persist();
       return;
     }
+    const attempt = this.#state.reconnectAttempts + 1;
+    let delay: number | null;
+    try {
+      delay = dependencies.reconnectBackoffMs(attempt);
+    } catch {
+      delay = null;
+    }
+    this.#state.reconnectAttempts = attempt;
+    if (delay === null || !validInteger(delay)) {
+      this.#enterTerminal("retry_exhausted", "reconnect");
+      this.#metric("retry_exhausted", "reconnect", "exhausted");
+      await this.#persist();
+      await this.#synchronizeAlarm();
+      return;
+    }
     const now = this.#monotonicNow();
+    const claimedReconnect = this.#state.schedules.find(
+      (schedule) => schedule.kind === "reconnect" && schedule.status === "claimed",
+    );
+    if (claimedReconnect !== undefined) this.#completeScheduleInMemory(claimedReconnect.id);
     this.#metric("reconnect_scheduled", "reconnect", "success");
-    await this.#addSchedule({
-      kind: "reconnect",
-      connectionGeneration: this.#state.connectionGeneration,
-      dueMonotonicMs: now + delay,
-      mode,
-    });
+    await this.#addSchedule(
+      {
+        kind: "reconnect",
+        connectionGeneration: this.#state.connectionGeneration,
+        dueMonotonicMs: now + delay,
+        mode,
+      },
+      (schedule) => {
+        this.#state.startDisposition = {
+          kind: "reconnect_scheduled",
+          mode,
+          scheduleId: schedule.id,
+        };
+      },
+    );
   }
 
   async #executeSchedule(schedule: PersistedLogicalSchedule): Promise<void> {
@@ -1234,9 +1397,9 @@ export class GatewayDurableAdapter {
       return;
     }
     if (schedule.kind === "heartbeat") {
-      // The core consumes the logical deadline, while late physical delivery is separately
-      // counted. This avoids assuming exact platform alarm timing.
-      await this.#applyTransition(gatewayHeartbeatDue(this.#core, schedule.dueMonotonicMs));
+      // The core receives observed execution time. Its own scheduled heartbeat deadline stays
+      // authoritative, so a late platform alarm cannot backdate authorization or send late.
+      await this.#applyTransition(gatewayHeartbeatDue(this.#core, this.#monotonicNow()));
       return;
     }
     if (schedule.kind === "handshake") {

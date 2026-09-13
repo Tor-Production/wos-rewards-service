@@ -245,6 +245,8 @@ describe("Gateway lifecycle, heartbeat and reconnect policy", () => {
       sequence: null,
     });
     expect(command(regular, "schedule_heartbeat").atMs).toBe(2_000);
+    expect(regular.state.outbound.connectionAuthorizationsMs.at(-1)).toBe(1_000);
+    expect(regular.state.outbound.lastObservedAtMs).toBe(1_000);
     state = completeOnlySend(regular);
     const ack = receiveGatewayText(state, gatewayPayload(11), { nowMs: 1_001 });
     expect(ack.state.heartbeat?.ackOutstanding).toBe(false);
@@ -256,6 +258,28 @@ describe("Gateway lifecycle, heartbeat and reconnect policy", () => {
       sequence: null,
     });
     expect(requested.state.outbound.connectionAuthorized).toBe(3); // IDENTIFY + two heartbeats.
+  });
+
+  it("halts a heartbeat observed after its deadline without backdating outbound pressure", () => {
+    const state = startFresh();
+    const authorizationTimes = [...state.outbound.connectionAuthorizationsMs];
+    const telemetry = structuredClone(state.outbound.telemetry);
+
+    const late = gatewayHeartbeatDue(state, 1_001);
+
+    expect(late.state.phase).toBe("halted");
+    expect(late.commands).toEqual([
+      {
+        type: "close_gateway_connection",
+        code: 4000,
+        cause: "local_policy_violation",
+      },
+    ]);
+    expect(late.commands.some((candidate) => candidate.type === "send_gateway_event")).toBe(false);
+    expect(late.diagnostics[0]?.category).toBe("local_gateway_outbound_safety_gate_violation");
+    expect(late.state.outbound.connectionAuthorizationsMs).toEqual(authorizationTimes);
+    expect(late.state.outbound.lastObservedAtMs).toBe(state.outbound.lastObservedAtMs);
+    expect(late.state.outbound.telemetry).toEqual(telemetry);
   });
 
   it("accepts both ACKs when a requested heartbeat overlaps an outstanding regular heartbeat", () => {
