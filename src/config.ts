@@ -37,6 +37,8 @@ export interface AppConfig {
   readonly logLevel: LogLevel;
   readonly discordGuildId: string;
   readonly discordRegistrationChannelId: string;
+  readonly discordMvpAdminChannelId: string;
+  readonly discordMvpAdminUserAllowlist: readonly string[];
   readonly discordApplicationId: string;
   readonly defaultState: string;
   readonly spikeSenderAllowlist: readonly string[];
@@ -54,7 +56,8 @@ export interface AppConfig {
   readonly outputTimeoutSeconds: number;
   readonly outputMaxAttempts: number;
   readonly summaryMaxChunks: number;
-  readonly discordDeliveryEnabled: false;
+  readonly discordDeliveryEnabled: boolean;
+  readonly discordBotToken: string | null;
 }
 
 /**
@@ -106,6 +109,18 @@ function requireDisabled(source: Record<string, unknown>, name: string, issues: 
   issues.push(`${name} must be false`);
 }
 
+function readBoolean(
+  source: Record<string, unknown>,
+  name: string,
+  issues: string[],
+): boolean | undefined {
+  const value = source[name];
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  issues.push(`${name} must be true or false`);
+  return undefined;
+}
+
 export function loadConfig(raw: unknown): AppConfig {
   const source = asRecord(raw);
   if (source === null) {
@@ -122,6 +137,12 @@ export function loadConfig(raw: unknown): AppConfig {
   const discordRegistrationChannelId = readDigitString(
     source,
     "DISCORD_REGISTRATION_CHANNEL_ID",
+    20,
+    issues,
+  );
+  const discordMvpAdminChannelId = readDigitString(
+    source,
+    "DISCORD_MVP_ADMIN_CHANNEL_ID",
     20,
     issues,
   );
@@ -143,6 +164,18 @@ export function loadConfig(raw: unknown): AppConfig {
     if (spikeSenderAllowlist.includes(discordApplicationId)) {
       issues.push("SPIKE_SENDER_ALLOWLIST must not contain DISCORD_APPLICATION_ID");
     }
+  }
+  const discordMvpAdminUserAllowlist: string[] = [];
+  const adminAllowlist = source.DISCORD_MVP_ADMIN_USER_ALLOWLIST;
+  const adminAllowlistMalformed =
+    typeof adminAllowlist !== "string" ||
+    (adminAllowlist !== "" && !/^\d{1,20}(?:,\d{1,20})*$/.test(adminAllowlist));
+  if (adminAllowlistMalformed) {
+    issues.push("DISCORD_MVP_ADMIN_USER_ALLOWLIST must be comma-separated snowflakes");
+  } else if (adminAllowlist === "") {
+    issues.push("DISCORD_MVP_ADMIN_USER_ALLOWLIST must contain at least one administrator");
+  } else {
+    discordMvpAdminUserAllowlist.push(...new Set(adminAllowlist.split(",")));
   }
   // Keep replies and summaries within Discord limits. The attempt ceiling keeps
   // the complete outbox query-budget proof closed.
@@ -180,7 +213,34 @@ export function loadConfig(raw: unknown): AppConfig {
     outputMaxAttempts: readInteger(source, "OUTPUT_DISPATCH_MAX_ATTEMPTS", 1, 20, issues),
     summaryMaxChunks: readInteger(source, "SUMMARY_MAX_CHUNKS", 1, 100, issues),
   };
-  requireDisabled(source, "DISCORD_DELIVERY_ENABLED", issues);
+  const discordDeliveryEnabled = readBoolean(source, "DISCORD_DELIVERY_ENABLED", issues);
+  const discordBotToken = source.DISCORD_BOT_TOKEN;
+  if (
+    discordDeliveryEnabled === true &&
+    (typeof discordBotToken !== "string" || !/^[^\s]+$/.test(discordBotToken))
+  )
+    issues.push("DISCORD_BOT_TOKEN must be present when DISCORD_DELIVERY_ENABLED is true");
+  const liveIds = [
+    ["DISCORD_GUILD_ID", discordGuildId],
+    ["DISCORD_REGISTRATION_CHANNEL_ID", discordRegistrationChannelId],
+    ["DISCORD_MVP_ADMIN_CHANNEL_ID", discordMvpAdminChannelId],
+    ["DISCORD_APPLICATION_ID", discordApplicationId],
+  ] as const;
+  for (const [name, value] of liveIds)
+    if (value !== "" && !isDeployableDiscordSnowflake(value))
+      issues.push(`${name} must be a non-placeholder Discord snowflake`);
+  for (const value of discordMvpAdminUserAllowlist)
+    if (!isDeployableDiscordSnowflake(value))
+      issues.push(
+        "DISCORD_MVP_ADMIN_USER_ALLOWLIST must contain only non-placeholder Discord snowflakes",
+      );
+  if (discordMvpAdminUserAllowlist.includes(discordApplicationId))
+    issues.push("DISCORD_MVP_ADMIN_USER_ALLOWLIST must not contain DISCORD_APPLICATION_ID");
+  if (
+    discordRegistrationChannelId !== "" &&
+    discordRegistrationChannelId === discordMvpAdminChannelId
+  )
+    issues.push("registration and MVP admin channels must be different");
   requireDisabled(source, "REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED", issues);
   if (phase4.itemLeaseSeconds <= phase4.providerTimeoutSeconds)
     issues.push("item lease must exceed provider timeout");
@@ -193,6 +253,7 @@ export function loadConfig(raw: unknown): AppConfig {
     environment === undefined ||
     providerMode === undefined ||
     logLevel === undefined ||
+    discordDeliveryEnabled === undefined ||
     typeof ingestionSharedSecret !== "string"
   ) {
     throw new ConfigurationError(issues);
@@ -206,6 +267,8 @@ export function loadConfig(raw: unknown): AppConfig {
     logLevel,
     discordGuildId,
     discordRegistrationChannelId,
+    discordMvpAdminChannelId,
+    discordMvpAdminUserAllowlist,
     discordApplicationId,
     defaultState,
     spikeSenderAllowlist,
@@ -215,8 +278,14 @@ export function loadConfig(raw: unknown): AppConfig {
     redemptionMaxReeval,
     outboxDispatchMaxAttempts,
     ...phase4,
-    discordDeliveryEnabled: false,
+    discordDeliveryEnabled,
+    discordBotToken:
+      discordDeliveryEnabled && typeof discordBotToken === "string" ? discordBotToken : null,
   };
+}
+
+function isDeployableDiscordSnowflake(value: string): boolean {
+  return /^[1-9]\d{16,19}$/.test(value);
 }
 
 function readDigitString(

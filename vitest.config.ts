@@ -38,6 +38,7 @@ export default defineConfig(async () => {
             "PHASE5_UPGRADE_DB",
             "PHASE5_FAILURE_DB",
             "PHASE5_DISPATCH_DB",
+            "MVP_UPGRADE_DB",
           ],
           outboundService: () => {
             throw new Error("unmatched outbound network request prohibited");
@@ -48,8 +49,13 @@ export default defineConfig(async () => {
             TEST_MIGRATIONS: migrations,
             // Synthetic local test input; unusable as a real credential.
             INGESTION_SHARED_SECRET: "test-only-not-a-secret",
+            DISCORD_GUILD_ID: "100000000000000001",
+            DISCORD_REGISTRATION_CHANNEL_ID: "100000000000000002",
+            DISCORD_APPLICATION_ID: "100000000000000003",
+            DISCORD_MVP_ADMIN_CHANNEL_ID: "100000000000000004",
+            DISCORD_MVP_ADMIN_USER_ALLOWLIST: "100000000000000005",
             // Synthetic allow-list entry used only by local Gateway adapter integration tests.
-            SPIKE_SENDER_ALLOWLIST: "000000000000000004",
+            SPIKE_SENDER_ALLOWLIST: "100000000000000005",
           },
         },
       }),

@@ -1,16 +1,42 @@
 import type { AppConfig } from "../config";
 import { deterministicUuid } from "../ingest/identity";
 import { renderDisplayLabel } from "../ingest/sanitize";
+import type { ManualCodeCommandEvent, ManualCodeResult } from "../manual-code/types";
 import { mutableOperation, progress, rotation } from "../runtime/db";
 
-/** Internal synthetic input only. No route, discovery adapter, or remote command exposes it. */
+export function openDistribution(
+  db: D1Database,
+  config: AppConfig,
+  code: string,
+  now: Date,
+): Promise<string | null>;
+export function openDistribution(
+  db: D1Database,
+  config: AppConfig,
+  code: string,
+  now: Date,
+  command: ManualCodeCommandEvent,
+): Promise<ManualCodeResult>;
+
+/** One distribution-opening transaction, reached by synthetic tests or the staging command. */
 export async function openDistribution(
   db: D1Database,
   config: AppConfig,
   code: string,
   now: Date,
-): Promise<string | null> {
+  command?: ManualCodeCommandEvent,
+): Promise<string | null | ManualCodeResult> {
   if (!code || new TextEncoder().encode(code).length > 128) throw new Error("synthetic_code_size");
+  if (command) return openManualDistribution(db, config, code, now, command);
+  return openSyntheticDistribution(db, config, code, now);
+}
+
+async function openSyntheticDistribution(
+  db: D1Database,
+  config: AppConfig,
+  code: string,
+  now: Date,
+): Promise<string | null> {
   const id = await deterministicUuid(`distribution:${code}`);
   const stamp = now.toISOString();
   try {
@@ -50,6 +76,121 @@ export async function openDistribution(
     if (existing) return null;
     throw new Error("distribution_not_accepted");
   }
+}
+
+async function openManualDistribution(
+  db: D1Database,
+  config: AppConfig,
+  code: string,
+  now: Date,
+  command: ManualCodeCommandEvent,
+): Promise<ManualCodeResult> {
+  const operationId = await deterministicUuid(`distribution:${code}`);
+  const stamp = now.toISOString();
+  const acceptanceId = crypto.randomUUID();
+  const deadline = new Date(now.getTime() + config.operationDeadlineSeconds * 1000).toISOString();
+  const context = JSON.stringify({
+    version: 1,
+    code,
+    channelId: command.channel_id,
+    maxLength: config.discordMessageMaxLength,
+    maxChunks: config.summaryMaxChunks,
+  });
+  try {
+    await db.batch([
+      db
+        .prepare(
+          `INSERT INTO manual_code_commands
+          (event_id,guild_id,channel_id,author_id,code,status,operation_id,discord_created_at,
+           accepted_at,acceptance_id)
+          VALUES (?1,?2,?3,?4,?5,'pending',NULL,?6,?7,?8)
+          ON CONFLICT(event_id) DO NOTHING`,
+        )
+        .bind(
+          command.event_id,
+          command.guild_id,
+          command.channel_id,
+          command.author_id,
+          code,
+          command.created_at,
+          stamp,
+          acceptanceId,
+        ),
+      db
+        .prepare(
+          `INSERT INTO gift_codes(code,status,discovered_at,source,first_seen_event_id)
+          SELECT ?1,'active',?2,'manual-staging',?3
+          WHERE EXISTS (
+            SELECT 1 FROM manual_code_commands
+            WHERE event_id=?3 AND acceptance_id=?4 AND status='pending'
+          )
+          ON CONFLICT(code) DO NOTHING`,
+        )
+        .bind(code, stamp, command.event_id, acceptanceId),
+      db
+        .prepare(
+          `INSERT INTO operations
+          (operation_id,type,trigger_kind,trigger_ref,snapshot_at,expected_count,deadline_at,
+           created_at,updated_at,summary_context)
+          SELECT ?1,'code_distribution_run','discord_event',?2,?3,
+            CASE WHEN p.n<=2000 THEN p.n ELSE -1 END,?4,?3,?3,?5
+          FROM (SELECT COUNT(*) AS n FROM players) p
+          WHERE EXISTS (
+            SELECT 1 FROM manual_code_commands
+            WHERE event_id=?6 AND acceptance_id=?7 AND status='pending'
+          ) AND EXISTS (
+            SELECT 1 FROM gift_codes
+            WHERE code=?2 AND source='manual-staging' AND first_seen_event_id=?6
+          )`,
+        )
+        .bind(operationId, code, stamp, deadline, context, command.event_id, acceptanceId),
+      db
+        .prepare(
+          `INSERT INTO operation_players_snapshot(operation_id,player_id,display_name)
+          SELECT ?1,p.player_id,p.display_name FROM players p
+          WHERE EXISTS (
+            SELECT 1 FROM manual_code_commands
+            WHERE event_id=?2 AND acceptance_id=?3 AND status='pending'
+          ) AND EXISTS (
+            SELECT 1 FROM gift_codes
+            WHERE code=?4 AND source='manual-staging' AND first_seen_event_id=?2
+          )
+          ORDER BY p.player_id`,
+        )
+        .bind(operationId, command.event_id, acceptanceId, code),
+      db
+        .prepare(
+          `UPDATE manual_code_commands
+          SET status=CASE WHEN EXISTS (
+                SELECT 1 FROM operations
+                WHERE operation_id=?1 AND trigger_ref=?2 AND snapshot_at=?3
+              ) THEN 'accepted' ELSE 'duplicate_code' END,
+              operation_id=CASE WHEN EXISTS (
+                SELECT 1 FROM operations
+                WHERE operation_id=?1 AND trigger_ref=?2 AND snapshot_at=?3
+              ) THEN ?1 ELSE NULL END
+          WHERE event_id=?4 AND acceptance_id=?5 AND status='pending'`,
+        )
+        .bind(operationId, code, stamp, command.event_id, acceptanceId),
+    ]);
+  } catch {
+    const duplicate = await db
+      .prepare("SELECT acceptance_id FROM manual_code_commands WHERE event_id=?1")
+      .bind(command.event_id)
+      .first<{ acceptance_id: string }>();
+    if (duplicate && duplicate.acceptance_id !== acceptanceId) return { kind: "duplicate_event" };
+    throw new Error("distribution_not_accepted");
+  }
+  const result = await db
+    .prepare("SELECT acceptance_id,status,operation_id FROM manual_code_commands WHERE event_id=?1")
+    .bind(command.event_id)
+    .first<{ acceptance_id: string; status: string; operation_id: string | null }>();
+  if (!result) throw new Error("distribution_not_accepted");
+  if (result.acceptance_id !== acceptanceId) return { kind: "duplicate_event" };
+  if (result.status === "duplicate_code") return { kind: "duplicate_code" };
+  if (result.status === "accepted" && result.operation_id === operationId)
+    return { kind: "accepted", operationId };
+  throw new Error("distribution_not_accepted");
 }
 
 export async function expandPage(db: D1Database, now: string): Promise<void> {

@@ -1,6 +1,6 @@
 import { scheduledWork, queueWork } from "./runtime/handlers";
 import { ConfigurationError, loadConfig } from "./config";
-import { acknowledgement, errorResponse } from "./http/responses";
+import { acknowledgement, errorResponse, manualCodeResponse } from "./http/responses";
 import { acceptRegistrationEvent } from "./ingest/acceptance";
 import { verifyIngestionAuth } from "./ingest/auth";
 import { classifyAcceptedAuthor } from "./ingest/author-filter";
@@ -8,13 +8,14 @@ import { newAttemptRunId } from "./ingest/identity";
 import { parseRegistration } from "./ingest/registration-parser";
 import { readRegistrationEvent } from "./ingest/transport";
 import { INLINE_DISPATCH_LIMIT } from "./limits";
+import { readManualCodeCommand } from "./manual-code/transport";
+import { openDistribution } from "./operations/distribution";
 import { dispatchOutbox } from "./outbox/dispatcher";
 
 // Named export only: Vitest binds this class through an explicit test-only Miniflare option.
 // No Durable Object binding, migration, route or start trigger exists in wrangler.jsonc.
 export { LocalDiscordGatewayAdapter } from "./discord/gateway/local-durable-object";
 
-/** Synthetic/local Phase 3 boundary. No Discord transport, provider call or consumer. */
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     let config;
@@ -24,8 +25,10 @@ export default {
       if (error instanceof ConfigurationError) return errorResponse("invalid_configuration");
       throw error;
     }
-    if (new URL(request.url).pathname !== "/ingest" || request.method !== "POST")
-      return errorResponse("not_found");
+    const path = new URL(request.url).pathname;
+    if (request.method !== "POST") return errorResponse("not_found");
+    if (path === "/manual-code") return handleManualCode(request, env, config);
+    if (path !== "/ingest") return errorResponse("not_found");
     const authenticated = await verifyIngestionAuth(request, config.ingestionSharedSecret);
     if (!authenticated) return errorResponse("unauthorized");
     const now = new Date();
@@ -80,3 +83,32 @@ export default {
     await queueWork(batch, env);
   },
 } satisfies ExportedHandler<Env>;
+
+async function handleManualCode(
+  request: Request,
+  env: Env,
+  config: ReturnType<typeof loadConfig>,
+): Promise<Response> {
+  const authenticated = await verifyIngestionAuth(request, config.ingestionSharedSecret);
+  if (!authenticated) return manualCodeResponse("unauthorized");
+  const now = new Date();
+  const command = await readManualCodeCommand(request, now);
+  if (!command) return manualCodeResponse("ignored");
+  if (
+    command.guild_id !== config.discordGuildId ||
+    command.channel_id !== config.discordMvpAdminChannelId ||
+    command.author_is_bot ||
+    command.author_is_system ||
+    command.webhook_id !== null ||
+    command.application_id !== null
+  )
+    return manualCodeResponse("ignored");
+  if (!config.discordMvpAdminUserAllowlist.includes(command.author_id))
+    return manualCodeResponse("unauthorized");
+  try {
+    const result = await openDistribution(env.STAGING_DB, config, command.code, now, command);
+    return manualCodeResponse(result.kind === "accepted" ? "accepted" : "duplicate");
+  } catch {
+    return manualCodeResponse("unavailable");
+  }
+}

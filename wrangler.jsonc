@@ -7,6 +7,7 @@
   // Fail closed: no workers.dev subdomain and no routes, so nothing about this Worker is
   // publicly reachable. Do not enable either without an explicit human decision.
   "workers_dev": false,
+  "preview_urls": false,
 
   // Phase 4 adds local consumers, the redemption DLQ, and independently budgeted Cron lanes.
   // No resources are provisioned. Only local development and dry-run validation are authorized.
@@ -23,6 +24,8 @@
     "LOG_LEVEL": "info",
     "DISCORD_GUILD_ID": "000000000000000001",
     "DISCORD_REGISTRATION_CHANNEL_ID": "000000000000000002",
+    "DISCORD_MVP_ADMIN_CHANNEL_ID": "000000000000000004",
+    "DISCORD_MVP_ADMIN_USER_ALLOWLIST": "",
     "DISCORD_APPLICATION_ID": "000000000000000003",
     "DEFAULT_STATE": "0",
     "SPIKE_SENDER_ALLOWLIST": "",
@@ -46,11 +49,15 @@
   // Staging is the only environment. There is deliberately no `production` environment:
   // production redemption is blocked (docs/whiteout-provider-decision.md section 1) and the
   // production stack has not been provisioned.
-  "secrets": { "required": ["INGESTION_SHARED_SECRET"] },
+  "secrets": { "required": ["INGESTION_SHARED_SECRET", "DISCORD_BOT_TOKEN"] },
   "env": {
     "staging": {
       "name": "wos-rewards-service-staging",
-      "secrets": { "required": ["INGESTION_SHARED_SECRET"] },
+      // The live MVP exposes only the staging Worker on its stable workers.dev route.
+      // Preview URLs stay disabled so there is one reviewed ingress origin.
+      "workers_dev": true,
+      "preview_urls": false,
+      "secrets": { "required": ["INGESTION_SHARED_SECRET", "DISCORD_BOT_TOKEN"] },
       "queues": {
         "consumers": [
           {
@@ -91,6 +98,8 @@
         "LOG_LEVEL": "info",
         "DISCORD_GUILD_ID": "000000000000000001",
         "DISCORD_REGISTRATION_CHANNEL_ID": "000000000000000002",
+        "DISCORD_MVP_ADMIN_CHANNEL_ID": "000000000000000004",
+        "DISCORD_MVP_ADMIN_USER_ALLOWLIST": "",
         "DISCORD_APPLICATION_ID": "000000000000000003",
         "DEFAULT_STATE": "0",
         "SPIKE_SENDER_ALLOWLIST": "",
