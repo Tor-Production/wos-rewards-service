@@ -38,32 +38,40 @@ async function sendOnce(
   timeoutMs: number,
 ): Promise<{ kind: "complete"; status: ForwardStatus } | { kind: "retry" }> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const response = await fetcher(
-      new Request(new URL(routed.path, config.workerBaseUrl), {
-        method: "POST",
-        redirect: "manual",
-        signal: controller.signal,
-        headers: {
-          authorization: `Bearer ${config.ingestionSharedSecret}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(routed.payload),
+    const request = new Request(new URL(routed.path, config.workerBaseUrl), {
+      method: "POST",
+      redirect: "manual",
+      signal: controller.signal,
+      headers: {
+        authorization: `Bearer ${config.ingestionSharedSecret}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(routed.payload),
+    });
+    const response = await Promise.race([
+      fetcher(request),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new Error("worker_timeout"));
+        }, timeoutMs);
       }),
-    );
+    ]);
     if (response.status === 429 || response.status >= 500) return { kind: "retry" };
     if (response.status === 401 || response.status === 403)
       return { kind: "complete", status: "unauthorized" };
+    if (!response.ok) return { kind: "complete", status: "unavailable" };
     const status = await readStatus(response);
     return {
       kind: "complete",
-      status: status ?? (response.ok ? "ignored" : "unavailable"),
+      status: status ?? "unavailable",
     };
   } catch {
     return { kind: "retry" };
   } finally {
-    clearTimeout(timeout);
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
@@ -93,9 +101,8 @@ async function readStatus(response: Response): Promise<ForwardStatus | null> {
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
     const record = parsed as Record<string, unknown>;
     const candidate = record.status ?? record.error;
-    return ["accepted", "duplicate", "ignored", "unauthorized", "unavailable"].includes(
-      String(candidate),
-    )
+    return typeof candidate === "string" &&
+      ["accepted", "duplicate", "ignored", "unauthorized", "unavailable"].includes(candidate)
       ? (candidate as ForwardStatus)
       : null;
   } catch {

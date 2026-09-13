@@ -101,7 +101,8 @@ behaviour is [§3](architecture/discord-ingestion-and-registration.md#author-fil
 - Slash-command / interactions UX as the primary registration path (evaluated only as ADR
   0001 Option 3 / fallback).
 - Multi-guild scale-out, a web dashboard, analytics, or historical reporting.
-- Choosing where a non-Cloudflare companion process runs (infra decision, deferred).
+- Choosing how a production companion would be hosted and supervised if Option 2 is selected;
+  the Task 09 MVP runs only as a foreground process on the user-controlled Windows host.
 
 ---
 
@@ -113,7 +114,9 @@ behaviour is [§3](architecture/discord-ingestion-and-registration.md#author-fil
 > establish a reliability guarantee for a permanently hosted Cloudflare Gateway client
 > **[fact:C1][fact:C2]**. ADR 0001 is **Proposed**; a time-boxed spike decides between
 > Option 1 (Durable Object Gateway client) and Option 2. Everything to the right of the
-> `DiscordEventSource` boundary is identical for either outcome.
+> `DiscordEventSource` boundary is identical for either outcome. Task 09 implements Option 2
+> only as a staging MVP on a user-controlled Windows host; the 72-hour Option 1 spike is deferred,
+> not passed or waived, and the Task 08C Durable Object remains undeployed.
 
 ```mermaid
 flowchart LR
@@ -127,8 +130,8 @@ flowchart LR
   end
 
   subgraph CF["Cloudflare backend — implementation-agnostic"]
-    ING["Ingestion Worker /ingest<br/>atomic accept or resumable state machine"]
-    D1[("D1: players, gift_codes, redemptions (global claim + generation),<br/>processed_events (state machine), operations, operation_items,<br/>summary_chunk_layout, discord_output_deliveries, outbox_jobs")]
+    ING["Worker /ingest + /manual-code<br/>atomic acceptance"]
+    D1[("D1: players, gift_codes, redemptions (global claim + generation),<br/>processed_events, manual_code_commands, operations, operation_items,<br/>summary_chunk_layout, discord_output_deliveries, outbox_jobs")]
     DISP["Outbox dispatcher (Cron + inline)"]
     Q1[["Queue: registration-jobs"]]
     Q2[["Queue: code-fanout-jobs"]]
@@ -144,7 +147,7 @@ flowchart LR
   end
 
   GW --> SRC
-  SRC -->|"authenticated HTTPS: RegistrationMessageEvent"| ING
+  SRC -->|"authenticated HTTPS: registration or manual-code event"| ING
   ING --> D1
   D1 --> DISP
   DISP --> Q1
@@ -170,17 +173,19 @@ flowchart LR
 
 ### Deployment stacks
 
-Two fully separate stacks, `staging` and `production`, selected by the `ENVIRONMENT`
-variable. Each stack has its own D1 database, its own three Queues, its own Durable Object
-namespace (if Option 1 is chosen), its own Discord application + bot token, its own Cron
-Triggers, and its own secret set. No resource, name, or secret is shared between stacks.
+The target architecture uses fully separate `staging` and `production` stacks. The current
+repository implements and accepts **staging only**; there is no production environment or
+resource. Any future production stack must have its own D1 database, three Queues, Durable Object
+namespace if Option 1 is selected, Discord application/token, Cron Triggers, and secrets. No
+resource, name, or secret may be shared between stacks.
 See [§19](architecture/operations-and-reliability.md#19-staging-and-production-separation).
 
 ### Trust boundaries
 
-- **Discord ↔ ingestion tier:** the Discord bot token authenticates the Gateway
-  connection. Only `MESSAGE_CREATE` events for the configured guild + registration channel,
-  authored by a **non-bot, non-system, non-webhook** user, are relevant
+- **Discord ↔ ingestion tier:** the Discord bot token authenticates the Gateway connection.
+  Only `MESSAGE_CREATE` events for the configured guild + registration channel, or an exact
+  manual command in the dedicated admin channel, authored by a **non-bot, non-system,
+  non-webhook** user, are relevant
   ([§5](architecture/discord-ingestion-and-registration.md#5-discord-registration-flow)).
 - **Ingestion tier ↔ Cloudflare backend:** the ingestion tier authenticates to the
   Ingestion Worker with `INGESTION_SHARED_SECRET` (Option 2) or is in-process (Option 1).
@@ -196,8 +201,9 @@ See [§19](architecture/operations-and-reliability.md#19-staging-and-production-
 
 | Component | Responsibility | Notes |
 |---|---|---|
-| `DiscordEventSource` | Hold the Gateway connection; filter to guild+channel; drop bot/system/webhook/own-app messages (production) — forward `SPIKE_SENDER_ALLOWLIST` senders unchanged (staging); POST `RegistrationMessageEvent` | Companion **or** DO, per ADR 0001; no business logic |
+| Task 09 companion (`DiscordEventSource`) | Hold the Gateway connection; filter to one guild plus registration/admin channels; drop bot/system/webhook/application messages; forward registration content unchanged; authorize and normalize `!wos-code CODE`; use bounded HTTPS attempts and fixed-category logs | Provisional staging-only Option 2 foreground process; no D1 or direct Discord output; not the ADR spike harness |
 | Ingestion Worker (`/ingest`) | Authenticate the source; re-apply the author filter (authoritative staging gate, asserts non-production); parse; **atomically** persist `processed_events` + (validation-reply delivery row **or** registration work + outbox rows) + the guarded **T13** reopen of state-dependent `redemptions` failures on a `state` change, or the resumable state-machine shell | Stateless Worker; PK conflict ⇒ duplicate no-op |
+| Manual-code Worker (`/manual-code`) | Authenticate; validate exact bounded schema, time, guild, dedicated channel, and human admin; atomically insert the message-id ledger and call the existing distribution-opening flow | Staging only; generic outcomes; duplicate message/code creates no second operation |
 | Fan-out expansion worker | Paginate the player snapshot into `operation_items` (with `display_label`) + outbox rows | Cursor-driven, bounded, restartable |
 | Outbox dispatcher | Enqueue `pending` outbox rows; back off; mark `dead`; **atomic-reopen** (fresh `attempt_id`) while `summary_state='none'`, else flag a `repair_run` ([§14](architecture/data-model-and-outbox.md#14-transactional-outbox)) | Cron (every minute, [fact:C4]) + inline best-effort |
 | Registration consumer | Claim the coarse item lease; **acquire the per-invocation `redemptions` claim** (T1/T2); reuse a terminal outcome; **`ack`** on T3 (live invocation / not due / different attempt); redeem under `current_invocation_token`; invocation-guarded writes (T4–T9, incl. `attempt_state` vs `players.state` and the T8 cap); mirror while `summary_state='none'`; trigger the freeze + seal + build | Queue consumer; T3 never uses `message.retry`; `retryable` ⇒ T9 then `message.retry` |
@@ -205,7 +211,7 @@ See [§19](architecture/operations-and-reliability.md#19-staging-and-production-
 | DLQ inspection consumer | Set the global row `retry_exhausted` on an exact `current_attempt_id = message.attempt_id` match when **no invocation is active**: a `retry_wait` row always qualifies (`current_invocation_token IS NULL`; the future `retry_due_at` / pickup-grace `invocation_expires_at` are not consulted), an `in_progress` row only if its `current_invocation_token` is null or `invocation_expires_at` has passed (T10); a different `attempt_id` ⇒ `dlq_stale_attempt`, a still-live invocation ⇒ `dlq_invocation_active`, both audit-only and change nothing (T11); mirror to non-terminal `operation_items` (subject to the [§15.3](architecture/summary-and-delivery.md#153-completion-accounting-and-the-source-freeze) freeze) | Consumer of `redemption-dlq`; each DLQ message is one specific `attempt_id` |
 | Operation sweeper | Force-close operations past `OPERATION_DEADLINE_SECONDS` (then **freeze + seal**); **T12** reset `redemptions` rows with an expired invocation (`in_progress`/`retry_wait` → `pending`); mirror terminal redemptions onto waiting items (freeze-guarded); **re-drive** up to `SWEEPER_REDRIVE_BATCH` stuck non-terminal, unclaimed pairs with a **fresh `attempt_id`**; **T15** guarded `state`-mismatch reopen of already-terminal `player_ineligible` rows; atomic-reopen outbox-dead items pre-seal; optional bounded `retry_exhausted` reopen | Cron |
 | Discord output builder | **Paged, cursor-driven, idempotent**: **seal** `summary_item_snapshot` (once), then a layout pass assigns snapshot `sort_key` ranges to chunks (`summary_chunk_layout`, persisting the open-chunk accumulator with the cursor) and a render pass persists `discord_output_deliveries` rows; every pass reads **only** the immutable snapshot; footer only in the final chunk; capped at `SUMMARY_MAX_CHUNKS` | Cron (shared `scheduled()` handler) + inline best-effort |
-| Output delivery dispatcher | Claim `pending` (or lease-expired) `discord_output_deliveries` chunks in `chunk_index` order; send via Create Message with per-chunk nonce + `enforce_nonce`; record `discord_message_id`; resume at the first unsent chunk | Cron (every minute) + inline best-effort |
+| Output delivery dispatcher | Claim `pending` (or lease-expired) `discord_output_deliveries` chunks in `chunk_index` order; send via API-v10 Create Message with per-chunk nonce + `enforce_nonce`; record `discord_message_id`; resume at the first unsent chunk | Cron; real staging transport only behind explicit delivery flag + bot-token binding, otherwise inert |
 | `WhiteoutProvider` adapter | `redeem(PlayerRef, code, idempotencyKey)` → structured result; provider-side rate limiting; error mapping | `MockWhiteoutProvider` by default |
 | `GiftCodeSource` adapter | Discover/list candidate codes from an **authorized** source | Not authorized; disabled |
 | Code-discovery scheduler | Poll the authorized source when `CODE_DISCOVERY_ENABLED=true` | Cron; no-op until authorized |
@@ -247,8 +253,10 @@ automated.
    delivery** — item lease, `redemptions` claim, deterministic per-chunk build/deliver,
    footer placement, zero-result handling, bounded expansion, outbox reopen / repair.
 5. **ADR 0001 spike** — decide Option 1 vs Option 2 against the spike's pass/fail criteria.
-6. **Chosen `DiscordEventSource` adapter** — implement the winner. *(Blocked until phase 5
-   completes or is explicitly waived.)*
+   Task 09 defers this 72-hour run; no pass or waiver is claimed.
+6. **`DiscordEventSource` adapter** — Task 09 implements a provisional staging-only Option 2 MVP;
+   selecting a production topology remains blocked until phase 5 completes or is explicitly
+   waived.
 7. **Observability, sweepers, DLQ consumer, hardening.**
 8. **Blocked** — authorized `WhiteoutProvider` / `GiftCodeSource`; production redemption.
    Requires the authorizations in

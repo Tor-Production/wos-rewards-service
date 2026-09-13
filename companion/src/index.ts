@@ -27,10 +27,15 @@ client.once(Events.ClientReady, (readyClient) => {
 client.on(Events.MessageCreate, (message) => {
   const routed = routeMessage(toView(message), config);
   if (!routed) return;
-  void forwardToWorker(config, routed).then((status) => {
-    log(`companion_${routed.kind}_${status}`);
-  });
+  void forwardToWorker(config, routed)
+    .then((status) => {
+      log(`companion_${routed.kind}_${status}`);
+    })
+    .catch(() => log(`companion_${routed.kind}_unavailable`));
 });
+client.on(Events.Error, () => log("companion_client_error"));
+client.on(Events.Warn, () => log("companion_client_warning"));
+client.on(Events.ShardError, () => log("companion_shard_error"));
 
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);

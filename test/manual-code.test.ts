@@ -3,8 +3,10 @@ import { createExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import worker from "../src/index";
+import { MANUAL_CODE_MAX_BODY_BYTES } from "../src/limits";
 import type { ManualCodeCommandEvent } from "../src/manual-code/types";
-import { seedPlayer, uniqueId } from "./support/fixtures";
+import { openDistribution } from "../src/operations/distribution";
+import { seedPlayer, testConfig, uniqueId } from "./support/fixtures";
 
 function command(overrides: Partial<ManualCodeCommandEvent> = {}): ManualCodeCommandEvent {
   return {
@@ -71,6 +73,9 @@ describe("authenticated staging manual-code endpoint", () => {
       { ...base, code: "contains spaces" },
       { ...base, code: "A".repeat(65) },
       { ...base, created_at: new Date(Date.now() - 6 * 60_000).toISOString() },
+      { ...base, created_at: new Date(Date.now() + 2 * 60_000).toISOString() },
+      { ...base, event_id: "not-a-snowflake" },
+      { ...base, author_is_bot: "false" },
       { ...base, guild_id: uniqueId() },
       { ...base, channel_id: env.DISCORD_REGISTRATION_CHANNEL_ID },
       { ...base, author_is_bot: true },
@@ -80,6 +85,31 @@ describe("authenticated staging manual-code endpoint", () => {
     ];
     for (const candidate of cases) {
       const response = await send(candidate, base.author_id);
+      expect(response.status).toBe(202);
+      expect(await response.json()).toEqual({ status: "ignored" });
+    }
+  });
+
+  it("bounds and validates the request media before parsing", async () => {
+    const event = command();
+    const wrongMedia = request(event);
+    wrongMedia.headers.set("content-type", "text/plain");
+    const declaredOversize = request(event);
+    declaredOversize.headers.set("content-length", String(MANUAL_CODE_MAX_BODY_BYTES + 1));
+    const streamedOversize = new Request("https://synthetic.invalid/manual-code", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${env.INGESTION_SHARED_SECRET}`,
+      },
+      body: JSON.stringify({ padding: "x".repeat(MANUAL_CODE_MAX_BODY_BYTES) }),
+    });
+    for (const incoming of [wrongMedia, declaredOversize, streamedOversize]) {
+      const response = await worker.fetch(
+        incoming,
+        runtimeEnv(event.author_id),
+        createExecutionContext(),
+      );
       expect(response.status).toBe(202);
       expect(await response.json()).toEqual({ status: "ignored" });
     }
@@ -140,6 +170,28 @@ describe("authenticated staging manual-code endpoint", () => {
         .bind(first.code)
         .first("n"),
     ).toBe(1);
+  });
+
+  it("cannot classify two different events for one code as accepted at the same millisecond", async () => {
+    const now = new Date("2026-09-13T12:00:00.000Z");
+    const first = command({ created_at: now.toISOString() });
+    const second = command({
+      author_id: first.author_id,
+      code: first.code,
+      created_at: now.toISOString(),
+    });
+    expect(await openDistribution(env.STAGING_DB, testConfig(), first.code, now, first)).toEqual({
+      kind: "accepted",
+      operationId: expect.any(String),
+    });
+    expect(await openDistribution(env.STAGING_DB, testConfig(), second.code, now, second)).toEqual({
+      kind: "duplicate_code",
+    });
+    expect(
+      await env.STAGING_DB.prepare("SELECT status FROM manual_code_commands WHERE event_id=?1")
+        .bind(second.event_id)
+        .first("status"),
+    ).toBe("duplicate_code");
   });
 
   it("rejects a human outside the allowlist and reports storage failure as unavailable", async () => {

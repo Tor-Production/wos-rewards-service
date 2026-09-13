@@ -55,7 +55,7 @@ export default defineConfig(async () => {
             DISCORD_MVP_ADMIN_CHANNEL_ID: "100000000000000004",
             DISCORD_MVP_ADMIN_USER_ALLOWLIST: "100000000000000005",
             // Synthetic allow-list entry used only by local Gateway adapter integration tests.
-            SPIKE_SENDER_ALLOWLIST: "100000000000000005",
+            SPIKE_SENDER_ALLOWLIST: "000000000000000004",
           },
         },
       }),

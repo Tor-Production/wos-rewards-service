@@ -30,8 +30,9 @@
 
 ## 12. D1 data model
 
-> **Implemented.** `migrations/0001_initial_schema.sql` is the baseline migration and
-> creates every table below. It is applied inside the Workers runtime and verified by
+> **Implemented.** `migrations/0001_initial_schema.sql` creates the original twelve-table
+> baseline below; additive migrations are summarized at the end of this section, including
+> Task 09's thirteenth table. The schema is applied inside the Workers runtime and verified by
 > `test/migrations.test.ts`; the column lists in this section are the contract that suite
 > asserts against, column by column. All identifier columns are `TEXT`
 > ([§10](#10-identifier-handling)). No Cloudflare D1 resource has been provisioned and no
@@ -64,7 +65,7 @@ silently disable `enforce_nonce` suppression); and digits-only, non-empty `playe
 are deliberately **not** encoded: only the flat status domains are constrained, so no
 documented intermediate state can be blocked.
 
-**Foreign keys — 16 constraints, 17 `PRAGMA foreign_key_list` rows, no cascades.**
+**Baseline foreign keys — 16 constraints, 17 `PRAGMA foreign_key_list` rows, no cascades.**
 `processed_events → operations`; `redemptions → players, gift_codes`;
 `operation_items → operations, players, gift_codes`;
 `operation_players_snapshot → operations, players`;
@@ -106,6 +107,9 @@ another order.
 `players`, `operation_players_snapshot`, `operation_late_results` and
 `summary_chunk_layout` carry no extra index: every documented read of them is
 `WHERE operation_id = ?` (or `player_id` order), which the primary key already serves.
+Migration 0004's `manual_code_commands` needs no additional index because every runtime lookup
+uses its `event_id` primary key; its optional `operation_id` foreign key is the seventeenth
+constraint (eighteenth `PRAGMA foreign_key_list` row across the fully migrated schema).
 
 **Five decisions resolved during implementation.**
 
@@ -161,6 +165,24 @@ Re-registration = upsert on `player_id`.
 | `discovered_at` | TEXT | |
 | `source` | TEXT | authorized-source identifier |
 | `first_seen_event_id` | TEXT NULL | provenance |
+
+### `manual_code_commands` (migration 0004; staging MVP only)
+
+| Column | Type | Notes |
+|---|---|---|
+| `event_id` | TEXT PK | Discord message id and durable command-idempotency key; digit string, 1–20 characters |
+| `guild_id`, `channel_id`, `author_id` | TEXT | exact accepted Discord scope and human administrator identity; digit strings, 1–20 characters |
+| `code` | TEXT | normalized 1–64 character `[A-Za-z0-9_-]` gift code submitted by the companion |
+| `status` | TEXT | transient in-batch `pending`, terminal `accepted`, or terminal `duplicate_code` |
+| `operation_id` | TEXT NULL FK → `operations.operation_id` | populated only for `accepted`; duplicate codes create no operation |
+| `discord_created_at` | TEXT | timestamp supplied from the Discord message |
+| `accepted_at` | TEXT | Worker receipt/acceptance timestamp |
+| `acceptance_id` | TEXT | fresh batch-generation fence; prevents a duplicate event from borrowing another attempt's writes |
+
+The row is created and terminalized in the same atomic D1 batch that conditionally inserts the
+gift code, existing `code_distribution_run`, and immutable player snapshot. Therefore `pending`
+is never a committed steady state. A repeated `event_id` cannot authorize any batch member;
+a different message for an existing code commits `duplicate_code` without opening work.
 
 ### `processed_events` (event-acceptance state machine)
 
@@ -533,3 +555,13 @@ event. Tests inspect the trigger definitions in `sqlite_schema`, exercise each f
 mutation, upgrade representative Phase 4 rows, inject a failing migration statement to
 prove atomic DDL/data/ledger rollback, reapply safely through the migration journal, and run
 `PRAGMA foreign_key_check`.
+
+### Implemented additive Task 09 staging-MVP migration (0004)
+
+`0004_live_staging_manual_commands.sql` adds only `manual_code_commands`; it does not alter or
+rewrite an existing table. The table's named checks constrain Discord identifiers, code syntax,
+status, and the status/operation result shape. Its nullable operation foreign key has no cascade.
+Upgrade tests populate a migration-0003 database, apply 0004 through the D1 migration journal,
+verify the preserved data and exact new columns, exercise constraint/foreign-key rollback, confirm
+`PRAGMA foreign_key_check` is empty, and prove reapplication is a journal no-op. No remote database
+or migration is created or applied by these checks.

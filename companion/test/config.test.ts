@@ -27,6 +27,7 @@ describe("companion configuration", () => {
   it.each([
     ["COMPANION_WORKER_BASE_URL", "http://service.example.workers.dev"],
     ["COMPANION_WORKER_BASE_URL", "https://example.com"],
+    ["COMPANION_WORKER_BASE_URL", "https://service.example.workers.dev:8443"],
     ["DISCORD_GUILD_ID", "000000000000000001"],
     ["DISCORD_REGISTRATION_CHANNEL_ID", "not-an-id"],
     ["DISCORD_MVP_ADMIN_USER_ALLOWLIST", ""],

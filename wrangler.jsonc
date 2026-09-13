@@ -4,13 +4,13 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-28",
 
-  // Fail closed: no workers.dev subdomain and no routes, so nothing about this Worker is
-  // publicly reachable. Do not enable either without an explicit human decision.
+  // Fail closed at the top/default scope. Only the explicit staging environment below enables
+  // its workers.dev route, and deployment still requires a separate human approval.
   "workers_dev": false,
   "preview_urls": false,
 
-  // Phase 4 adds local consumers, the redemption DLQ, and independently budgeted Cron lanes.
-  // No resources are provisioned. Only local development and dry-run validation are authorized.
+  // Phase 4 adds consumers, the redemption DLQ, and independently budgeted Cron lanes; Task 09
+  // adds the staging MVP inputs/output gate. No resource is provisioned by this configuration.
   //
   // Variable names come from docs/architecture/configuration.md section 4. `vars` is a
   // non-inheritable key, so the same safe values are declared at the top level and in the

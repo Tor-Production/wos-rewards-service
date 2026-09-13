@@ -28,8 +28,8 @@ round-robin operation ordering, so expansion and summary do not share one slot.
 | Outbox | 10 | one fair operation, up to 90 rows; at most eight sequential `sendBatch` calls |
 | Recovery | 8 | close at most 128 deadlines; run terminal-item reuse every other minute, and rotate observation mirror / one stuck pair / one dead outbox repair through the intervening minutes |
 | Summary | 6 | one operation: freeze, seal page, layout page, or render one chunk |
-| Output | 9 | one ordered chunk, including claim, cooldown, result and completion recovery; zero requests unless a synthetic transport is injected |
-| **Complete scheduled handler** | **39** | at most eight Queue sends and one injected output request; no provider calls |
+| Output | 9 | one ordered chunk, including claim, cooldown, result and completion recovery; zero requests by default, or one through an injected/explicitly enabled staging transport |
+| **Complete scheduled handler** | **39** | at most eight Queue sends and one enabled output request; no provider calls |
 
 Queue consumers process at most two messages per invocation, reserving 16 D1 statements
 per message (**32 total**), with at most two mock provider invocations. The DLQ reserves
@@ -118,10 +118,46 @@ documented bounded interval **[fact:C1][fact:C2]**.
 | Discord application + bot token | distinct app and `DISCORD_BOT_TOKEN` per stack |
 | Cron Triggers | defined per stack; **≤ 5 per account on Free, ≤ 250 on Paid** [fact:C5] |
 | Secrets | never shared; set per stack via Wrangler secrets |
-| `SPIKE_SENDER_ALLOWLIST` | **staging only**; consulted by **both** the `DiscordEventSource` (forwards allow-listed bot/webhook senders) and the Ingestion Worker (authoritative gate; asserts `ENVIRONMENT !== "production"`); undefined in the production config of both tiers |
+| `SPIKE_SENDER_ALLOWLIST` | **staging spike only**; consulted by the separately gated spike source (not the Task 09 companion) and the Ingestion Worker (authoritative gate; asserts `ENVIRONMENT !== "production"`); undefined in the production config of both tiers |
 | `PRODUCTION_REDEMPTION_ENABLED` | `false` in staging always; `false` in production until an authorized provider is approved |
 
 Migrations are applied to staging first, then production, after review.
+
+### Task 09 staging MVP activation gate
+
+The implementation is present but **no external action has occurred**. The checked-in D1 and
+Discord identifiers are sentinels, so the Worker fails closed at request time. Before a human
+asks to provision anything, record and review these non-secret values:
+
+- Discord guild id, registration-channel id, dedicated admin-channel id, dedicated application
+  id, and every human administrator user id;
+- the final environment-specific staging `workers.dev` origin;
+- the real staging D1 database id after provisioning.
+
+The smallest Cloudflare resource set is one Worker named `wos-rewards-service-staging`, one D1
+database of the same staging scope, the registration and code-fanout Queues, their redemption
+DLQ, one one-minute Cron trigger, and the environment-specific `workers.dev` route. Discord needs
+one dedicated staging application/bot with Guilds, Guild Messages, and Message Content enabled.
+The companion runs as one foreground Node.js process on the user-controlled Windows host. No
+Durable Object, KV, R2, custom domain, service manager, observer, or production resource is part
+of this MVP.
+
+Activation is intentionally split into explicit gates:
+
+1. **Provisioning approval:** create only the staging resources above, then commit the returned
+   non-secret D1 id and reviewed Discord ids to this same PR. Do not deploy.
+2. **Manual secret entry by the user:** add the secret names `INGESTION_SHARED_SECRET` and
+   `DISCORD_BOT_TOKEN` to the staging Worker, and make those same names available to the Windows
+   companion through a user-chosen non-committed secret mechanism. Never transmit or echo values.
+3. **Deployment approval:** apply migrations remotely and deploy only the staging Worker.
+4. **Connection approval:** start the companion and connect the dedicated bot. Stop it with
+   Ctrl+C; graceful shutdown destroys the Discord client.
+
+Free-plan feasibility must be rechecked against current official Cloudflare limits immediately
+before provisioning. The fixed idle schedule is one Cron invocation per minute (43,200 in a
+30-day month). Variable usage is driven by HTTP events, D1 rows read/written, Queue operations,
+and at most one Discord output attempt per scheduled tick. This repository makes no claim that a
+local dry run validates billed usage, CPU, or deployed latency.
 
 ### Staging-spike reconciliation, abort, and cleanup invariants
 
@@ -257,11 +293,12 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
 
 - **Structured logs** with an explicit field allow-list: `environment`, `operation_id`,
   `operation_type`, `item_key`, `player_id`, `code`, `event_id` (correlation id), `status`,
-  `reason_code`, `attempts`, `queue`, `delivery_id`, `chunk_index`, timings.
+  `reason_code`, `attempts`, `queue`, `delivery_id`, `chunk_index`, timings. The Task 09
+  companion is narrower and logs fixed lifecycle/forward-result categories only.
   **Never logged:** `DISCORD_BOT_TOKEN`, `INGESTION_SHARED_SECRET`, any future provider
-  secret, `SPIKE_SENDER_ALLOWLIST` contents, raw message `content` beyond a
-  truncated/sanitized preview needed for a validation-failure log, provider response bodies
-  beyond mapped `reasonCode`s / `provider_receipt`.
+  secret, authorization headers, allow-list contents, raw message content, raw Gateway payloads,
+  session material, exception text, and provider response bodies beyond mapped `reasonCode`s /
+  `provider_receipt`.
 - **Redaction helper** applied at the log boundary; unit-tested.
 - **Metrics:** events accepted (valid / invalid); redemptions by outcome (`success` /
   `already_redeemed` / `retryable` / `permanent` / `retry_exhausted` / `state_reevaluation_limit`);
@@ -386,9 +423,15 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
     non-backdated outbound authorization evidence; durable fatal/local-policy/retry-exhausted
     terminal states; reconnect-backoff authority and idempotency across reconstruction; retry and
     IDENTIFY safety; exact staging-spike duplicate evidence; normal-human behavior; closed
-    diagnostics and command serialization. The deterministic protocol suites retain the full
-    Hello/heartbeat/ACK, outbound-rate, close/Invalid Session, Resume replay, and malformed-input
-    matrix. Every transport is fake and unmatched outbound network remains blocked;
+     diagnostics and command serialization. The deterministic protocol suites retain the full
+     Hello/heartbeat/ACK, outbound-rate, close/Invalid Session, Resume replay, and malformed-input
+     matrix. Every transport is fake and unmatched outbound network remains blocked;
+  - **Task 09 staging MVP:** unchanged human registration forwarding; wrong-scope/non-human
+    filtering; administrator command parsing and authorization at companion and Worker; exact,
+    bounded and fresh manual-code schema; event/code deduplication; migration-0003→0004 upgrade;
+    one registration plus one manual mock distribution through Queue, summary, and fake Discord
+    transport; live API-v10 request shape; missing-secret/disabled-delivery fail closed; fixed
+    logging categories with no raw content or credential output;
   - item-lease concurrency (two workers, one winner; expired-lease steal);
   - zero-result operation finalisation; bounded-expansion resume from cursor.
 - **Provider:** `MockWhiteoutProvider` in every automated test and in staging.
@@ -429,7 +472,7 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
 | Reconnect is waiting in durable backoff | A direct or repeated start could connect before the authorized due alarm | Persist the pending/scheduled disposition and exact schedule id. Direct starts are inert; only the one claimed due item may create the connection, and completion is idempotent. |
 | D1 acceptance commits but its adapter completion or later DO checkpoint does not | Durable evidence exists while Resume starts from the previous checkpoint | Acceptance-first ordering leaves the DO checkpoint unchanged; replay re-enters Task 08B idempotency, verifies exact spike evidence when applicable, and only then advances monotonically. No cross-store atomicity is claimed. |
 | Gateway Resume fails (Invalid Session `d=false`) | Fresh IDENTIFY required | Reconnect + IDENTIFY; watch the 1000/24 h IDENTIFY budget [fact:D1] |
-| Ingestion Worker `/ingest` unavailable | Companion cannot forward | Companion retries with bounded local buffer; the atomic accept + PK conflict makes re-sends safe |
+| Ingestion Worker `/ingest` or `/manual-code` unavailable | Companion cannot forward | Companion makes at most three bounded attempts; atomic acceptance + durable message-id keys make an immediate retry safe. This MVP has no persistent buffer, so an outage longer than those attempts requires a human re-send. |
 | Crash between event accept and work commit | Event `accepted_valid` but work incomplete | State-machine mode: `processed_events.status` non-terminal; sweeper re-drives expansion; marker never `finalized` without work. Single-batch mode: the marker only exists if the work committed |
 | D1 unavailable | Atomic unit cannot commit | Ingestion returns 5xx; companion retries; nothing accepted or enqueued without a committed unit |
 | Two operations target the same `(player_id, code)` | Risk of double provider call | One invocation holds `current_invocation_token`; others reuse the terminal outcome or **`ack`** on T3; sweeper T12 re-drives with a fresh `attempt_id`; only the token holder terminalizes; outcome mirrored to all |

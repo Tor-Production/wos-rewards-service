@@ -23,9 +23,12 @@ Wrangler vars (non-secret) and Wrangler secrets (secret).
 | Name | Read by | Purpose |
 |---|---|---|
 | `ENVIRONMENT` | all | selects the stack; the current implementation accepts only `staging`; production remains absent and rejected |
-| `DISCORD_REGISTRATION_CHANNEL_ID` | ingestion tier, ingestion Worker | the only channel whose messages are registration commands |
-| `DISCORD_GUILD_ID` | ingestion tier, ingestion Worker | expected guild |
-| `DISCORD_APPLICATION_ID` | ingestion Worker, output builder | own application id; used by the author filter |
+| `COMPANION_WORKER_BASE_URL` | Windows companion | exact HTTPS `workers.dev` origin for the staging Worker; no path, query, fragment, credentials, or custom port; companion-only and not a Wrangler variable |
+| `DISCORD_REGISTRATION_CHANNEL_ID` | companion, ingestion Worker | the only channel whose plain human messages are registration commands |
+| `DISCORD_MVP_ADMIN_CHANNEL_ID` | companion, manual-code Worker endpoint | dedicated staging channel for `!wos-code CODE`; must differ from the registration channel |
+| `DISCORD_MVP_ADMIN_USER_ALLOWLIST` | companion, manual-code Worker endpoint | nonempty comma-separated human administrator snowflakes; both tiers check it; must not contain the application id |
+| `DISCORD_GUILD_ID` | companion, ingestion Worker | expected staging guild |
+| `DISCORD_APPLICATION_ID` | companion, ingestion Worker, output builder | dedicated bot application id; verified against the logged-in companion and used by the author filter |
 | `DEFAULT_STATE` | registration parser | state used when the message omits a numeric state (contract in `AGENTS.md`) |
 | `DISCORD_MESSAGE_MAX_LENGTH` | validation-reply guard, output builder | chunking threshold; accepts 500–2,000; builders reserve footer, part marker and truthful overflow before selecting rows |
 | `OPERATION_DEADLINE_SECONDS` | ingestion Worker, consumers, sweeper | max wall time before an operation is force-closed with a partial summary; local guardrail 1–604,800 seconds |
@@ -45,15 +48,18 @@ Wrangler vars (non-secret) and Wrangler secrets (secret).
 | `PROVIDER_MAX_INVOCATIONS` | consumers, acceptance, repair | 1–101; default 4 **including the first invocation**, captured per budget generation; atomically charged before calling the provider |
 | `PROVIDER_TIMEOUT_SECONDS` | consumers | provider timeout, default 10 seconds; invocation and item leases must exceed it |
 | `OUTPUT_TIMEOUT_SECONDS` | output client | default 10 seconds; output lease must exceed it |
-| `DISCORD_DELIVERY_ENABLED` | fail-closed configuration | must remain false; only an explicitly injected synthetic transport can deliver locally |
+| `DISCORD_DELIVERY_ENABLED` | output dispatcher | exact boolean; `false` is the checked-in safe default and performs no Discord request; `true` is staging-only and also requires the bot-token binding plus deployable Discord identifiers |
 | `PROVIDER_RATE_LIMIT_PER_SECOND` | provider adapter | client-side rate limiting toward the provider |
-| `SPIKE_SENDER_ALLOWLIST` | `DiscordEventSource` **and** ingestion Worker (**staging only**) | strictly comma-separated dedicated spike bot/webhook snowflake ids without whitespace; duplicates are collapsed; empty means strict filtering; after authentication the Worker classifies a bot by `author_id` or webhook by `webhook_id`; a human is always normal even if its id matches; system and own-application messages always drop; the application id is rejected in the list; never set in production; accepted invalid spike output is retained only in the immutable migration-0003 suppressed shape |
+| `SPIKE_SENDER_ALLOWLIST` | separately gated spike source and ingestion Worker (**staging only; not the Task 09 companion**) | strictly comma-separated dedicated spike bot/webhook snowflake ids without whitespace; duplicates are collapsed; empty means strict filtering; after authentication the Worker classifies a bot by `author_id` or webhook by `webhook_id`; a human is always normal even if its id matches; system and own-application messages always drop; the application id is rejected in the list; never set in production; accepted invalid spike output is retained only in the immutable migration-0003 suppressed shape |
 | `LOG_LEVEL` | all | structured-log verbosity |
 
-Phase 3 preserves identifiers as digit strings, including leading zeros: Discord ids have
-1–20 digits, `PLAYER_ID` has 1–32, and `STATE` / `DEFAULT_STATE` has 1–16. Names are normalized
-and capped at 64 Unicode code points; immutable rendered labels are capped at 80 code
-points. These are application constants, not new configuration variables.
+Stored event identifiers remain digit strings and never JS numbers. A deployable Task 09
+configuration requires every configured Discord guild/channel/application/administrator id to
+be a non-placeholder snowflake of 17–20 digits with a nonzero first digit. `PLAYER_ID` has 1–32
+digits, and `STATE` / `DEFAULT_STATE` has 1–16 and may preserve leading zeros. Names are
+normalized and capped at 64 Unicode code points; immutable rendered labels are capped at 80 code
+points. Manual gift codes use `[A-Za-z0-9_-]` and are capped at 64 characters. These are
+application constants, not new configuration variables.
 
 Phase 4 page sizes are fixed application bounds: expansion 128, outbox 90, seal/layout and terminal reconciliation at most 128, render one chunk, stuck-item repair one pair. Summary and terminal pages also enforce a 262,144-byte cumulative source budget (one larger legacy row may advance alone). The default operation deadline is 3,600 seconds; separate scheduler lanes preserve expansion throughput. `SUMMARY_MAX_CHUNKS` defaults to 10 and output attempts to 5.
 
@@ -61,10 +67,18 @@ Integer configuration accepts either an integer number or a digit-only string wi
 the documented range. The ranges are local implementation guardrails, not claims about
 provider limits or production tuning.
 
-`INGESTION_SHARED_SECRET` is declared by name in `secrets.required` at the top level and
-under `env.staging`, making generated types deterministic without local credential files.
-Runtime configuration requires a nonempty, whitespace-free value and never includes it in validation errors.
-Tests inject only a synthetic value through the local Miniflare environment.
+`INGESTION_SHARED_SECRET` and `DISCORD_BOT_TOKEN` are declared by name in `secrets.required` at
+the top level and under `env.staging`, making generated types deterministic without local
+credential files. Worker runtime configuration always requires a nonempty, whitespace-free
+ingestion secret; it requires and retains the bot token only when delivery is explicitly true.
+The companion requires both. Validation errors contain names and expectations only. Tests inject
+synthetic values through isolated local configuration and never perform an external request.
+
+The safe top-level Worker has `workers_dev=false`. Only `env.staging` has `workers_dev=true`, and
+both scopes set `preview_urls=false`. The checked-in Discord ids and D1 id are sentinels: the
+Worker compiles in a dry run, but runtime configuration rejects the Discord placeholders until
+reviewed staging ids replace them. This makes a mistaken deploy nonfunctional rather than quietly
+accepting traffic under fake scope.
 
 `LOCAL_GATEWAY_ADAPTER` is a Task 08C test binding, not an application variable or deployable
 resource. It exists only in `vitest.config.ts`'s explicit Miniflare `durableObjects` map and the
@@ -77,9 +91,9 @@ coverage.
 
 | Name | Held by | Purpose |
 |---|---|---|
-| `DISCORD_BOT_TOKEN` | ingestion tier, output dispatcher | Discord bot authentication |
+| `DISCORD_BOT_TOKEN` | Windows companion, staging output dispatcher | dedicated Discord bot authentication; companion uses it for Gateway login, Worker uses it only at the final REST network boundary when delivery is enabled |
 | `DISCORD_PUBLIC_KEY` | interactions fallback only | Ed25519 verification for the `/register` fallback ([ADR 0001](../adr/0001-discord-event-ingestion.md) Option 3) |
-| `INGESTION_SHARED_SECRET` | companion (Option 2), ingestion Worker | authenticates companion → `/ingest` |
+| `INGESTION_SHARED_SECRET` | Windows companion, ingestion Worker | authenticates companion → `/ingest` and `/manual-code` |
 
 **No production Whiteout provider secret is defined.** A future authorized provider may use
 any authentication mechanism; its secret name(s) are added only when its contract is

@@ -8,6 +8,7 @@ describe("bounded companion forwarding", () => {
   it("sends the unchanged registration once and emits no logs", async () => {
     const routed = routeMessage(message({ content: " 123  Name 😀 " }), CONFIG)!;
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     let observed: Record<string, unknown> = {};
     const status = await forwardToWorker(CONFIG, routed, {
@@ -29,8 +30,10 @@ describe("bounded companion forwarding", () => {
       body: { content: " 123  Name 😀 " },
     });
     expect(info).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
     info.mockRestore();
+    warn.mockRestore();
     error.mockRestore();
   });
 
@@ -61,11 +64,9 @@ describe("bounded companion forwarding", () => {
       attempts: 2,
       timeoutMs: 1,
       delay: async () => {},
-      fetcher: (request) => {
+      fetcher: () => {
         calls++;
-        return new Promise<Response>((_resolve, reject) => {
-          request.signal.addEventListener("abort", () => reject(new Error("synthetic abort")));
-        });
+        return new Promise<Response>(() => {});
       },
     });
     expect(status).toBe("unavailable");
@@ -77,5 +78,29 @@ describe("bounded companion forwarding", () => {
     const fetcher = vi.fn(async () => Response.json({ status: "unauthorized" }, { status: 401 }));
     expect(await forwardToWorker(CONFIG, routed, { fetcher })).toBe("unauthorized");
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("does not trust a success category on a non-success response", async () => {
+    const routed = routeMessage(message(), CONFIG)!;
+    expect(
+      await forwardToWorker(CONFIG, routed, {
+        fetcher: async () => Response.json({ status: "accepted" }, { status: 404 }),
+      }),
+    ).toBe("unavailable");
+  });
+
+  it("bounds and rejects an unknown Worker response", async () => {
+    const routed = routeMessage(message(), CONFIG)!;
+    const oversized = "x".repeat(4_097);
+    expect(
+      await forwardToWorker(CONFIG, routed, {
+        fetcher: async () => new Response(oversized, { status: 202 }),
+      }),
+    ).toBe("unavailable");
+    expect(
+      await forwardToWorker(CONFIG, routed, {
+        fetcher: async () => Response.json({ status: "unexpected" }, { status: 202 }),
+      }),
+    ).toBe("unavailable");
   });
 });

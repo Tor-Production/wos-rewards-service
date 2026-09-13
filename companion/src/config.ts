@@ -99,6 +99,7 @@ function readWorkerUrl(value: string | undefined, issues: string[]): string {
       !url.hostname.endsWith(".workers.dev") ||
       url.username !== "" ||
       url.password !== "" ||
+      url.port !== "" ||
       (url.pathname !== "" && url.pathname !== "/") ||
       url.search !== "" ||
       url.hash !== ""

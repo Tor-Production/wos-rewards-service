@@ -162,12 +162,14 @@ async function openManualDistribution(
         .prepare(
           `UPDATE manual_code_commands
           SET status=CASE WHEN EXISTS (
-                SELECT 1 FROM operations
-                WHERE operation_id=?1 AND trigger_ref=?2 AND snapshot_at=?3
+                SELECT 1 FROM operations o JOIN gift_codes g ON g.code=o.trigger_ref
+                WHERE o.operation_id=?1 AND o.trigger_ref=?2 AND o.snapshot_at=?3
+                  AND g.source='manual-staging' AND g.first_seen_event_id=?4
               ) THEN 'accepted' ELSE 'duplicate_code' END,
               operation_id=CASE WHEN EXISTS (
-                SELECT 1 FROM operations
-                WHERE operation_id=?1 AND trigger_ref=?2 AND snapshot_at=?3
+                SELECT 1 FROM operations o JOIN gift_codes g ON g.code=o.trigger_ref
+                WHERE o.operation_id=?1 AND o.trigger_ref=?2 AND o.snapshot_at=?3
+                  AND g.source='manual-staging' AND g.first_seen_event_id=?4
               ) THEN ?1 ELSE NULL END
           WHERE event_id=?4 AND acceptance_id=?5 AND status='pending'`,
         )
