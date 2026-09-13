@@ -94,10 +94,68 @@ or webhook is allow-listed. Configuration rejects an allow-list containing
 | Secrets it holds | Discord bot token (Worker secret) | Discord bot token + `INGESTION_SHARED_SECRET` |
 | Decision | The ADR 0001 spike tests whether Option 1 is reliable enough; if it passes, Option 1 is preferred (fewer moving parts) | Provisional reference until the spike completes or is explicitly waived |
 
-**Blocking rule:** the real `DiscordEventSource` adapter (either implementation) is **not
-built** until the ADR 0001 spike completes or is explicitly waived. Phases 1–4
+**Blocking rule:** a deployable `DiscordEventSource` adapter (either implementation) is **not
+selected or enabled** until the ADR 0001 spike completes or is explicitly waived. Task 08C's
+local-only Durable Object integration below is a test harness for Option 1's mechanics, not a
+topology decision or a live event source. Phases 1–4
 ([§23](../architecture.md#23-phased-implementation-order)) build everything to the right of this boundary
 against `RegistrationMessageEvent` alone.
+
+### Task 08C local-only Durable Object integration
+
+`LocalDiscordGatewayAdapter` is a real Durable Object class exercised by the Workers Vitest
+runtime. Only `vitest.config.ts` gives it a test namespace; `wrangler.jsonc` contains no
+Durable Object binding, class migration, resource identifier, route, or start trigger. The
+class's fetch surface returns `404`, and the normal Worker has no path that can configure or
+start it. WebSocket creation, sends, close/failure callbacks, clocks, reconnect backoff,
+session-start-limit input, acceptance outcomes, durable faults, metrics, and diagnostics are
+injected. Tests use fakes and local Cloudflare helpers only; no Discord token or outbound
+network implementation exists.
+
+The adapter executes Task 08A's commands in order through one serialized fence. A monotonically
+increasing durable generation owns the one active physical lifecycle; callbacks and alarm work
+carry that generation, and replacement invalidates it durably before another connection can
+become active. Transient sockets, promises, injected functions, raw protocol state, payloads,
+and message content are never stored. A validated version-2 Durable Object record contains only
+opaque session material and handle reference, the durable checkpoint, generation, retry count,
+pending/claimed logical schedules, a closed start disposition, session-start-limit observation,
+the core's narrow IDENTIFY/outbound safety snapshot, constructor count, and low-cardinality
+counters. Sanitized ignored-dispatch evidence is stored separately by sequence. Session ids and
+resume URLs are available only to the persistence/transport adapter and are absent from
+inspection and diagnostic shapes.
+
+The start disposition binds lifecycle authority to durable state. `reconnect_pending` preserves
+recovery intent across a crash before schedule creation, and `reconnect_scheduled` identifies the
+one persisted reconnect item that its due alarm may execute. `start()` cannot bypass either state
+or create a second connection. Fatal Gateway closure, any Task 08A local-policy halt, and exhausted
+retry budget persist a terminal reason, remove scheduled work, and prohibit later start or
+reconnect after reconstruction. Task 08C intentionally exposes no reset or operator mutation
+surface; authorization and design of any future terminal reset remain outside this task.
+
+For a target `MESSAGE_CREATE`, the only trusted in-process acceptance path begins after the
+established lifecycle's deterministic core emits `accept_target_message`. The adapter itself
+re-applies the guild/channel/author gate, preserves every sender field, parses the content, and
+calls the existing Task 08B acceptance service. No HTTP header, body, RPC argument, Gateway
+payload flag, or caller-selected acceptance class can mint that command or trusted context.
+The ordering is acceptance transaction (or verified durable duplicate) → core completion →
+core-emitted checkpoint command → monotonic Durable Object checkpoint write. D1 and Durable
+Object storage remain separate durability domains: a commit with a lost response replays from
+the old checkpoint and resolves through D1 idempotency; a checkpoint commit with a lost response
+is suppressed by the equal/stale sequence rule. A staging-spike duplicate is reported as
+`duplicate` only after a direct query proves exactly one finalized marker and exactly one
+permanently blocked, superseded, non-dispatchable, untouched output row. Missing or malformed
+evidence is rejected and leaves the checkpoint unchanged.
+
+READY session material and its READY checkpoint are one Durable Object write before the core is
+completed. Resume reconstruction uses only that durable checkpoint, while a live heartbeat uses
+the core's latest received sequence. A heartbeat alarm supplies its observed monotonic execution
+time to Task 08A; the persisted scheduled time remains the deadline only. Execution exactly at the
+deadline is valid, while execution after it enters the existing local-policy halt without sending
+or backdating outbound-rate evidence. Increasing sequence gaps are accepted without inferring
+loss; target, ignored, and other replay Dispatches execute before `RESUMED`. These are project
+safety rules around Discord's documented Resume behavior, not claims of contiguous or
+exactly-once delivery. Live residency, missed-event reconciliation, and 72-hour behavior remain
+measurements for the separately authorized spike.
 
 ### Companion validation scope (Option 2)
 
@@ -242,8 +300,9 @@ the ingestion tier does not receive the business outcome.
 
 For an authenticated staging-spike sender, the same deterministic reply text, hash, nonce,
 delivery identity, and timestamps are retained only as evidence in the immutable suppressed
-shape above. Building the Durable Object/Gateway adapter, sender/observer harness, or
-expected-message ledger remains later Phase 5 work and is outside this acceptance boundary.
+shape above. Task 08C exercises this boundary from a local-only Durable Object adapter. A
+deployable Gateway transport, sender/observer harness, expected-message ledger, and live
+residency measurement remain later Phase 5 work outside this acceptance boundary.
 
 ### Valid message — sequence
 

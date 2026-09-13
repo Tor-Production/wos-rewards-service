@@ -11,6 +11,7 @@ import {
   gatewayHeartbeatDue,
   receiveGatewayText,
   requestGatewayOutbound,
+  snapshotGatewayProtocolSafety,
   summarizeGatewayState,
   updateGatewaySessionStartLimit,
   type CreateGatewayProtocolOptions,
@@ -244,6 +245,8 @@ describe("Gateway lifecycle, heartbeat and reconnect policy", () => {
       sequence: null,
     });
     expect(command(regular, "schedule_heartbeat").atMs).toBe(2_000);
+    expect(regular.state.outbound.connectionAuthorizationsMs.at(-1)).toBe(1_000);
+    expect(regular.state.outbound.lastObservedAtMs).toBe(1_000);
     state = completeOnlySend(regular);
     const ack = receiveGatewayText(state, gatewayPayload(11), { nowMs: 1_001 });
     expect(ack.state.heartbeat?.ackOutstanding).toBe(false);
@@ -255,6 +258,28 @@ describe("Gateway lifecycle, heartbeat and reconnect policy", () => {
       sequence: null,
     });
     expect(requested.state.outbound.connectionAuthorized).toBe(3); // IDENTIFY + two heartbeats.
+  });
+
+  it("halts a heartbeat observed after its deadline without backdating outbound pressure", () => {
+    const state = startFresh();
+    const authorizationTimes = [...state.outbound.connectionAuthorizationsMs];
+    const telemetry = structuredClone(state.outbound.telemetry);
+
+    const late = gatewayHeartbeatDue(state, 1_001);
+
+    expect(late.state.phase).toBe("halted");
+    expect(late.commands).toEqual([
+      {
+        type: "close_gateway_connection",
+        code: 4000,
+        cause: "local_policy_violation",
+      },
+    ]);
+    expect(late.commands.some((candidate) => candidate.type === "send_gateway_event")).toBe(false);
+    expect(late.diagnostics[0]?.category).toBe("local_gateway_outbound_safety_gate_violation");
+    expect(late.state.outbound.connectionAuthorizationsMs).toEqual(authorizationTimes);
+    expect(late.state.outbound.lastObservedAtMs).toBe(state.outbound.lastObservedAtMs);
+    expect(late.state.outbound.telemetry).toEqual(telemetry);
   });
 
   it("accepts both ACKs when a requested heartbeat overlaps an outstanding regular heartbeat", () => {
@@ -1033,6 +1058,23 @@ describe("malformed, impossible and redacted inputs", () => {
     expect(command(target, "accept_target_message").event.content).toBe(canary);
     expect(JSON.stringify(target)).not.toContain(canary);
 
+    const ignoredIdCanary = "987654321098765432";
+    const ignored = receiveGatewayText(
+      activated.state,
+      dispatch(
+        "MESSAGE_CREATE",
+        18,
+        message({
+          channel_id: ignoredIdCanary,
+          author: { id: ignoredIdCanary, bot: false, system: false },
+          content: canary,
+        }),
+      ),
+      { nowMs: 2 },
+    );
+    expect(JSON.stringify(ignored)).not.toContain(canary);
+    expect(JSON.stringify(ignored)).not.toContain(ignoredIdCanary);
+
     const accept = command(target, "accept_target_message");
     const exceptionLikeCompletion = {
       effectId: accept.effectId,
@@ -1061,6 +1103,60 @@ describe("malformed, impossible and redacted inputs", () => {
     expect(Object.keys(create())).not.toEqual(
       expect.arrayContaining(["token", "botToken", "authorization", "authorizationHeader"]),
     );
+  });
+
+  it("rehydrates only serializable safety state without resetting IDENTIFY protection", () => {
+    const limited = create({
+      sessionStartLimit: {
+        total: 1,
+        remaining: 1,
+        reset_after: 86_400_000,
+        max_concurrency: 1,
+      },
+    });
+    const hello = receiveGatewayText(limited, gatewayPayload(10, { heartbeat_interval: 1_000 }), {
+      nowMs: 0,
+      firstHeartbeatJitter: 0,
+    });
+    const identifying = beginGatewayHandshake(hello.state, { nowMs: 0, deadlineAtMs: 100 });
+    const safety = snapshotGatewayProtocolSafety(identifying.state);
+    const reconstructed = createGatewayProtocolState({
+      sessionStartLimit: LIMIT,
+      sessionStartLimitObservedAtMs: 0,
+      classifyMessage: CLASSIFY_MESSAGE,
+      connectionGeneration: 2,
+      persistedSafety: safety,
+    });
+    const nextHello = receiveGatewayText(
+      reconstructed,
+      gatewayPayload(10, { heartbeat_interval: 1_000 }),
+      { nowMs: 1, firstHeartbeatJitter: 0 },
+    );
+    const denied = beginGatewayHandshake(nextHello.state, { nowMs: 1, deadlineAtMs: 101 });
+
+    expect(denied.state.phase).toBe("halted");
+    expect(denied.commands.some((item) => item.type === "send_gateway_event")).toBe(false);
+    expect(JSON.stringify(safety)).not.toMatch(/session|resume_gateway_url|classifyMessage/);
+
+    const invalid = {
+      ...safety,
+      outbound: {
+        ...safety.outbound,
+        telemetry: {
+          ...safety.outbound.telemetry,
+          authorizedByKind: { ...safety.outbound.telemetry.authorizedByKind, resume: -1 },
+        },
+      },
+    };
+    expect(() =>
+      createGatewayProtocolState({
+        sessionStartLimit: LIMIT,
+        sessionStartLimitObservedAtMs: 0,
+        classifyMessage: CLASSIFY_MESSAGE,
+        connectionGeneration: 2,
+        persistedSafety: invalid,
+      }),
+    ).toThrow("invalid_gateway_safety_snapshot");
   });
 });
 

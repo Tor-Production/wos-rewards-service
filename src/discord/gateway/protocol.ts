@@ -36,8 +36,50 @@ import {
 } from "./types";
 
 const MALFORMED_HALT_THRESHOLD = 3;
+
+class RedactedIgnoredDispatchCommand implements RecordIgnoredDispatchCommand {
+  readonly type = "record_ignored_dispatch";
+  readonly #evidence: IgnoredMessageEvidence;
+
+  constructor(
+    readonly effectId: number,
+    readonly sequence: number,
+    evidence: IgnoredMessageEvidence,
+  ) {
+    this.#evidence = evidence;
+  }
+
+  get evidence(): IgnoredMessageEvidence {
+    return this.#evidence;
+  }
+
+  toJSON(): Readonly<{
+    type: "record_ignored_dispatch";
+    effectId: number;
+    sequence: number;
+    evidence: "redacted";
+  }> {
+    return {
+      type: this.type,
+      effectId: this.effectId,
+      sequence: this.sequence,
+      evidence: "redacted",
+    };
+  }
+}
 const MAX_REPLAY_TELEMETRY = 64;
 const IDENTIFY_CONCURRENCY_WINDOW_MS = 5_000;
+const GATEWAY_SEND_KINDS: readonly GatewaySendKind[] = [
+  "heartbeat_regular",
+  "heartbeat_requested",
+  "identify",
+  "resume",
+  "presence_update",
+  "voice_state_update",
+  "request_guild_members",
+  "request_soundboard_sounds",
+  "request_channel_info",
+];
 
 interface HeartbeatState {
   readonly intervalMs: number;
@@ -144,6 +186,34 @@ export interface CreateGatewayProtocolOptions {
     handle: GatewaySessionHandle;
     checkpoint: number;
   }>;
+  /**
+   * Narrow restart surface for adapter-owned durable reconstruction. It deliberately omits
+   * session material, pending effects, sockets, callbacks and the message classifier.
+   */
+  readonly persistedSafety?: GatewayProtocolSafetySnapshot;
+}
+
+export interface GatewayProtocolSafetySnapshot {
+  readonly version: 1;
+  readonly identify: Readonly<{
+    total: number;
+    remaining: number;
+    resetAfterMs: number;
+    resetAtMs: number;
+    maxConcurrency: number;
+    shardId: number;
+    concurrencyBucket: number;
+    lastBucketAuthorizationAtMs: number | null;
+    authorizedThisRun: number;
+  }>;
+  readonly outbound: Readonly<{
+    connectionGeneration: number;
+    lastObservedAtMs: number | null;
+    telemetry: GatewayOutboundRateState["telemetry"];
+  }>;
+  readonly violationTracker: ViolationTracker;
+  readonly replayTelemetryCount: number;
+  readonly nextId: number;
 }
 
 export interface ReceiveGatewayTextInput {
@@ -204,6 +274,93 @@ function validateSessionStartLimit(limit: GatewaySessionStartLimit): void {
     throw new RangeError("invalid_gateway_session_start_limit");
 }
 
+function validNullableTime(value: number | null): boolean {
+  return value === null || validTime(value);
+}
+
+function restoreSafety(
+  snapshot: GatewayProtocolSafetySnapshot,
+  connectionGeneration: number,
+): Readonly<{
+  identify: IdentifyState;
+  outbound: GatewayOutboundRateState;
+  violationTracker: ViolationTracker;
+  replayTelemetryCount: number;
+  nextId: number;
+}> {
+  const identify = snapshot.identify;
+  const telemetry = snapshot.outbound.telemetry;
+  if (
+    snapshot.version !== 1 ||
+    !Number.isSafeInteger(identify.total) ||
+    identify.total < 0 ||
+    !Number.isSafeInteger(identify.remaining) ||
+    identify.remaining < 0 ||
+    identify.remaining > identify.total ||
+    !validTime(identify.resetAfterMs) ||
+    identify.resetAfterMs === 0 ||
+    !validTime(identify.resetAtMs) ||
+    !Number.isSafeInteger(identify.maxConcurrency) ||
+    identify.maxConcurrency < 1 ||
+    !Number.isSafeInteger(identify.shardId) ||
+    identify.shardId < 0 ||
+    identify.concurrencyBucket !== identify.shardId % identify.maxConcurrency ||
+    !validNullableTime(identify.lastBucketAuthorizationAtMs) ||
+    !Number.isSafeInteger(identify.authorizedThisRun) ||
+    identify.authorizedThisRun < 0 ||
+    !Number.isSafeInteger(snapshot.outbound.connectionGeneration) ||
+    snapshot.outbound.connectionGeneration < 1 ||
+    connectionGeneration < snapshot.outbound.connectionGeneration ||
+    !validNullableTime(snapshot.outbound.lastObservedAtMs) ||
+    !Number.isSafeInteger(snapshot.violationTracker.count) ||
+    snapshot.violationTracker.count < 0 ||
+    (snapshot.violationTracker.checkpoint !== null &&
+      !validSequence(snapshot.violationTracker.checkpoint)) ||
+    !Number.isSafeInteger(snapshot.replayTelemetryCount) ||
+    snapshot.replayTelemetryCount < 0 ||
+    !Number.isSafeInteger(snapshot.nextId) ||
+    snapshot.nextId < 1 ||
+    !Number.isSafeInteger(telemetry.connectionGenerations) ||
+    telemetry.connectionGenerations < 1 ||
+    !Number.isSafeInteger(telemetry.authorized) ||
+    telemetry.authorized < 0 ||
+    !Number.isSafeInteger(telemetry.denied) ||
+    telemetry.denied < 0 ||
+    !Number.isSafeInteger(telemetry.failed) ||
+    telemetry.failed < 0 ||
+    !Number.isSafeInteger(telemetry.ambiguous) ||
+    telemetry.ambiguous < 0 ||
+    !Number.isSafeInteger(telemetry.peakConnectionPressure) ||
+    telemetry.peakConnectionPressure < 0 ||
+    !isRecord(telemetry.authorizedByKind) ||
+    Object.keys(telemetry.authorizedByKind).length !== GATEWAY_SEND_KINDS.length ||
+    GATEWAY_SEND_KINDS.some((kind) => {
+      const count = telemetry.authorizedByKind[kind];
+      return !Number.isSafeInteger(count) || count < 0;
+    })
+  )
+    throw new RangeError("invalid_gateway_safety_snapshot");
+
+  const freshOutbound = createGatewayOutboundRateState(connectionGeneration);
+  return {
+    identify: { ...identify },
+    outbound: {
+      ...freshOutbound,
+      lastObservedAtMs: snapshot.outbound.lastObservedAtMs,
+      telemetry: {
+        ...telemetry,
+        connectionGenerations:
+          telemetry.connectionGenerations +
+          (connectionGeneration > snapshot.outbound.connectionGeneration ? 1 : 0),
+        authorizedByKind: { ...telemetry.authorizedByKind },
+      },
+    },
+    violationTracker: { ...snapshot.violationTracker },
+    replayTelemetryCount: snapshot.replayTelemetryCount,
+    nextId: snapshot.nextId,
+  };
+}
+
 function makeIdentifyState(
   limit: GatewaySessionStartLimit,
   observedAtMs: number,
@@ -239,6 +396,10 @@ export function createGatewayProtocolState(
     throw new TypeError("invalid_gateway_message_classifier");
 
   const checkpoint = options.persistedSession?.checkpoint ?? null;
+  const safety =
+    options.persistedSafety === undefined
+      ? null
+      : restoreSafety(options.persistedSafety, generation);
   return {
     phase: "connecting",
     connectionGeneration: generation,
@@ -250,17 +411,39 @@ export function createGatewayProtocolState(
     session: options.persistedSession?.handle ?? null,
     pendingEffect: null,
     outstandingOutbound: [],
-    identify: makeIdentifyState(
-      options.sessionStartLimit,
-      options.sessionStartLimitObservedAtMs,
-      options.shardId ?? 0,
-    ),
-    outbound: createGatewayOutboundRateState(generation),
+    identify:
+      safety?.identify ??
+      makeIdentifyState(
+        options.sessionStartLimit,
+        options.sessionStartLimitObservedAtMs,
+        options.shardId ?? 0,
+      ),
+    outbound: safety?.outbound ?? createGatewayOutboundRateState(generation),
     classifyMessage: options.classifyMessage,
-    violationTracker: { checkpoint, count: 0 },
-    replayTelemetryCount: 0,
-    nextId: 1,
+    violationTracker: safety?.violationTracker ?? { checkpoint, count: 0 },
+    replayTelemetryCount: safety?.replayTelemetryCount ?? 0,
+    nextId: safety?.nextId ?? 1,
     toJSON: stateToJSON,
+  };
+}
+
+export function snapshotGatewayProtocolSafety(
+  state: GatewayProtocolState,
+): GatewayProtocolSafetySnapshot {
+  return {
+    version: 1,
+    identify: { ...state.identify },
+    outbound: {
+      connectionGeneration: state.outbound.connectionGeneration,
+      lastObservedAtMs: state.outbound.lastObservedAtMs,
+      telemetry: {
+        ...state.outbound.telemetry,
+        authorizedByKind: { ...state.outbound.telemetry.authorizedByKind },
+      },
+    },
+    violationTracker: { ...state.violationTracker },
+    replayTelemetryCount: state.replayTelemetryCount,
+    nextId: state.nextId,
   };
 }
 
@@ -851,12 +1034,11 @@ function handleDispatch(
       diagnostics: [],
     };
 
-  const command: RecordIgnoredDispatchCommand = {
-    type: "record_ignored_dispatch",
+  const command = new RedactedIgnoredDispatchCommand(
     effectId,
     sequence,
-    evidence: ignoredEvidence(metadata, "not_target"),
-  };
+    ignoredEvidence(metadata, "not_target"),
+  );
   return {
     state: evolve(withReceived, {
       nextId: effectId + 1,

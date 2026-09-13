@@ -8,6 +8,9 @@
  */
 declare namespace Cloudflare {
   interface Env {
+    LOCAL_GATEWAY_ADAPTER: DurableObjectNamespace<
+      import("../src/discord/gateway/local-durable-object").LocalDiscordGatewayAdapter
+    >;
     BASELINE_DB: D1Database;
     PHASE4_DB: D1Database;
     THROUGHPUT_DB: D1Database;

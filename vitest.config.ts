@@ -13,11 +13,23 @@ export default defineConfig(async () => {
   return {
     plugins: [
       cloudflareTest({
+        // Explicit because the local class is a named export without a deployable Wrangler
+        // namespace or migration. This metadata is consumed only by the Vitest worker pool.
+        additionalExports: { LocalDiscordGatewayAdapter: "DurableObject" },
         // Run every test inside the Workers runtime, against the same `staging` variables
         // and bindings a staging deploy would use. `STAGING_DB` resolves to a local
         // Miniflare D1 database; no remote database is ever contacted.
         wrangler: { configPath: "./wrangler.jsonc", environment: "staging" },
         miniflare: {
+          // Local-only Durable Object namespace. It is intentionally absent from
+          // `wrangler.jsonc`, so neither staging nor any future production deploy can bind,
+          // address, migrate or start the adapter from this task.
+          durableObjects: {
+            LOCAL_GATEWAY_ADAPTER: {
+              className: "LocalDiscordGatewayAdapter",
+              useSQLite: true,
+            },
+          },
           d1Databases: [
             "BASELINE_DB",
             "PHASE4_DB",
@@ -36,6 +48,8 @@ export default defineConfig(async () => {
             TEST_MIGRATIONS: migrations,
             // Synthetic local test input; unusable as a real credential.
             INGESTION_SHARED_SECRET: "test-only-not-a-secret",
+            // Synthetic allow-list entry used only by local Gateway adapter integration tests.
+            SPIKE_SENDER_ALLOWLIST: "000000000000000004",
           },
         },
       }),

@@ -10,6 +10,10 @@ import { readRegistrationEvent } from "./ingest/transport";
 import { INLINE_DISPATCH_LIMIT } from "./limits";
 import { dispatchOutbox } from "./outbox/dispatcher";
 
+// Named export only: Vitest binds this class through an explicit test-only Miniflare option.
+// No Durable Object binding, migration, route or start trigger exists in wrangler.jsonc.
+export { LocalDiscordGatewayAdapter } from "./discord/gateway/local-durable-object";
+
 /** Synthetic/local Phase 3 boundary. No Discord transport, provider call or consumer. */
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
