@@ -125,9 +125,11 @@ Migrations are applied to staging first, then production, after review.
 
 ### Task 09 staging MVP activation gate
 
-The implementation is present but **no external action has occurred**. The checked-in D1 and
-Discord identifiers are sentinels, so the Worker fails closed at request time. Before a human
-asks to provision anything, record and review these non-secret values:
+The implementation is present and the **staging-only provisioning gate completed on 2026-09-14**.
+The safe top-level D1/Discord scope remains fail-closed; `env.staging` records the reviewed real
+non-secret identifiers. The provisioned Worker has one secret-free uploaded version and zero
+deployments. Remote migrations 0001–0004 are pending, no Discord session exists, and no request or
+Queue message has been sent. The reviewed non-secret record includes:
 
 - Discord guild id, registration-channel id, dedicated admin-channel id, dedicated application
   id, and every human administrator user id;
@@ -142,22 +144,30 @@ The companion runs as one foreground Node.js process on the user-controlled Wind
 Durable Object, KV, R2, custom domain, service manager, observer, or production resource is part
 of this MVP.
 
-Activation is intentionally split into explicit gates:
+Activation remains split into explicit gates:
 
-1. **Provisioning approval:** create only the staging resources above, then commit the returned
-   non-secret D1 id and reviewed Discord ids to this same PR. Do not deploy.
-2. **Manual secret entry by the user:** add the secret names `INGESTION_SHARED_SECRET` and
+1. **Provisioning approval — complete:** the staging Worker container, D1 database, three Queues,
+   one-minute Cron and `workers.dev` route exist. Preview URLs are disabled. The actual D1 id,
+   Discord ids, Queue ids and companion origin are recorded in
+   [configuration.md](configuration.md#provisioned-task-09-staging-record-non-secret). No Worker
+   deployment or application migration was created.
+2. **Manual secret entry by the user — next:** add the secret names `INGESTION_SHARED_SECRET` and
    `DISCORD_BOT_TOKEN` to the staging Worker, and make those same names available to the Windows
-   companion through a user-chosen non-committed secret mechanism. Never transmit or echo values.
+   companion through a user-chosen non-committed secret mechanism. Use
+   `wrangler versions secret put <NAME> --env staging` so secret entry creates only an undeployed
+   version; the unversioned `wrangler secret put` command deploys immediately and must not be used
+   at this gate. Never transmit or echo values.
 3. **Deployment approval:** apply migrations remotely and deploy only the staging Worker.
 4. **Connection approval:** start the companion and connect the dedicated bot. Stop it with
    Ctrl+C; graceful shutdown destroys the Discord client.
 
-Free-plan feasibility must be rechecked against current official Cloudflare limits immediately
-before provisioning. The fixed idle schedule is one Cron invocation per minute (43,200 in a
-30-day month). Variable usage is driven by HTTP events, D1 rows read/written, Queue operations,
-and at most one Discord output attempt per scheduled tick. This repository makes no claim that a
-local dry run validates billed usage, CPU, or deployed latency.
+Free-plan feasibility was rechecked against current official Cloudflare limits immediately before
+provisioning. After Task 09, the account inventory is 5 Workers, 4 Cron triggers, 4 D1 databases,
+and 5 Queues; these are within the respective Free ceilings of 100, 5, 10, and 10,000. Free Queue
+message retention is fixed at 24 hours. The fixed idle schedule is one Cron invocation per minute
+(43,200 in a 30-day month). Variable usage is driven by HTTP events, D1 rows read/written, Queue
+operations, and at most one Discord output attempt per scheduled tick. This repository makes no
+claim that a local dry run validates billed usage, CPU, or deployed latency.
 
 ### Staging-spike reconciliation, abort, and cleanup invariants
 

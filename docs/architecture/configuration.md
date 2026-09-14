@@ -13,10 +13,10 @@
 
 ## 4. Configuration and environment
 
-This document lists configuration names and constraints. The repository's Wrangler file
-contains safe non-secret local defaults and sentinel identifiers; no real deployment
-identifiers or secret values are committed. Values are supplied per stack through
-Wrangler vars (non-secret) and Wrangler secrets (secret).
+This document lists configuration names and constraints. The repository's Wrangler file keeps
+safe sentinel identifiers at its top/default scope and records the reviewed non-secret Task 09
+identifiers only under `env.staging`. No secret value is committed. Values are supplied per stack
+through Wrangler vars (non-secret) and Wrangler secrets (secret).
 
 ### Non-secret configuration
 
@@ -53,6 +53,30 @@ Wrangler vars (non-secret) and Wrangler secrets (secret).
 | `SPIKE_SENDER_ALLOWLIST` | separately gated spike source and ingestion Worker (**staging only; not the Task 09 companion**) | strictly comma-separated dedicated spike bot/webhook snowflake ids without whitespace; duplicates are collapsed; empty means strict filtering; after authentication the Worker classifies a bot by `author_id` or webhook by `webhook_id`; a human is always normal even if its id matches; system and own-application messages always drop; the application id is rejected in the list; never set in production; accepted invalid spike output is retained only in the immutable migration-0003 suppressed shape |
 | `LOG_LEVEL` | all | structured-log verbosity |
 
+### Provisioned Task 09 staging record (non-secret)
+
+The staging-only provisioning gate completed on 2026-09-14. This table is the reviewed source for
+the Windows companion values that are not Wrangler variables and the resource identifiers returned
+by Cloudflare. The Worker has one uploaded version but no deployment; migrations 0001–0004 remain
+pending, and neither required secret has been entered.
+
+| Item | Value |
+|---|---|
+| Worker name | `wos-rewards-service-staging` |
+| Cloudflare Worker id | `231fd53e27db414ca54444ecc5b8d33b` |
+| `COMPANION_WORKER_BASE_URL` | `https://wos-rewards-service-staging.chute-risk9361.workers.dev` |
+| D1 database name / id / region | `wos-rewards-service-staging` / `6dc171c2-27f5-4ef2-8788-ebd243cd354f` / `EEUR` |
+| Registration Queue name / id | `wos-rewards-registration-jobs-staging` / `23b1587e847e4db18d3bc440b1ba07d2` |
+| Code-fanout Queue name / id | `wos-rewards-code-fanout-jobs-staging` / `d8366278aa9743859d6b8ddf9f27735b` |
+| Redemption DLQ name / id | `wos-rewards-redemption-dlq-staging` / `e9a4aea43d0c447090f8036de687e15a` |
+| Cron schedule | `* * * * *` (one minute) |
+| `DISCORD_GUILD_ID` | `1455981004261953659` |
+| `DISCORD_REGISTRATION_CHANNEL_ID` | `1548863278946590720` |
+| `DISCORD_MVP_ADMIN_CHANNEL_ID` | `1548863407334101122` |
+| `DISCORD_MVP_ADMIN_USER_ALLOWLIST` | `470002312341880834` |
+| `DISCORD_APPLICATION_ID` | `1542396374832652369` |
+| `DEFAULT_STATE` | `3607` |
+
 Stored event identifiers remain digit strings and never JS numbers. A deployable Task 09
 configuration requires every configured Discord guild/channel/application/administrator id to
 be a non-placeholder snowflake of 17–20 digits with a nonzero first digit. `PLAYER_ID` has 1–32
@@ -74,11 +98,11 @@ ingestion secret; it requires and retains the bot token only when delivery is ex
 The companion requires both. Validation errors contain names and expectations only. Tests inject
 synthetic values through isolated local configuration and never perform an external request.
 
-The safe top-level Worker has `workers_dev=false`. Only `env.staging` has `workers_dev=true`, and
-both scopes set `preview_urls=false`. The checked-in Discord ids and D1 id are sentinels: the
-Worker compiles in a dry run, but runtime configuration rejects the Discord placeholders until
-reviewed staging ids replace them. This makes a mistaken deploy nonfunctional rather than quietly
-accepting traffic under fake scope.
+The safe top-level Worker has `workers_dev=false` and retains Discord sentinels. Only `env.staging`
+has `workers_dev=true`, the reviewed Discord ids above, and the real staging D1 id; both scopes set
+`preview_urls=false`. A deploy that omits `--env staging` therefore remains nonfunctional instead
+of quietly accepting traffic under fake scope. `DISCORD_DELIVERY_ENABLED` remains `false` in both
+scopes.
 
 `LOCAL_GATEWAY_ADAPTER` is a Task 08C test binding, not an application variable or deployable
 resource. It exists only in `vitest.config.ts`'s explicit Miniflare `durableObjects` map and the

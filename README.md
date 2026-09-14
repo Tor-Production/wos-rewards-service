@@ -70,15 +70,15 @@ Run everything the way CI would:
 npm run check
 ```
 
-Local development server (staging configuration, no remote resources):
+Local development server (staging configuration with local Miniflare storage; provisioned remote
+resources are not contacted):
 
 ```
 npm run dev
 ```
 
-The checked-in Discord identifiers are deliberate sentinels, so HTTP requests fail closed with
-`invalid_configuration` until reviewed staging identifiers replace them. The local test runner
-injects structurally valid synthetic identifiers instead.
+The safe top-level Discord identifiers remain deliberate sentinels. `env.staging` now contains the
+reviewed non-secret identifiers; the local test runner still injects isolated synthetic values.
 
 ### Windows companion
 
@@ -95,7 +95,8 @@ logs only fixed event categories. Required companion names are `COMPANION_WORKER
 `DISCORD_GUILD_ID`, `DISCORD_REGISTRATION_CHANNEL_ID`, `DISCORD_MVP_ADMIN_CHANNEL_ID`,
 `DISCORD_MVP_ADMIN_USER_ALLOWLIST`, `DISCORD_APPLICATION_ID`, `DISCORD_BOT_TOKEN`, and
 `INGESTION_SHARED_SECRET`. Never put their secret values in chat, documentation, committed files,
-commands, or logs.
+commands, or logs. Use the exact non-secret values recorded in
+[`docs/architecture/configuration.md`](docs/architecture/configuration.md#provisioned-task-09-staging-record-non-secret).
 
 ## Database migrations
 
@@ -116,14 +117,11 @@ npm run d1:migrate:local
 That is `wrangler d1 migrations apply STAGING_DB --local --env staging`. It writes only to
 `.wrangler/`, which is git-ignored. Running it a second time reports `No migrations to apply!`.
 
-**There is deliberately no remote-apply command.** No real staging D1 resource has been
-provisioned and no remote migration has been applied. `wrangler.jsonc` declares the
-`STAGING_DB` binding with the all-zero `database_id`
-`00000000-0000-0000-0000-000000000000` — an intentional local-only sentinel, **not** a real
-Cloudflare database id. It is present rather than omitted so that Wrangler cannot
-automatically provision a database on deploy. A future, explicitly authorized task provisions
-the real staging database and replaces the sentinel; remote application stays **staging first,
-production only later, after review** and explicit authorization (see
+**There is deliberately no remote-apply command.** The staging-only provisioning gate created
+`wos-rewards-service-staging` in `EEUR`, and `env.staging.STAGING_DB` now uses its real id
+`6dc171c2-27f5-4ef2-8788-ebd243cd354f`. No application migration has been applied remotely:
+0001–0004 all remain pending. Remote application stays **staging first, production only later,
+after review** and explicit authorization (see
 [`docs/architecture/operations-and-reliability.md` section 19](docs/architecture/operations-and-reliability.md#19-staging-and-production-separation)).
 
 ## Generated Worker types
@@ -141,15 +139,13 @@ committed together with a freshly generated types file.
 
 ## Safety
 
-- **No Cloudflare resources have been provisioned, and deployment remains behind a separate
-  approval gate.**
-  `wrangler.jsonc` declares the local-only `STAGING_DB` sentinel, producer bindings for
-  `wos-rewards-registration-jobs-staging` and `wos-rewards-code-fanout-jobs-staging`, and one
-  one-minute Cron trigger, all under `env.staging`. Queue consumers and the
-  `wos-rewards-redemption-dlq-staging` dead-letter queue are configured, but none exists remotely.
-  The environment-specific staging `workers.dev` route is enabled and preview URLs are disabled;
-  neither route nor Worker has been deployed. There is no deployable Durable Object, KV namespace,
-  production environment, or custom domain. `npm run validate` uses
+- **The staging provisioning gate is complete, and deployment remains behind a separate approval
+  gate.** The empty Worker container, D1 database, two work queues, redemption DLQ, one-minute Cron,
+  and `workers.dev` route exist. One reviewed secret-free Worker version is uploaded, but the Worker
+  has zero deployments; the route therefore serves no deployed Task 09 code. Preview URLs are
+  disabled, all four application migrations remain pending, and no Worker secret has been entered.
+  There is no deployable Durable Object, KV namespace, production environment, or custom domain.
+  `npm run validate` uses
   `wrangler deploy --dry-run`, which compiles locally and publishes nothing.
 - Staging is the only environment. There is no production environment, and the configuration
   loader rejects any value other than `ENVIRONMENT=staging`.
