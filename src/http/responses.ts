@@ -17,3 +17,13 @@ export function errorResponse(error: keyof typeof ERROR_STATUS): Response {
 export function acknowledgement(status: IngestAcknowledgement): Response {
   return Response.json({ status }, { status: 202 });
 }
+
+export type ManualCodeStatus =
+  "accepted" | "duplicate" | "ignored" | "unauthorized" | "unavailable";
+
+export function manualCodeResponse(status: ManualCodeStatus): Response {
+  return Response.json(
+    { status },
+    { status: status === "unauthorized" ? 401 : status === "unavailable" ? 503 : 202 },
+  );
+}

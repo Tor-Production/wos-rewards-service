@@ -26,6 +26,7 @@ describe("Phase 3 configuration guardrails", () => {
   it.each([
     "DISCORD_GUILD_ID",
     "DISCORD_REGISTRATION_CHANNEL_ID",
+    "DISCORD_MVP_ADMIN_CHANNEL_ID",
     "DISCORD_APPLICATION_ID",
     "DEFAULT_STATE",
   ])("requires bounded digit strings for %s", (name) => {
@@ -43,7 +44,14 @@ describe("Phase 3 configuration guardrails", () => {
     ]) {
       expect(() => loadConfig({ ...SAFE_ENV, [name]: value })).toThrow(ConfigurationError);
     }
-    expect(() => loadConfig({ ...SAFE_ENV, [name]: "0".repeat(max) })).not.toThrow();
+    if (name === "DEFAULT_STATE")
+      expect(() => loadConfig({ ...SAFE_ENV, [name]: "0".repeat(max) })).not.toThrow();
+    else {
+      expect(() => loadConfig({ ...SAFE_ENV, [name]: "0".repeat(max) })).toThrow(
+        ConfigurationError,
+      );
+      expect(() => loadConfig({ ...SAFE_ENV, [name]: "1".repeat(17) })).not.toThrow();
+    }
   });
   it("preserves default-state zeros, accepts integer strings and deduplicates the allow-list", () => {
     const config = loadConfig({
@@ -126,6 +134,8 @@ describe("loadConfig accepts the intended staging configuration", () => {
       logLevel: "info",
       discordGuildId: env.DISCORD_GUILD_ID,
       discordRegistrationChannelId: env.DISCORD_REGISTRATION_CHANNEL_ID,
+      discordMvpAdminChannelId: env.DISCORD_MVP_ADMIN_CHANNEL_ID,
+      discordMvpAdminUserAllowlist: [env.DISCORD_MVP_ADMIN_USER_ALLOWLIST],
       discordApplicationId: env.DISCORD_APPLICATION_ID,
       defaultState: "0",
       spikeSenderAllowlist: [],
@@ -144,6 +154,7 @@ describe("loadConfig accepts the intended staging configuration", () => {
       outputMaxAttempts: 5,
       summaryMaxChunks: 10,
       discordDeliveryEnabled: false,
+      discordBotToken: null,
     });
   });
 
@@ -166,6 +177,39 @@ describe("loadConfig accepts the intended staging configuration", () => {
 });
 
 describe("loadConfig rejects unsafe environments", () => {
+  it("rejects placeholder Discord IDs even while outbound delivery is disabled", () => {
+    for (const name of [
+      "DISCORD_GUILD_ID",
+      "DISCORD_REGISTRATION_CHANNEL_ID",
+      "DISCORD_MVP_ADMIN_CHANNEL_ID",
+      "DISCORD_APPLICATION_ID",
+    ])
+      expect(issuesFor({ ...SAFE_ENV, [name]: "0".repeat(18) })).toContain(
+        `${name} must be a non-placeholder Discord snowflake`,
+      );
+    expect(issuesFor({ ...SAFE_ENV, DISCORD_MVP_ADMIN_USER_ALLOWLIST: "0".repeat(18) })).toContain(
+      "DISCORD_MVP_ADMIN_USER_ALLOWLIST must contain only non-placeholder Discord snowflakes",
+    );
+  });
+
+  it("requires a human administrator allow-list and distinct staging channels", () => {
+    expect(issuesFor({ ...SAFE_ENV, DISCORD_MVP_ADMIN_USER_ALLOWLIST: "" })).toContain(
+      "DISCORD_MVP_ADMIN_USER_ALLOWLIST must contain at least one administrator",
+    );
+    expect(
+      issuesFor({
+        ...SAFE_ENV,
+        DISCORD_MVP_ADMIN_USER_ALLOWLIST: env.DISCORD_APPLICATION_ID,
+      }),
+    ).toContain("DISCORD_MVP_ADMIN_USER_ALLOWLIST must not contain DISCORD_APPLICATION_ID");
+    expect(
+      issuesFor({
+        ...SAFE_ENV,
+        DISCORD_MVP_ADMIN_CHANNEL_ID: env.DISCORD_REGISTRATION_CHANNEL_ID,
+      }),
+    ).toContain("registration and MVP admin channels must be different");
+  });
+
   it("rejects ENVIRONMENT=production: this phase is staging-only", () => {
     expect(issuesFor({ ...SAFE_ENV, ENVIRONMENT: "production" })).toContain(
       "ENVIRONMENT must be one of: staging",
@@ -227,10 +271,12 @@ describe("loadConfig rejects malformed input", () => {
       "CODE_DISCOVERY_ENABLED must be false",
       "DISCORD_GUILD_ID must be a digit string of 1 to 20 digits",
       "DISCORD_REGISTRATION_CHANNEL_ID must be a digit string of 1 to 20 digits",
+      "DISCORD_MVP_ADMIN_CHANNEL_ID must be a digit string of 1 to 20 digits",
       "DISCORD_APPLICATION_ID must be a digit string of 1 to 20 digits",
       "DEFAULT_STATE must be a digit string of 1 to 16 digits",
       "INGESTION_SHARED_SECRET must be a non-empty string without whitespace",
       "SPIKE_SENDER_ALLOWLIST must be empty or comma-separated snowflakes",
+      "DISCORD_MVP_ADMIN_USER_ALLOWLIST must be comma-separated snowflakes",
       "DISCORD_MESSAGE_MAX_LENGTH must be an integer from 500 to 2000",
       "OPERATION_DEADLINE_SECONDS must be an integer from 1 to 604800",
       "REDEMPTION_MAX_REEVAL must be an integer from 0 to 100",
@@ -244,7 +290,7 @@ describe("loadConfig rejects malformed input", () => {
       "OUTPUT_TIMEOUT_SECONDS must be an integer from 1 to 60",
       "OUTPUT_DISPATCH_MAX_ATTEMPTS must be an integer from 1 to 20",
       "SUMMARY_MAX_CHUNKS must be an integer from 1 to 100",
-      "DISCORD_DELIVERY_ENABLED must be false",
+      "DISCORD_DELIVERY_ENABLED must be true or false",
       "REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED must be false",
     ]);
   });

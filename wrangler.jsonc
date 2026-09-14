@@ -4,12 +4,14 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-28",
 
-  // Fail closed: no workers.dev subdomain and no routes, so nothing about this Worker is
-  // publicly reachable. Do not enable either without an explicit human decision.
+  // Fail closed at the top/default scope. Only the explicit staging environment below enables
+  // its workers.dev route, and deployment still requires a separate human approval.
   "workers_dev": false,
+  "preview_urls": false,
 
-  // Phase 4 adds local consumers, the redemption DLQ, and independently budgeted Cron lanes.
-  // No resources are provisioned. Only local development and dry-run validation are authorized.
+  // Phase 4 adds consumers, the redemption DLQ, and independently budgeted Cron lanes; Task 09
+  // adds the staging MVP inputs/output gate. The staging resources named below are provisioned,
+  // but this configuration never deploys them by itself.
   //
   // Variable names come from docs/architecture/configuration.md section 4. `vars` is a
   // non-inheritable key, so the same safe values are declared at the top level and in the
@@ -23,6 +25,8 @@
     "LOG_LEVEL": "info",
     "DISCORD_GUILD_ID": "000000000000000001",
     "DISCORD_REGISTRATION_CHANNEL_ID": "000000000000000002",
+    "DISCORD_MVP_ADMIN_CHANNEL_ID": "000000000000000004",
+    "DISCORD_MVP_ADMIN_USER_ALLOWLIST": "",
     "DISCORD_APPLICATION_ID": "000000000000000003",
     "DEFAULT_STATE": "0",
     "SPIKE_SENDER_ALLOWLIST": "",
@@ -46,11 +50,15 @@
   // Staging is the only environment. There is deliberately no `production` environment:
   // production redemption is blocked (docs/whiteout-provider-decision.md section 1) and the
   // production stack has not been provisioned.
-  "secrets": { "required": ["INGESTION_SHARED_SECRET"] },
+  "secrets": { "required": ["INGESTION_SHARED_SECRET", "DISCORD_BOT_TOKEN"] },
   "env": {
     "staging": {
       "name": "wos-rewards-service-staging",
-      "secrets": { "required": ["INGESTION_SHARED_SECRET"] },
+      // The live MVP exposes only the staging Worker on its stable workers.dev route.
+      // Preview URLs stay disabled so there is one reviewed ingress origin.
+      "workers_dev": true,
+      "preview_urls": false,
+      "secrets": { "required": ["INGESTION_SHARED_SECRET", "DISCORD_BOT_TOKEN"] },
       "queues": {
         "consumers": [
           {
@@ -89,10 +97,12 @@
         "PRODUCTION_REDEMPTION_ENABLED": false,
         "CODE_DISCOVERY_ENABLED": false,
         "LOG_LEVEL": "info",
-        "DISCORD_GUILD_ID": "000000000000000001",
-        "DISCORD_REGISTRATION_CHANNEL_ID": "000000000000000002",
-        "DISCORD_APPLICATION_ID": "000000000000000003",
-        "DEFAULT_STATE": "0",
+        "DISCORD_GUILD_ID": "1455981004261953659",
+        "DISCORD_REGISTRATION_CHANNEL_ID": "1548863278946590720",
+        "DISCORD_MVP_ADMIN_CHANNEL_ID": "1548863407334101122",
+        "DISCORD_MVP_ADMIN_USER_ALLOWLIST": "470002312341880834",
+        "DISCORD_APPLICATION_ID": "1542396374832652369",
+        "DEFAULT_STATE": "3607",
         "SPIKE_SENDER_ALLOWLIST": "",
         "DISCORD_MESSAGE_MAX_LENGTH": 2000,
         "OPERATION_DEADLINE_SECONDS": 3600,
@@ -120,24 +130,21 @@
       // that forgets `--env staging` therefore gets no database binding at all, which
       // fails closed. Every Wrangler script in package.json passes `--env staging`.
       //
-      // `database_id` is an all-zero LOCAL-ONLY SENTINEL. It is NOT a real Cloudflare
-      // database id, and no D1 resource has been provisioned for this repository. It is
-      // present rather than omitted on purpose: current Wrangler can automatically
-      // provision a D1 database for a binding that has no resource id, and the sentinel
-      // makes that impossible. It is the same placeholder Cloudflare's own Vitest D1
-      // fixture uses, so `wrangler d1 migrations apply ... --local` and the Workers-runtime
-      // tests both resolve it locally.
+      // `database_id` is the real non-secret identifier returned by the Task 09 staging-only
+      // provisioning gate. Migrations 0001–0004 were applied remotely under the separate
+      // 2026-09-15 deployment/migration approval. Local migration commands and Workers-runtime
+      // tests still resolve this binding through Wrangler's `--local` / Miniflare storage and do
+      // not contact the provisioned database.
       //
       // Migrations live in `migrations/` and are applied locally with
-      // `npm run d1:migrate:local`. There is no remote-apply script. A future, explicitly
-      // authorized task provisions the real staging database and replaces this sentinel;
-      // remote application stays staging first, production only later, after review
-      // (docs/architecture/operations-and-reliability.md section 19).
+      // `npm run d1:migrate:local`. There is deliberately no reusable remote-apply script; every
+      // future remote application requires a separate staging approval, with production only later
+      // after review (docs/architecture/operations-and-reliability.md section 19).
       "d1_databases": [
         {
           "binding": "STAGING_DB",
           "database_name": "wos-rewards-service-staging",
-          "database_id": "00000000-0000-0000-0000-000000000000",
+          "database_id": "6dc171c2-27f5-4ef2-8788-ebd243cd354f",
           "migrations_dir": "migrations",
         },
       ],
