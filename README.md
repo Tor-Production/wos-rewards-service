@@ -118,10 +118,11 @@ That is `wrangler d1 migrations apply STAGING_DB --local --env staging`. It writ
 `.wrangler/`, which is git-ignored. Running it a second time reports `No migrations to apply!`.
 
 **There is deliberately no remote-apply command.** The staging-only provisioning gate created
-`wos-rewards-service-staging` in `EEUR`, and `env.staging.STAGING_DB` now uses its real id
-`6dc171c2-27f5-4ef2-8788-ebd243cd354f`. No application migration has been applied remotely:
-0001–0004 all remain pending. Remote application stays **staging first, production only later,
-after review** and explicit authorization (see
+`wos-rewards-service-staging` in `EEUR`, and `env.staging.STAGING_DB` uses its real id
+`6dc171c2-27f5-4ef2-8788-ebd243cd354f`. Under the separate deployment/migration approval on
+2026-09-15, migrations 0001–0004 were applied remotely to that staging database and a second
+Wrangler check reported no migrations to apply. Future remote application stays **staging first,
+production only later, after review** and explicit authorization (see
 [`docs/architecture/operations-and-reliability.md` section 19](docs/architecture/operations-and-reliability.md#19-staging-and-production-separation)).
 
 ## Generated Worker types
@@ -139,12 +140,14 @@ committed together with a freshly generated types file.
 
 ## Safety
 
-- **The staging provisioning gate is complete, and deployment remains behind a separate approval
-  gate.** The empty Worker container, D1 database, two work queues, redemption DLQ, one-minute Cron,
-  and `workers.dev` route exist. One reviewed secret-free Worker version is uploaded, but the Worker
-  has zero deployments; the route therefore serves no deployed Task 09 code. Preview URLs are
-  disabled, all four application migrations remain pending, and no Worker secret has been entered.
-  There is no deployable Durable Object, KV namespace, production environment, or custom domain.
+- **The staging provisioning and deployment/migration gates are complete; Discord connection
+  remains behind a separate approval gate.** Worker version
+  `7af176a2-a3e1-4d39-8505-4d3d41318e19` is deployed to the existing `workers.dev` route with the
+  reviewed D1, two work queues, redemption DLQ, and one-minute Cron. Preview URLs remain disabled,
+  migrations 0001–0004 are current, and both required Worker secret names are bound with values
+  hidden. `DISCORD_DELIVERY_ENABLED=false`, no companion or Discord session has started, and the
+  verified application ledgers remain empty. There is no deployable Durable Object, KV namespace,
+  production environment, or custom domain.
   `npm run validate` uses
   `wrangler deploy --dry-run`, which compiles locally and publishes nothing.
 - Staging is the only environment. There is no production environment, and the configuration

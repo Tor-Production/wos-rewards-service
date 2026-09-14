@@ -53,17 +53,19 @@ through Wrangler vars (non-secret) and Wrangler secrets (secret).
 | `SPIKE_SENDER_ALLOWLIST` | separately gated spike source and ingestion Worker (**staging only; not the Task 09 companion**) | strictly comma-separated dedicated spike bot/webhook snowflake ids without whitespace; duplicates are collapsed; empty means strict filtering; after authentication the Worker classifies a bot by `author_id` or webhook by `webhook_id`; a human is always normal even if its id matches; system and own-application messages always drop; the application id is rejected in the list; never set in production; accepted invalid spike output is retained only in the immutable migration-0003 suppressed shape |
 | `LOG_LEVEL` | all | structured-log verbosity |
 
-### Provisioned Task 09 staging record (non-secret)
+### Task 09 staging deployment record (non-secret)
 
-The staging-only provisioning gate completed on 2026-09-14. This table is the reviewed source for
-the Windows companion values that are not Wrangler variables and the resource identifiers returned
-by Cloudflare. The Worker has one uploaded version but no deployment; migrations 0001–0004 remain
-pending, and neither required secret has been entered.
+The staging-only provisioning gate completed on 2026-09-14 and the separately approved
+deployment/migration gate completed on 2026-09-15. This table is the reviewed source for the
+Windows companion values that are not Wrangler variables and the non-secret identifiers returned
+by Cloudflare. Worker secret bindings are recorded by name only; their values remain hidden and
+must never enter this repository.
 
 | Item | Value |
 |---|---|
 | Worker name | `wos-rewards-service-staging` |
 | Cloudflare Worker id | `231fd53e27db414ca54444ecc5b8d33b` |
+| Active Worker version | `7af176a2-a3e1-4d39-8505-4d3d41318e19` (100% deployment) |
 | `COMPANION_WORKER_BASE_URL` | `https://wos-rewards-service-staging.chute-risk9361.workers.dev` |
 | D1 database name / id / region | `wos-rewards-service-staging` / `6dc171c2-27f5-4ef2-8788-ebd243cd354f` / `EEUR` |
 | Registration Queue name / id | `wos-rewards-registration-jobs-staging` / `23b1587e847e4db18d3bc440b1ba07d2` |
@@ -76,6 +78,9 @@ pending, and neither required secret has been entered.
 | `DISCORD_MVP_ADMIN_USER_ALLOWLIST` | `470002312341880834` |
 | `DISCORD_APPLICATION_ID` | `1542396374832652369` |
 | `DEFAULT_STATE` | `3607` |
+| Remote migration state | `0001`–`0004` applied; no pending migration |
+| Secret binding names | `INGESTION_SHARED_SECRET`, `DISCORD_BOT_TOKEN` |
+| Discord activation state | delivery disabled; companion disconnected |
 
 Stored event identifiers remain digit strings and never JS numbers. A deployable Task 09
 configuration requires every configured Discord guild/channel/application/administrator id to

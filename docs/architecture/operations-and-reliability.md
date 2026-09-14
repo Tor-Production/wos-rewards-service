@@ -125,11 +125,13 @@ Migrations are applied to staging first, then production, after review.
 
 ### Task 09 staging MVP activation gate
 
-The implementation is present and the **staging-only provisioning gate completed on 2026-09-14**.
-The safe top-level D1/Discord scope remains fail-closed; `env.staging` records the reviewed real
-non-secret identifiers. The provisioned Worker has one secret-free uploaded version and zero
-deployments. Remote migrations 0001–0004 are pending, no Discord session exists, and no request or
-Queue message has been sent. The reviewed non-secret record includes:
+The implementation is present. The **staging-only provisioning gate completed on 2026-09-14** and
+the separate **deployment/migration gate completed on 2026-09-15**. The safe top-level D1/Discord
+scope remains fail-closed; `env.staging` records the reviewed real non-secret identifiers. Worker
+version `7af176a2-a3e1-4d39-8505-4d3d41318e19` is deployed at 100%, migrations 0001–0004 are
+current, and both required secret bindings exist with values hidden. Delivery remains disabled,
+no Discord session or Queue message exists, and the only route probe was an unauthenticated GET
+that returned the expected sanitized `404 not_found`. The reviewed non-secret record includes:
 
 - Discord guild id, registration-channel id, dedicated admin-channel id, dedicated application
   id, and every human administrator user id;
@@ -149,16 +151,17 @@ Activation remains split into explicit gates:
 1. **Provisioning approval — complete:** the staging Worker container, D1 database, three Queues,
    one-minute Cron and `workers.dev` route exist. Preview URLs are disabled. The actual D1 id,
    Discord ids, Queue ids and companion origin are recorded in
-   [configuration.md](configuration.md#provisioned-task-09-staging-record-non-secret). No Worker
-   deployment or application migration was created.
-2. **Manual secret entry by the user — next:** add the secret names `INGESTION_SHARED_SECRET` and
-   `DISCORD_BOT_TOKEN` to the staging Worker, and make those same names available to the Windows
-   companion through a user-chosen non-committed secret mechanism. Use
-   `wrangler versions secret put <NAME> --env staging` so secret entry creates only an undeployed
-   version; the unversioned `wrangler secret put` command deploys immediately and must not be used
-   at this gate. Never transmit or echo values.
-3. **Deployment approval:** apply migrations remotely and deploy only the staging Worker.
-4. **Connection approval:** start the companion and connect the dedicated bot. Stop it with
+   [configuration.md](configuration.md#task-09-staging-deployment-record-non-secret). No deployment
+   or application migration occurred in that first gate.
+2. **Manual secret entry by the user — complete:** the user added `INGESTION_SHARED_SECRET` and
+   `DISCORD_BOT_TOKEN` through versioned secret entry. Verification inspected names/types only and
+   never exposed either value. The same names must be made available to the Windows companion
+   through a user-chosen non-committed mechanism immediately before the connection gate.
+3. **Deployment/migration approval — complete:** migrations 0001–0004 were applied only to the
+   staging D1 database, then the reviewed Worker was deployed to the existing route with mock mode,
+   discovery off, production redemption off and Discord delivery off. Read-only verification found
+   no pending migration and zero rows in the application ledgers checked.
+4. **Connection approval — pending:** start the companion and connect the dedicated bot. Stop it with
    Ctrl+C; graceful shutdown destroys the Discord client.
 
 Free-plan feasibility was rechecked against current official Cloudflare limits immediately before
@@ -171,9 +174,9 @@ claim that a local dry run validates billed usage, CPU, or deployed latency.
 
 ### Staging-spike reconciliation, abort, and cleanup invariants
 
-Migration 0003 is still applied locally only in the current repository state. After a
-reviewed staging migration and before any future spike traffic, run the following read-only
-queries; repeat them during the run, after any abort, at completion, and after cleanup.
+Migration 0003 is applied to staging as schema guardrails only; no spike binding, infrastructure,
+source or traffic exists. Before any future separately approved spike traffic, run the following
+read-only queries; repeat them during the run, after any abort, at completion, and after cleanup.
 Every count must be zero. `?1` in the dispatcher query is the current ISO-8601 timestamp.
 
 ```sql

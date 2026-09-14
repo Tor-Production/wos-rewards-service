@@ -131,14 +131,15 @@
       // fails closed. Every Wrangler script in package.json passes `--env staging`.
       //
       // `database_id` is the real non-secret identifier returned by the Task 09 staging-only
-      // provisioning gate. No remote migration has been applied. Local migration commands and
-      // Workers-runtime tests still resolve this binding through Wrangler's `--local` /
-      // Miniflare storage and do not contact the provisioned database.
+      // provisioning gate. Migrations 0001–0004 were applied remotely under the separate
+      // 2026-09-15 deployment/migration approval. Local migration commands and Workers-runtime
+      // tests still resolve this binding through Wrangler's `--local` / Miniflare storage and do
+      // not contact the provisioned database.
       //
       // Migrations live in `migrations/` and are applied locally with
-      // `npm run d1:migrate:local`. There is deliberately no remote-apply script; remote
-      // application remains a separate staging deployment approval, with production only
-      // later after review (docs/architecture/operations-and-reliability.md section 19).
+      // `npm run d1:migrate:local`. There is deliberately no reusable remote-apply script; every
+      // future remote application requires a separate staging approval, with production only later
+      // after review (docs/architecture/operations-and-reliability.md section 19).
       "d1_databases": [
         {
           "binding": "STAGING_DB",

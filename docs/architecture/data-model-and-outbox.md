@@ -35,8 +35,9 @@
 > Task 09's thirteenth table. The schema is applied inside the Workers runtime and verified by
 > `test/migrations.test.ts`; the column lists in this section are the contract that suite
 > asserts against, column by column. All identifier columns are `TEXT`
-> ([§10](#10-identifier-handling)). The staging D1 resource is provisioned, but no application
-> migration has been applied remotely — see [the repository docs index](../README.md#current-state).
+> ([§10](#10-identifier-handling)). Migrations 0001–0004 were applied to the isolated staging D1
+> resource under the 2026-09-15 deployment/migration approval; production remains absent — see
+> [the repository docs index](../README.md#current-state).
 
 ### Implemented schema (migration 0001)
 
@@ -563,5 +564,6 @@ rewrite an existing table. The table's named checks constrain Discord identifier
 status, and the status/operation result shape. Its nullable operation foreign key has no cascade.
 Upgrade tests populate a migration-0003 database, apply 0004 through the D1 migration journal,
 verify the preserved data and exact new columns, exercise constraint/foreign-key rollback, confirm
-`PRAGMA foreign_key_check` is empty, and prove reapplication is a journal no-op. These checks use
-local storage and do not apply a migration to the provisioned remote database.
+`PRAGMA foreign_key_check` is empty, and prove reapplication is a journal no-op. Those tests use
+local storage. The same migration is now applied to the staging D1 database; a remote ledger check
+reported no pending migrations and the post-deployment application-ledger counts were all zero.
