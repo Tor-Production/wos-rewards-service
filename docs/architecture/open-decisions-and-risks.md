@@ -137,10 +137,12 @@
 - Compact JSON UTF-8 size plus a 100-byte per-message charge is a conservative Queue
   body estimate with reserved headroom, not an exact envelope measurement. Any platform
   rejection still follows bounded send-failure backoff and eventual `dead` marking.
-- The staging Worker and Queue triggers are deployed, but no Queue message has been sent. Local
-  Workers-runtime tests exercise producer, consumer, DLQ, and one complete mock operation, while
-  post-deployment checks verify only attachment counts and empty application ledgers; they do not
-  establish remote Queue latency, retry timing, or billing.
+- The narrow 2026-09-17 staging smoke sent one registration and one synthetic manual code, then
+  replayed the code once to exercise durable deduplication. The registration and code-fanout Queues,
+  D1 state, `MockWhiteoutProvider`, and Discord delivery completed with one registration summary,
+  one distribution summary, no duplicate operation, and no observed backlog, retry, DLQ message,
+  Worker error, or exceeded-resource event. This single low-volume smoke does not establish
+  throughput, Queue or end-to-end latency, retry timing, sustained CPU behavior, or billing.
 - Privileged `MESSAGE_CONTENT` intent could gate future scaling (approval needed above
   ~100 guilds / 10,000 users) **[fact:D3]**; mitigation: stay small or plan verification
   early.

@@ -562,8 +562,11 @@ prove atomic DDL/data/ledger rollback, reapply safely through the migration jour
 `0004_live_staging_manual_commands.sql` adds only `manual_code_commands`; it does not alter or
 rewrite an existing table. The table's named checks constrain Discord identifiers, code syntax,
 status, and the status/operation result shape. Its nullable operation foreign key has no cascade.
-Upgrade tests populate a migration-0003 database, apply 0004 through the D1 migration journal,
-verify the preserved data and exact new columns, exercise constraint/foreign-key rollback, confirm
-`PRAGMA foreign_key_check` is empty, and prove reapplication is a journal no-op. Those tests use
-local storage. The same migration is now applied to the staging D1 database; a remote ledger check
-reported no pending migrations and the post-deployment application-ledger counts were all zero.
+The focused upgrade test inserts a representative player into a migration-0003 database, applies
+0004 through the D1 migration journal, verifies that row is unchanged and the new table has the
+exact expected columns, and confirms that invalid code and orphan-operation inserts are rejected
+without leaving ledger rows. It also confirms `PRAGMA foreign_key_check` is empty and that
+reapplication is a journal no-op. It does not inject a failing 0004 migration, so the separate 0003
+atomic migration-rollback test is not evidence for 0004 rollback. These tests use local storage.
+The same migration is applied to staging D1; a remote ledger check reported no pending migrations,
+and the later narrow staging smoke populated only its expected synthetic player/code path.

@@ -97,7 +97,7 @@ logs only fixed event categories. Required companion names are `COMPANION_WORKER
 `DISCORD_MVP_ADMIN_USER_ALLOWLIST`, `DISCORD_APPLICATION_ID`, `DISCORD_BOT_TOKEN`, and
 `INGESTION_SHARED_SECRET`. Never put their secret values in chat, documentation, committed files,
 commands, or logs. Use the exact non-secret values recorded in
-[`docs/architecture/configuration.md`](docs/architecture/configuration.md#provisioned-task-09-staging-record-non-secret).
+[`docs/architecture/configuration.md`](docs/architecture/configuration.md#task-09-staging-deployment-record-non-secret).
 
 ## Database migrations
 
