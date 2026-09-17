@@ -80,7 +80,7 @@ must never enter this repository.
 | `DEFAULT_STATE` | `3607` |
 | Remote migration state | `0001`–`0004` applied; no pending migration |
 | Secret binding names | `INGESTION_SHARED_SECRET`, `DISCORD_BOT_TOKEN` |
-| Discord activation state | staging delivery enabled; companion disconnected; live smoke test pending |
+| Discord activation state | staging delivery enabled; smoke test completed; companion stopped |
 
 Stored event identifiers remain digit strings and never JS numbers. A deployable Task 09
 configuration requires every configured Discord guild/channel/application/administrator id to

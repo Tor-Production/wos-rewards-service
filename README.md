@@ -9,8 +9,8 @@ summary/output delivery, and a small `discord.js` companion. The companion forwa
 registration messages unchanged to authenticated `POST /ingest` and forwards an allow-listed
 `!wos-code CODE` command to authenticated `POST /manual-code`. Real Discord REST output is
 enabled only in the isolated staging environment under an explicit smoke-test gate. The Worker,
-D1 schema, Queues/DLQ, Cron and route are deployed; the companion is not yet connected and no live
-Discord message has been processed. See
+D1 schema, Queues/DLQ, Cron and route are deployed; the approved live smoke test completed with the
+companion stopped afterward. See
 [`docs/README.md`](docs/README.md) for current state and documentation routing, and
 [`AGENTS.md`](AGENTS.md) for the binding safety and engineering contract.
 
@@ -146,10 +146,10 @@ committed together with a freshly generated types file.
   `7a083c14-a7ac-4875-ad11-04de4b10b139` is deployed to the existing `workers.dev` route with the
   reviewed D1, two work queues, redemption DLQ, and one-minute Cron. Preview URLs remain disabled,
   migrations 0001–0004 are current, and both required Worker secret names are bound with values
-  hidden. `DISCORD_DELIVERY_ENABLED=true` only in `env.staging`, but no companion or Discord session
-  has started and the verified application/output ledgers remain empty. The top/default scope stays
-  disabled. There is no deployable Durable Object, KV namespace, production environment, or custom
-  domain.
+  hidden. `DISCORD_DELIVERY_ENABLED=true` only in `env.staging`, and the completed smoke test left
+  one synthetic player/code path with no duplicate operation, no retry, no DLQ row, and two successful
+  Discord API subrequests. The companion is stopped and the top/default scope stays disabled. There
+  is no deployable Durable Object, KV namespace, production environment, or custom domain.
   `npm run validate` uses
   `wrangler deploy --dry-run`, which compiles locally and publishes nothing.
 - Staging is the only environment. There is no production environment, and the configuration
