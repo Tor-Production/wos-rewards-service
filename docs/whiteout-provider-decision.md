@@ -11,6 +11,14 @@ what the provider abstraction may do, and exactly what evidence is required befo
 gift-code redemption can be enabled. It contains **no real endpoints, tokens, cookies, or
 secret values.**
 
+**Task 10 research, 2026-09-17:** no acceptable authorized integration contract was found
+in the public sources examined. [§10–§15](#10-task-10-public-evidence--2026-09-17) record the
+evidence, implementation gaps, isolated-test proposal, and pending decisions. This is
+preparation for blocked roadmap phase 8, not completion of it. The four-part §4 gate
+remains binding, including before a staging adapter; the staged amendment in §13 is
+**proposed, not approved**. Merging this documentation does not authorize provider calls,
+production enablement, or credential provisioning.
+
 ---
 
 > **Revision 2026-08-30:** provider signature updated to `redeem(player, code,
@@ -284,3 +292,310 @@ the supporting contract, before implementation.
 | 2026-08-30 | PR #3 review round 3: durable `attempt_id` — an owner-path retry keeps one `attempt_id` across `message.retry`; the DLQ terminal write is guarded on the exact `current_attempt_id`; a `player_ineligible` result whose `attempt_state ≠ players.state` re-drives instead of terminalizing. No provider-contract change. | (pending review) |
 | 2026-08-31 | PR #3 review round 4: split `attempt_id` (retry budget) from a per-invocation `current_invocation_token` (+ lease) so two overlapping deliveries of one `attempt_id` cannot both call the provider (**T3**); `retryable` → `retry_wait` release + `retry_due_at` before `message.retry` (**T9**), redelivery acquires a new invocation via **T2**; DLQ terminal write also requires no live invocation (**T10** / **T11**). New terminal outcome **`state_reevaluation_limit`** (**T8**, `repair_run`-only, alerted) for the state re-evaluation cap. Summary source frozen at `summary_state: none → sealing` with late outcomes in `operation_late_results`. Table now **T1–T16**. No provider-contract change. | (pending review) |
 | 2026-08-31 | PR #3 review round 5: the DLQ "no invocation active" check reads `current_invocation_token`, not the pickup-grace `invocation_expires_at`. A `retry_wait` row always satisfies **T10** (invocation released by **T9**), so a retry exhausting `max_retries` before `retry_due_at` is recorded `retry_exhausted` rather than `dlq_invocation_active`; the lease-expiry comparison is reserved for an `in_progress` row still holding a token; **T12** never re-drives a row **T10** terminalized. No provider-contract change. | (pending review) |
+| 2026-09-17 | Task 10: dated public-source research, code/contract compatibility, mock-result isolation, pending staged-gate amendment, and bounded future-test design (§10–§15). Existing gates and prohibitions unchanged. | Research/documentation task authorized by the requesting human; no provider or amendment approval recorded |
+
+---
+
+## 10. Task 10 public evidence — 2026-09-17
+
+**Finding:** the examined public material does not establish an authorized automated
+redemption API or a contract meeting §5. This is a bounded research result, **not proof
+that no private, partner, or other API exists**. No publisher permission, API contract,
+staging-call approval, or production approval has been obtained in this task.
+
+### Evidence register
+
+All accesses below were on **2026-09-17**. Publication dates are the page's own dates when
+visible; search-engine crawl dates are not publication dates. These are public-page reads,
+not endpoint probes or redemption attempts.
+
+| ID / direct source | Publisher / authority | Publication or update | Precise supported claim | Limitation |
+|---|---|---|---|---|
+| E1 — [Whiteout Survival game page](https://www.centurygames.com/games/a/) | Century Games, publisher | Not shown; visible news includes 2026-09-01 | Official game overview and links to player news/community are available. | The inspected page supplies no integration authorization, request schema, or developer contract. |
+| E2 — [Whiteout Survival Terms of Service](https://legal.centurygames.com/termsofservice_wos_EN.html) | Century Games, game-specific legal publication | Last updated 2025-07-04 | §2 describes a personal entertainment license and prohibits reverse engineering/source extraction; §9 restricts automation software that violates applicable license agreements. | No affirmative service-integration permission or redemption contract. This is a permission gap, not a legal determination about every possible integration. |
+| E3 — [English Terms of Service](https://www.centurygames.com/terms-of-service/) | Century Games | Last updated 2025-07-04 in the retrieved English page | The inspected English page also contains the §2 and §9 restrictions described in E2. | Search results for other language versions showed different dates; this record does not resolve their applicability or infer an exception. |
+| E4 — [Whiteout Survival Help Center](https://centurygames.helpshift.com/hc/en/64-whiteout-survival/) | Century Games support on Helpshift | No page update date shown | Public support index exposes gameplay/account categories. | No integration contract found in the index or targeted searches; this does not establish the contents of every support article or private support reply. |
+| E5 — [Whiteout Survival — Write A Sentence](https://www.centurygames.com/whiteout-survival-write-a-sentence/) | Century Games | 2026-04-22 | The publisher directs questions to in-game Settings → Contact Us. | A route for the human to request documentation, not evidence that support will authorize an API. No message was sent. |
+| E6 — [Gift Code Center](https://wos-giftcode.centurygame.com/) | Century Game domain; page title identifies the gift-code center | Not available | Public page resolves with the title “Gift Code Center.” | Research reader exposed no substantive contract text. No form interaction, scripts, network traffic, or backend requests were inspected. Its existence grants no automation permission. |
+
+### Search coverage and unavailable evidence
+
+Reproducible query examples used on the access date:
+
+- `site:centurygames.com "Whiteout Survival" "API"` and
+  `site:centurygames.com "Whiteout Survival" "developer"`;
+- `site:whiteoutsurvival.com "API"` and
+  `site:whiteoutsurvival.com developer redemption documentation API`;
+- `site:wosgame.com developer documentation redemption API`;
+- `site:centurygames.helpshift.com "redeem" "code" "Whiteout"` and
+  `"Whiteout Survival" "Gift Code" "centurygames.helpshift.com"`;
+- `Whiteout Survival official gift code redemption center`, restricted to
+  `centurygame.com`, `centurygames.com`, `whiteoutsurvival.com`, and `wosgame.com`.
+
+Results included marketing, gameplay support, unrelated-game code articles, and community
+tools, but no acceptable publisher-backed redemption specification. A broader initial
+search surfaced [WOS Control API documentation](https://woscontrol.com/api-docs) and
+[community bot claims](https://github.com/Gercekefsane/whiteout-survival-bot). These are
+**unaccepted leads only**: no Century Games authorization was established; their claimed
+technical behavior is not used as contract evidence. No community implementation or
+signing method was adopted or tested.
+
+The reader returned zero substantive lines for
+[whiteoutsurvival.com](https://www.whiteoutsurvival.com/) and only one line for
+[the descriptive game-page URL](https://www.centurygames.com/games/whiteout-survival/);
+E1 was an accessible publisher alternative. Opening [wosgame.com](https://www.wosgame.com/)
+was rejected by the research tool as unsafe/non-retryable; no workaround was attempted.
+[The publisher support portal](https://support.centurygames.com/) exposed only a sparse
+shell on direct access, so E4 and E5 supply the usable support references. E6 was similarly
+text-inaccessible. No logged-in, private, partner, or application-traffic evidence was
+available or requested. Missing material remains unknown, not a negative API guarantee.
+
+## 11. Contract readiness and implementation compatibility
+
+### Contract evidence still required
+
+The §6 taxonomy is an **internal requirement**, not a description of observed game API
+responses. Every upstream item below is **unknown** in the accepted evidence set E1–E6.
+
+| Required evidence | Compatibility question / blocker |
+|---|---|
+| Authorized actions, endpoints and environments | Written publisher authorization must cover this service redeeming on behalf of consenting players and any reconciliation action. Identify sandbox versus live game side effects; a locally named staging stack does not create an upstream sandbox. Profile enrichment and discovery are excluded. |
+| Versioned request/response contract | Specify documented methods, fields, encoding, code case/length rules, player/state semantics, response schemas and version policy. Confirm compatibility with string `PlayerRef.playerId`, supplied `state`, and `code`; do not infer state through lookup. |
+| Authentication | State the supported service authentication mechanism, scope, expiry/revocation and environment separation. No mechanism or provider secret name is assumed; never supply secret values to this record. User-account cookies/session credentials remain prohibited. |
+| Rate limits | Document quotas and windows, burst/concurrency limits, scope (application, credential, IP, player, code or shared account), cooldown/`Retry-After`, and whether lookup/authentication/retry requests count. Current local budgets are not upstream permission. |
+| Applied / already applied | Supply exact success and already-redeemed responses, receipt meaning and authoritative player/code attribution. Distinguish accepted/pending from completed; an asynchronous job id alone cannot become `success`. Confirm `already_redeemed` means this pair's reward was applied. |
+| Non-applied failures | Supply exact invalid, expired, disabled, player-ineligible and bad-request signals; prove each means no application occurred. Define eligibility dependence on state and code-wide versus player-specific rejection before applying §6 policy. |
+| Operational failures | Supply authentication/authorization, rate-limit and transient-error signals and whether side effects may already have occurred. An HTTP status alone cannot establish safe retry semantics. |
+| Stable-key idempotency | Specify key format acceptance, scope, retention duration, concurrent replay behavior, response replay, parameter mismatch behavior, and behavior after retention expires. `redeem:v1:<player_id>:<code>` survives attempts, state changes and repairs. A prior success must dedupe, while a reopened non-applied failure must allow fresh evaluation with the same key and possibly changed state. |
+| Ambiguous timeout / crash reconciliation | Document a permitted lookup by stable pre-request identity, consistency delay, retention, pending/not-found/final semantics and authoritative evidence of application. A receipt returned only after success cannot resolve a response lost before D1 persistence. Prove when a negative lookup permits replay while an original request might still be running. |
+
+No candidate passes §5 until those gaps are closed. A documented key or lookup must cover
+the service's entire permitted retry/reopen horizon; after its retention horizon, unresolved
+work must stop for human review, not silently receive a fresh upstream identity.
+
+### Code evidence, inspected 2026-09-17
+
+Inspection base: `bb1fccb20914a84180fb269db8fbb6b5e39b6f01`, tree
+`e5bc237f7cf4624a45baf4f1473b96b0d41bb3f9`. PR #12 is merged and Task 09 is included.
+The following are repository facts, not evidence of current deployed behavior.
+
+| Source | Verified behavior | Future integration implication |
+|---|---|---|
+| [Provider interface](../src/domain/whiteout-provider.ts) | `redeem(player, code, idempotencyKey)` returns success/already-redeemed with optional receipt, or retryable/permanent with reason string. | No pending/unknown variant, retry delay, cancellation signal, or reconciliation method exists. Any needed extension requires a separate reviewed task; uncertainty must never be mapped to applied. |
+| [Factory](../src/providers/index.ts), [queueWork](../src/runtime/handlers.ts) | Factory accepts only mock. `queueWork` directly constructs `MockWhiteoutProvider` unless a provider is injected; it does not call the factory. | Adding an adapter to the factory alone would not route deployed Queue work. Future routing and disable behavior need end-to-end proof. Injection is a local test seam, not call authorization. |
+| [Configuration loader](../src/config.ts), [Wrangler configuration](../wrangler.jsonc) | Only staging/mock is accepted; enabled production redemption and discovery are rejected. Defaults: 10-second provider timeout, 120-second item/redemption leases, four logical grants including the first, three physical retries, three state reevaluations. | These are current local bounds, not safe real-provider settings. Logical budget is captured per generation; state reevaluation or authorized repair can open another generation. A one-test global ceiling must span them all. |
+| [Mock provider](../src/providers/mock-whiteout-provider.ts) | Applied keys live in an instance-local map; receipts are deterministic `mock-receipt:` strings; failures do not populate that map; no network access. | Mock behavior is a fixture contract. Neither the map nor its receipts establish upstream idempotency, retention, or reward delivery. |
+| [Migration 0001](../migrations/0001_initial_schema.sql), [migration 0002](../migrations/0002_phase4_consumers_and_delivery.sql) | Redemptions use `(player_id, code)` with no provider discriminator. Terminal observations use pair + budget generation; terminal receipts add operation/item identity. | Mock successes/failures can suppress or complete later work and enter summaries. `terminal_receipts` are local accounting receipts, distinct from `redemptions.provider_receipt`; observations do not carry an upstream receipt or provider identity. |
+| [Consumer](../src/redemption/consumer.ts), `consume` / `closeBudget` | Exact outbox attempt and item eligibility are rechecked in the grant transaction. A returned grant charges the logical counter before the call; result writes require the exact attempt and invocation token. Stable key is `redeem:v1:<player_id>:<code>`. | This protects local authority and stale writes. A charged but crashed grant is not refunded; these guards cannot undo or dedupe upstream side effects. |
+| [Consumer](../src/redemption/consumer.ts), timeout/retry path | `Promise.race` turns timeout or thrown exception into retryable `provider_unavailable`; clearing the timer does not cancel `redeem`. Delay is `min(60 * 2 ** (provider_invocations - 1), 3600)` seconds. | A timed-out call may remain unresolved after the token is released and a retry starts. There is no jitter or provider `Retry-After` input in this path. §6 rate limiting/backoff requirements are not proof of implemented real-provider controls. |
+| [Reconciliation](../src/redemption/reconcile.ts), `reuseTerminal` / `mirrorObservation` | Applies current local terminal observations to eligible items with transactional generation/state checks, or writes late audits after freeze. It performs no upstream lookup. | Calling this “reconciliation” must not be mistaken for resolving an uncertain game outcome. Reuse also propagates mock outcomes to later operations. |
+
+Targeted searches found no `PROVIDER_RATE_LIMIT_PER_SECOND` reader or real-provider limiter
+in `src`; `AppConfig` has no such field and Wrangler sets none. Queue concurrency one per
+queue is not a provider-wide limiter across both queues or other clients. The no-deploy
+rollback switch in §5 is an **acceptance requirement**, not an implemented real-provider
+kill switch: current configuration is static and rejects any real mode.
+
+The inspected tests substantiate local boundaries: [factory](../test/whiteout-provider.test.ts),
+[mock](../test/mock-whiteout-provider.test.ts), [configuration](../test/config.test.ts),
+[Phase 4](../test/phase4.test.ts) (four grants, concurrent claims, stale results, reuse),
+[review regressions](../test/phase4-review-regressions.test.ts) (outbox authority and terminal
+commit), and [staging MVP](../test/staging-mvp.test.ts) (mock distribution and synthetic
+delivery). [Migration upgrade assertions](../test/manual-code-migration.test.ts) remain
+unchanged. These do not validate a game contract or upstream timeout safety.
+
+**Crash case:** upstream applies the reward, then the response is lost or the Worker exits
+before the D1 terminal transaction. The ledger still lacks success. Lease expiry/recovery
+can grant another call; fencing only prevents an old local write. An unresolved timeout
+creates the same uncertainty even without a process crash. Safe continuation needs either
+contract-backed idempotent replay (including in-flight requests) or authorized reconciliation
+that proves application/non-application before replay. Client cancellation, even if added,
+would not prove upstream cancellation. Current `retry_exhausted` is local accounting, not
+proof that no reward was applied. These gaps are recorded, not fixed in Task 10.
+
+## 12. Minimum mock-to-real isolation recommendation
+
+**Proposed minimum for a future approved real test: a separate test stack and fresh ledger,
+dedicated to the single approved pair.** Retain the existing mock staging stack and all its
+historical records. A fresh code in the existing stack is insufficient: manual distribution
+can include every registered player; old outbox/Queue work and observations remain eligible,
+and changing provider routing could redirect pending mock work. A receipt prefix changes
+neither the primary key nor reuse/summary authority.
+
+The later activation review must prove all of the following before any call:
+
+- Dedicated Worker/routing, D1 binding and empty test ledgers; no copying of mock redemptions,
+  gift-code status, manual-command/event ledgers, operations/items, terminal observations or
+  receipts, late results, frozen snapshots, summary layouts, output deliveries, scheduler
+  progress or dispatch state. Seed only the approved player/state and manually supplied code.
+- Separate registration/fanout queues and DLQ, with no existing producers, consumers, backlog,
+  retry, replay or recovery path crossing from mock staging. Cron and ingress stay off until
+  specifically needed and approved. Hardcoded Queue routes in `queueWork` need a reviewed
+  isolation design; changing only resource names is not an implementation plan that works today.
+- One explicit provider route for test work, no automatic fallback to mock after a real
+  failure, and an enforceable one-player/one-code allowlist and total request ceiling.
+  All game traffic must still pass through `WhiteoutProvider` and durable call authority.
+- Separate credentials with documented scope if the contract requires them; provision only
+  under a later approval, never copied from user sessions or another environment. No Discord
+  delivery is needed for the first provider test. If later approved, use a separate test
+  application/channel and unmistakably identify test evidence without claiming mock rewards.
+- Verify resource bindings, empty pending work and disable behavior with fakes first; retain
+  the real test's ledger afterward for audit and uncertainty resolution. Do not reset it to
+  obtain a fresh retry allowance. Local isolation does not isolate upstream player rewards.
+
+If shared storage or mock/real switching within one stack is later required, first design
+explicit provider/environment provenance across identities, grants, observations, receipts,
+outbox/Queue routing, repair, reuse and frozen summaries, with an additive migration and
+historical-data policy. That is larger than the first isolated test. Neither this proposal
+nor this task authorizes migration, provisioning, deletion, or changes to historical outcomes.
+
+## 13. Pending staged-gate amendment
+
+**Current binding rule:** §4 requires all four items before any real-provider implementation:
+human-recorded authorization, documented API contract, explicit production-enablement
+approval, and production credentials provisioned as secrets. They are not complete. Its
+wording does not permit an offline or staging adapter merely because production stays off.
+
+**Proposed amendment text — NOT ACCEPTED:** replace §4's all-stages prerequisite with the
+stage-specific prerequisites below **only after an explicit human maintainer acceptance is
+recorded here**. Publisher authorization establishes external rights; maintainer approval
+establishes repository/operational scope. Neither substitutes for the other. Preserve §5's
+production acceptance criteria and §8's prohibitions. Production approval and production
+credential provisioning would move to stage D; they would not be waived. Approval of any
+stage does not imply approval of the next stage.
+
+| Stage | Required evidence and approver | Allowed actions | Exit criteria and remaining prohibitions |
+|---|---|---|---|
+| A — public research/documentation | Human task authorization; attributable public sources | Read public documentation, assess compatibility, draft unsent questions and pending proposals | Deliver evidence/gaps and recommendation. No real adapter, endpoint probing, form interaction, game requests, credentials, provisioning or activation. Task 10 is stage-A work under existing rules. |
+| B — contract-backed offline implementation | Explicit maintainer acceptance of this amendment and separate B task approval; recorded publisher authorization for intended integration; versioned contract closing §11 safety questions | Implement the specifically approved adapter/contract slice using injected fake transport with external network denied; sanitized contract fixtures and local tests only | Pass outcome, idempotency/reopen, unknown-outcome, rate-limit and crash tests relevant to the slice; record remaining activation gaps. No real requests, real credentials, runtime selection, deployment, resource provisioning or production enablement. |
+| C — narrowly approved staging activation | B evidence; publisher permission for the exact upstream environment/actions; consenting test-player approval; explicit maintainer/operator approval for exact resources, revision, pair, window, numeric ceilings and rollback plan | Only separately approved provisioning, secret entry, deployment and bounded calls in the isolated stack; actions may be approved in smaller gates | Record authoritative outcomes and request accounting, then disable; unresolved outcome remains unresolved. No wider fanout, discovery, production rollout, prohibited authentication or bypass. A staging caller against the live game still needs real-redemption approval. |
+| D — production rollout | All §5 criteria, C evidence, publisher production scope, explicit maintainer production-enablement and rollout approval; production credentials provisioned as secrets after the contract defines names/mechanism | Only approved production provisioning/migrations/deployment/activation within rollout bounds | Reviewed operational evidence, monitored ceilings and tested disable procedure. No discovery or scope expansion by implication; separate approval is required for each. |
+
+No acceptance is inferred from a PR merge, a checked box, a test passing, or Task 09's
+mock-only smoke. Until explicit amendment acceptance, the original §4 gate controls B–D.
+If the publisher contract requires no credentials, resolve that conflict with current §4
+explicitly; do not silently mark its credential item satisfied or invent a secret.
+
+### Pending approval / evidence record template
+
+Copy a record per decision; empty fields mean **pending**, never approved. Do not include
+secret values. A resource/credential action needs its own explicit permitted-action entry.
+
+| Field | Pending value |
+|---|---|
+| Decision / status | Amendment acceptance, B implementation, C action gate, or D rollout / PENDING |
+| Approver and authority | Named human maintainer/operator; publisher representative and authority where relevant; test-player consent reference |
+| Recorded date / expiry | UTC timestamp and authorized window, not yet supplied |
+| Scope / environment | Service, revision, exact local stack and upstream environment, player/code approval reference |
+| Permitted actions | Explicit implementation, provisioning, secret-entry, deployment, redemption or reconciliation actions; nothing inferred |
+| Limits | Total and per-action request ceilings, retry/reconciliation counts, rate/concurrency, timeouts and duration |
+| Supporting source / contract | Version/date, direct documentation or written authorization reference, retention and outcome guarantees |
+| Exit / abort / disable | Operator, authoritative evidence, abort conditions, disable procedure and unresolved-outcome handling |
+| Exclusions / remaining gates | Discovery, profile enrichment, production unless specifically approved; §8 prohibitions retained |
+
+## 14. Later one-pair test design — not executable yet
+
+Subject to §4 or an explicitly accepted §13 amendment, test **one consenting, explicitly
+approved real player and one manually supplied code**. No participant or code is selected
+here. The maintainer must record the exact pair privately or by an approved non-secret
+reference, the contract version, test revision, operator and window before execution.
+
+1. **Prepare offline:** prove §12 isolation, exact allowlist, request accounting, disabled
+   discovery/Discord delivery and fail-closed provider routing. Use fakes to simulate all
+   failures, duplicate delivery, crash after upstream application, and a response later than
+   timeout. Do not deliberately crash during the real test.
+2. **Approve a complete ceiling:** the preferred first run has at most **one redemption
+   submission and zero automatic redemption retries**, plus at most `L` authorized
+   reconciliation requests and `A` required authentication requests: total `N = 1 + L + A`.
+   `L`, `A`, `N`, per-scope rate/concurrency, overall duration and timeout remain **unset and
+   unapproved** until the contract specifies the request sequence, consistency/polling
+   interval, idempotency retention, authentication lifecycle and applicable quotas. If no
+   network authentication is required, record `A=0`; do not assume it. Count every physical
+   request, including failures, redirects if permitted, hidden SDK retries and polls. No
+   retry/reopen/repair may reset the run ceiling. Additional redemption retries require a
+   revised explicit numeric ceiling and proven safe-replay semantics before starting.
+3. **Contain entry and calls:** after separately approved provisioning/deployment, verify
+   exact bindings and zero unrelated work. Permit only the approved pair; no companion
+   restart or all-player manual distribution in the existing staging stack. Enforce the
+   run budget before each network request. Current four-grant configuration alone cannot
+   enforce this complete request ceiling or count reconciliation requests.
+4. **Timeout and abort:** choose the timeout and longer lease from documented upstream
+   behavior, with no assumption that local timeout cancels application. On timeout, crash,
+   unexpected schema, auth failure, CAPTCHA/anti-bot challenge, rate-limit response,
+   isolation mismatch, expired authorization or exhausted ceiling, stop new redemption
+   submissions. Only separately preapproved reconciliation within the remaining budget may
+   continue. Pending/not-found is not non-application unless the contract guarantees it.
+5. **Evidence and completion:** retain sanitized contract response/receipt or authorized
+   lookup evidence tied to the exact player/code and upstream identity, timestamps, physical
+   request counts, local grant/terminal records and operator decision. Require the player's
+   manual in-game confirmation as corroboration, without account automation. Pass only with
+   contract-authoritative applied/already-applied evidence and consistent accounting;
+   otherwise record not-applied or unresolved as supported. Mock receipts, local terminal
+   receipts and Discord summaries are never authoritative game-outcome evidence.
+6. **Disable and preserve:** exercise a reviewed fail-closed control that stops new real
+   calls before the test; on completion/abort use it, stop test ingress/producers/consumers
+   and recovery/Cron execution as specified in the approved runbook, and retain pending
+   messages and ledger evidence without replay. Do not switch unresolved real work to mock,
+   erase history, or claim disablement reverses a reward already applied. The operator must
+   verify no new requests and resolve in-flight uncertainty by the contract or publisher
+   support. Implementing/testing this control is a prerequisite; it does not exist today.
+
+The one-submission preference does not relax §5's idempotency/reconciliation criterion:
+even a single request can succeed upstream while its local outcome remains unknown.
+
+## 15. Recommended path, blockers and next slice
+
+**Recommend publisher authorization and contract acquisition, followed by offline validation
+under an explicitly accepted staged gate.** Keep mock mode and real redemption blocked
+while waiting. Public-site automation and community adapters are not acceptable substitutes
+for missing permission; indefinite unbounded exploration is not required to complete Task 10.
+
+Exact blockers, in order:
+
+1. Publisher permission and a versioned contract covering every §11 unknown, particularly
+   in-flight replay, retention, reopened non-applied failures and post-crash reconciliation.
+2. Human decision on the proposed §13 amendment. Without acceptance, **all four original
+   §4 requirements still precede implementation**, including production approval and secrets.
+3. Separate approval of a bounded offline implementation task. Activation additionally
+   requires routing/timeout/limiter/unknown-outcome controls, request accounting and §12
+   isolation proof; none is supplied by adding a class alone.
+4. Explicit C approvals, player consent and settled numeric test limits before any real
+   request; independent D evidence/production approvals afterward. Resource availability
+   and any publisher sandbox remain unknown and must be checked within that later scope.
+
+**Draft request for the human to send through publisher support — not sent by this task:**
+
+> We maintain a Discord service that would redeem a manually supplied gift code for a
+> consenting Whiteout Survival player. Is service-to-service automated redemption permitted?
+> Please provide written scope and official or explicitly authorized, versioned documentation
+> for supported redemption and post-timeout reconciliation actions and environments. We need
+> request/response schemas; supported service authentication without sharing secret values;
+> quotas, scope and cooldown rules; precise applied, already-applied, invalid/expired,
+> ineligible, auth, rate-limit and transient-error outcomes; stable idempotency-key scope,
+> retention and concurrent replay behavior; handling of reopened non-applied failures with
+> changed state; and an authoritative way to resolve a request whose response was lost.
+> Is a sandbox available, or may one approved live player/code pair be tested under an agreed
+> request ceiling? We will not use user-session credentials, reverse engineering, scraping,
+> CAPTCHA bypass or undocumented calls. No access is requested to discover codes or enrich
+> player profiles. If this integration is unsupported, please confirm that limitation.
+
+**Maintainer decision requested later:** record the publisher response/contract and explicitly
+accept or reject §13; if accepted and evidence is complete, authorize B's smallest slice.
+No secret values are requested. PR merge is a separate documentation review decision.
+
+**Smallest subsequent implementation slice, conditional on those prerequisites:** an offline,
+unwired `WhiteoutProvider` adapter contract slice using injected fake transport: validate one
+documented request, map documented terminal/nonterminal responses, preserve the stable key,
+and prove safe replay/reopen and ambiguous-timeout behavior with contract fixtures. Include
+only contract-required type/error changes and tests; if the contract cannot fit the current
+taxonomy safely, first review that narrowly scoped contract change. Keep the runtime factory,
+Queue path and configuration mock-only; no real credentials, network calls or activation.
+Later slices must separately address limiter/request budgets, routing/disable controls and
+isolated staging resources. Do not start dependent work before this PR is merged and the
+specific implementation gates are satisfied.
+
+Task 09's deployed-version, migration, companion-shutdown and test-count records are
+**historical evidence**, not reverified here; its smoke proved mock operation, not game
+redemption. Automatic discovery remains separately unauthorized. ADR 0001 remains
+**Proposed**, with its 72-hour spike **deferred, not passed or waived**. Task 10 makes no
+runtime, schema, generated-type, test, dependency or configuration change.
