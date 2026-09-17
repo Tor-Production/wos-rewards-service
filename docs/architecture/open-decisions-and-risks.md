@@ -110,6 +110,11 @@
 
 ### Open
 
+- Task 10's [provider evidence and staged-gate proposal](../whiteout-provider-decision.md#10-task-10-public-evidence--2026-09-17):
+  no acceptable authorized contract found in examined public sources; publisher evidence and
+  an explicit human decision on the pending amendment remain necessary. The original §4 gate
+  still binds real-provider implementation, including offline/staging work.
+
 - Whether a permanently hosted Cloudflare Gateway client (Option 1) is reliable enough —
   the ADR 0001 spike decides.
 - Where a production companion runs if Option 2 ultimately stands (Task 09 fixes only the MVP
@@ -171,5 +176,11 @@
   `redemptions` write can double-apply a code — hence the production-provider
   idempotency-key / reconciliation requirement; until met, production redemption stays
   blocked.
+- Task 10 confirms that a consumer timeout does not cancel the provider call and local
+  terminal reconciliation is not upstream reconciliation. Mock and future real results
+  would share player/code identities without provider provenance. See the canonical
+  [compatibility assessment](../whiteout-provider-decision.md#11-contract-readiness-and-implementation-compatibility)
+  and [isolated-stack recommendation](../whiteout-provider-decision.md#12-minimum-mock-to-real-isolation-recommendation)
+  before considering a real test; a fresh code or receipt prefix is insufficient isolation.
 - The gift-code source and real provider remaining unauthorized block automatic discovery and
   real redemption. Task 09 supplies a manual staging code only to `MockWhiteoutProvider`.

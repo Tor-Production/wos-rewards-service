@@ -260,7 +260,9 @@ automated.
 7. **Observability, sweepers, DLQ consumer, hardening.**
 8. **Blocked** — authorized `WhiteoutProvider` / `GiftCodeSource`; production redemption.
    Requires the authorizations in
-   [whiteout-provider-decision.md](whiteout-provider-decision.md).
+   [whiteout-provider-decision.md](whiteout-provider-decision.md). Task 10's
+   [feasibility research and pending staged proposal](whiteout-provider-decision.md#10-task-10-public-evidence--2026-09-17)
+   prepare for this phase; they do not complete it or authorize implementation/activation.
 
 ---
 
