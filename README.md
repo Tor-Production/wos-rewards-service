@@ -3,13 +3,14 @@
 A Cloudflare-hosted Discord service for registering Whiteout Survival players and processing
 gift codes.
 
-This repository implements the **local Task 09 staging MVP slice** on top of Phases 1–4: a
+This repository implements the **Task 09 staging MVP slice** on top of Phases 1–4: a
 strict TypeScript Worker, D1 migrations, Queue/DLQ consumers, `MockWhiteoutProvider`, durable
 summary/output delivery, and a small `discord.js` companion. The companion forwards plain human
 registration messages unchanged to authenticated `POST /ingest` and forwards an allow-listed
 `!wos-code CODE` command to authenticated `POST /manual-code`. Real Discord REST output is
-implemented but remains disabled unless staging delivery is explicitly enabled and its secret
-binding is present. Nothing has been provisioned, deployed, or connected to Discord. See
+enabled only in the isolated staging environment under an explicit smoke-test gate. The Worker,
+D1 schema, Queues/DLQ, Cron and route are deployed; the companion is not yet connected and no live
+Discord message has been processed. See
 [`docs/README.md`](docs/README.md) for current state and documentation routing, and
 [`AGENTS.md`](AGENTS.md) for the binding safety and engineering contract.
 
@@ -142,12 +143,13 @@ committed together with a freshly generated types file.
 
 - **The staging provisioning and deployment/migration gates are complete; Discord connection
   remains behind a separate approval gate.** Worker version
-  `7af176a2-a3e1-4d39-8505-4d3d41318e19` is deployed to the existing `workers.dev` route with the
+  `7a083c14-a7ac-4875-ad11-04de4b10b139` is deployed to the existing `workers.dev` route with the
   reviewed D1, two work queues, redemption DLQ, and one-minute Cron. Preview URLs remain disabled,
   migrations 0001–0004 are current, and both required Worker secret names are bound with values
-  hidden. `DISCORD_DELIVERY_ENABLED=false`, no companion or Discord session has started, and the
-  verified application ledgers remain empty. There is no deployable Durable Object, KV namespace,
-  production environment, or custom domain.
+  hidden. `DISCORD_DELIVERY_ENABLED=true` only in `env.staging`, but no companion or Discord session
+  has started and the verified application/output ledgers remain empty. The top/default scope stays
+  disabled. There is no deployable Durable Object, KV namespace, production environment, or custom
+  domain.
   `npm run validate` uses
   `wrangler deploy --dry-run`, which compiles locally and publishes nothing.
 - Staging is the only environment. There is no production environment, and the configuration

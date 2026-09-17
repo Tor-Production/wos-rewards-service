@@ -128,10 +128,11 @@ Migrations are applied to staging first, then production, after review.
 The implementation is present. The **staging-only provisioning gate completed on 2026-09-14** and
 the separate **deployment/migration gate completed on 2026-09-15**. The safe top-level D1/Discord
 scope remains fail-closed; `env.staging` records the reviewed real non-secret identifiers. Worker
-version `7af176a2-a3e1-4d39-8505-4d3d41318e19` is deployed at 100%, migrations 0001–0004 are
-current, and both required secret bindings exist with values hidden. Delivery remains disabled,
-no Discord session or Queue message exists, and the only route probe was an unauthenticated GET
-that returned the expected sanitized `404 not_found`. The reviewed non-secret record includes:
+version `7a083c14-a7ac-4875-ad11-04de4b10b139` is deployed at 100%, migrations 0001–0004 are
+current, and both required secret bindings exist with values hidden. The separate connection and
+delivery smoke-test approval enabled delivery only in staging on 2026-09-17. No companion session,
+Queue message, eligible output or Discord request exists yet, and the route probe returned the
+expected sanitized `404 not_found`. The reviewed non-secret record includes:
 
 - Discord guild id, registration-channel id, dedicated admin-channel id, dedicated application
   id, and every human administrator user id;
@@ -161,8 +162,10 @@ Activation remains split into explicit gates:
    staging D1 database, then the reviewed Worker was deployed to the existing route with mock mode,
    discovery off, production redemption off and Discord delivery off. Read-only verification found
    no pending migration and zero rows in the application ledgers checked.
-4. **Connection approval — pending:** start the companion and connect the dedicated bot. Stop it with
-   Ctrl+C; graceful shutdown destroys the Discord client.
+4. **Connection/delivery smoke-test approval — in progress:** staging delivery is deployed and the
+   pre-connection database/output safety check is empty. A human must verify the bot installation
+   and Message Content intent, provide both secrets through masked process-only prompts, and start
+   the foreground companion. Stop it with Ctrl+C; graceful shutdown destroys the Discord client.
 
 Free-plan feasibility was rechecked against current official Cloudflare limits immediately before
 provisioning. After Task 09, the account inventory is 5 Workers, 4 Cron triggers, 4 D1 databases,
