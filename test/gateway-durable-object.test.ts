@@ -1,154 +1,19 @@
 import { env } from "cloudflare:workers";
-import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { dispatchOutput } from "../src/discord/delivery";
-import type {
-  GatewayAdapterClock,
-  GatewayAdapterDependencies,
-  GatewayWebSocketCallbacks,
-  GatewayWebSocketConnection,
-  GatewayWebSocketFactory,
-  OpaqueGatewayConnectionTarget,
-  OpaqueGatewaySendContext,
-} from "../src/discord/gateway/durable-adapter-types";
-import { LocalDiscordGatewayAdapter } from "../src/discord/gateway/local-durable-object";
-import type { GatewayOutboundEvent, GatewayTransportResult } from "../src/discord/gateway/types";
 import { testConfig, uniqueId } from "./support/fixtures";
-
-const SPIKE_SENDER = "000000000000000004";
-// Keep platform alarms in the future; runDurableObjectAlarm() executes them deterministically.
-const NOW = Date.parse("2030-09-12T14:00:00.000Z");
-
-class LocalClock implements GatewayAdapterClock {
-  now = NOW;
-
-  monotonicNowMs(): number {
-    return this.now;
-  }
-
-  wallNowMs(): number {
-    return this.now;
-  }
-}
-
-class LocalSocket implements GatewayWebSocketConnection {
-  readonly callbacks: GatewayWebSocketCallbacks;
-  readonly sent: GatewayOutboundEvent[] = [];
-  readonly closes: number[] = [];
-
-  constructor(callbacks: GatewayWebSocketCallbacks) {
-    this.callbacks = callbacks;
-  }
-
-  async send(
-    event: GatewayOutboundEvent,
-    _context: OpaqueGatewaySendContext,
-  ): Promise<GatewayTransportResult> {
-    this.sent.push(event);
-    return "sent";
-  }
-
-  close(code: number): void {
-    this.closes.push(code);
-  }
-}
-
-class LocalSocketFactory implements GatewayWebSocketFactory {
-  readonly connections: LocalSocket[] = [];
-  readonly modes: ("fresh" | "resume")[] = [];
-
-  async connect(input: {
-    readonly connectionGeneration: number;
-    readonly mode: "fresh" | "resume";
-    readonly target: OpaqueGatewayConnectionTarget;
-    readonly callbacks: GatewayWebSocketCallbacks;
-  }): Promise<GatewayWebSocketConnection> {
-    const socket = new LocalSocket(input.callbacks);
-    this.connections.push(socket);
-    this.modes.push(input.mode);
-    return socket;
-  }
-}
-
-function gatewayPayload(op: number, data: unknown = null): string {
-  return JSON.stringify({ op, d: data, s: null, t: null });
-}
-
-function dispatch(name: string, sequence: number, data: unknown = {}): string {
-  return JSON.stringify({ op: 0, d: data, s: sequence, t: name });
-}
-
-function message(
-  eventId: string,
-  content: string,
-  overrides: Record<string, unknown> = {},
-): Record<string, unknown> {
-  return {
-    id: eventId,
-    guild_id: env.DISCORD_GUILD_ID,
-    channel_id: env.DISCORD_REGISTRATION_CHANNEL_ID,
-    author: { id: uniqueId(), bot: false, system: false },
-    webhook_id: null,
-    application_id: null,
-    content,
-    timestamp: new Date(NOW).toISOString(),
-    ...overrides,
-  };
-}
-
-function dependencies(clock: LocalClock, factory: LocalSocketFactory): GatewayAdapterDependencies {
-  return {
-    clock,
-    webSocketFactory: factory,
-    sessionStartLimit: {
-      total: 1_000,
-      remaining: 999,
-      reset_after: 86_400_000,
-      max_concurrency: 1,
-    },
-    sessionStartLimitObservedAtMs: clock.now,
-    firstHeartbeatJitter: () => 0,
-    reconnectBackoffMs: () => 0,
-  };
-}
-
-type LocalStub = DurableObjectStub<LocalDiscordGatewayAdapter>;
-
-function localStub(name: string): LocalStub {
-  return env.LOCAL_GATEWAY_ADAPTER.get(env.LOCAL_GATEWAY_ADAPTER.idFromName(name));
-}
-
-async function inObject<T>(
-  stub: LocalStub,
-  callback: (instance: LocalDiscordGatewayAdapter, state: DurableObjectState) => T | Promise<T>,
-): Promise<T> {
-  return runInDurableObject<LocalDiscordGatewayAdapter, T>(stub, callback);
-}
-
-async function configureAndReady(
-  stub: LocalStub,
-  clock: LocalClock,
-  factory: LocalSocketFactory,
-  readySequence = 10,
-): Promise<LocalSocket> {
-  await inObject(stub, async (instance) => {
-    await instance.configureForLocalTest(dependencies(clock, factory));
-    await instance.startForLocalTest();
-  });
-  const socket = factory.connections[0];
-  if (socket === undefined) throw new Error("missing local socket");
-  await inObject(stub, async () => {
-    await socket.callbacks.opened();
-    await socket.callbacks.text(gatewayPayload(10, { heartbeat_interval: 1_000 }));
-    await socket.callbacks.text(
-      dispatch("READY", readySequence, {
-        session_id: `local-session-${readySequence}`,
-        resume_gateway_url: `wss://resume.invalid/${readySequence}`,
-      }),
-    );
-  });
-  return socket;
-}
+import {
+  SPIKE_SENDER,
+  LocalClock,
+  LocalSocketFactory,
+  configureAndReady,
+  dependencies,
+  dispatch,
+  inObject,
+  localStub,
+  message,
+} from "./support/local-gateway";
 
 describe("real local Durable Object Gateway adapter", () => {
   it("is locally bound, returns 404 from its fetch surface, and never starts implicitly", async () => {
@@ -345,57 +210,5 @@ describe("trusted Task 08B acceptance from the local Durable Object", () => {
           .first("n"),
       ).toBe(0);
     }
-  });
-
-  it("preserves normal human registration and invalid validation-reply behavior", async () => {
-    const stub = localStub(`human-${uniqueId()}`);
-    const clock = new LocalClock();
-    const factory = new LocalSocketFactory();
-    const socket = await configureAndReady(stub, clock, factory);
-    const validEventId = uniqueId();
-    const invalidEventId = uniqueId();
-    const playerId = uniqueId();
-
-    await inObject(stub, async () => {
-      await socket.callbacks.text(
-        dispatch("MESSAGE_CREATE", 17, message(validEventId, `${playerId} 42 Human Player`)),
-      );
-      await socket.callbacks.text(
-        dispatch("MESSAGE_CREATE", 18, message(invalidEventId, "not-a-player-id")),
-      );
-    });
-
-    expect((await inObject(stub, (instance) => instance.inspectForLocalTest())).checkpoint).toBe(
-      18,
-    );
-    expect(
-      await env.STAGING_DB.prepare("SELECT state,display_name FROM players WHERE player_id=?1")
-        .bind(playerId)
-        .first(),
-    ).toEqual({ state: "42", display_name: "Human Player" });
-    expect(
-      await env.STAGING_DB.prepare(
-        "SELECT acceptance_class,status,outcome FROM processed_events WHERE event_id=?1",
-      )
-        .bind(validEventId)
-        .first(),
-    ).toEqual({ acceptance_class: "normal", status: "work_committed", outcome: "valid" });
-    expect(
-      await env.STAGING_DB.prepare(
-        `SELECT e.acceptance_class,e.status,e.outcome,d.status AS output_status,
-                d.dispatch_eligible,d.permanent_dispatch_block
-         FROM processed_events e JOIN discord_output_deliveries d ON d.event_id=e.event_id
-         WHERE e.event_id=?1`,
-      )
-        .bind(invalidEventId)
-        .first(),
-    ).toEqual({
-      acceptance_class: "normal",
-      status: "accepted_invalid",
-      outcome: "invalid",
-      output_status: "pending",
-      dispatch_eligible: 1,
-      permanent_dispatch_block: 0,
-    });
   });
 });
