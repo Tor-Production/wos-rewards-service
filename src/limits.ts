@@ -32,6 +32,10 @@ export const DISPLAY_NAME_MAX_CODE_POINTS = 64;
 export const DISPLAY_LABEL_MAX_CODE_POINTS = 80;
 export const INGEST_MAX_BODY_BYTES = 16 * 1_024;
 export const INGEST_CONTENT_MAX_CODE_POINTS = 4_096;
+export const MANUAL_CODE_MAX_BODY_BYTES = 2 * 1_024;
+export const GIFT_CODE_MAX_LENGTH = 64;
+export const MANUAL_CODE_MAX_AGE_MS = 5 * 60 * 1_000;
+export const MANUAL_CODE_MAX_FUTURE_MS = 60 * 1_000;
 
 /** Tight maximum sum of ceil(group size / k) over at most gMax nonempty groups. */
 export function markingStatementsMax(rows: number, gMax: number, k = IDS_PER_UPDATE): number {

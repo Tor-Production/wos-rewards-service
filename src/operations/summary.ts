@@ -75,7 +75,7 @@ function short(value: string, max: number): string {
   return result + "…";
 }
 function safeCode(code: string): string {
-  return short(code.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/[\\`*_~|<>@#[\]()!]/gu, ""), 32);
+  return short(code.replace(/[\p{Cc}\p{Cf}]/gu, " "), 32).replace(/[\\`*_~|<>@#[\]()!]/gu, "\\$&");
 }
 function line(row: Row, ctx: Context, capacity = 160): string {
   const subject = ctx.code ? row.display_label : safeCode(row.code);

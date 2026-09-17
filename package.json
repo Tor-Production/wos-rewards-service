@@ -13,19 +13,30 @@
     "format:check": "prettier --check .",
     "cf-typegen": "wrangler types ./worker-configuration.d.ts --env staging",
     "cf-typegen:check": "wrangler types ./worker-configuration.d.ts --env staging --check",
-    "typecheck": "npm run cf-typegen:check && tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
-    "test": "vitest run",
-    "test:shuffle": "vitest run --sequence.shuffle.files --sequence.shuffle.tests",
+    "typecheck": "npm run cf-typegen:check && tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json && tsc --noEmit -p companion/tsconfig.json",
+    "test:worker": "vitest run --config vitest.config.ts",
+    "test:companion": "vitest run --config companion/vitest.config.ts",
+    "test": "npm run test:worker && npm run test:companion",
+    "test:mvp": "vitest run --config vitest.config.ts test/manual-code.test.ts test/manual-code-migration.test.ts test/staging-mvp.test.ts test/discord-live-delivery.test.ts && vitest run --config companion/vitest.config.ts",
+    "test:shuffle:worker": "vitest run --config vitest.config.ts --sequence.shuffle.files --sequence.shuffle.tests",
+    "test:shuffle:companion": "vitest run --config companion/vitest.config.ts --sequence.shuffle.files --sequence.shuffle.tests",
+    "test:shuffle": "npm run test:shuffle:worker && npm run test:shuffle:companion",
     "d1:migrate:local": "wrangler d1 migrations apply STAGING_DB --local --env staging",
     "validate": "wrangler deploy --dry-run --env staging",
     "dev": "wrangler dev --env staging",
+    "companion:build": "tsc -p companion/tsconfig.build.json",
+    "companion:start": "npm run companion:build && node dist/companion/index.js",
     "check": "npm run format:check && npm run typecheck && npm run test && npm run test:shuffle && npm run validate"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.2",
+    "@types/node": "^22.20.2",
     "prettier": "^3.9.6",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11",
     "wrangler": "^4.127.1"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0"
   }
 }

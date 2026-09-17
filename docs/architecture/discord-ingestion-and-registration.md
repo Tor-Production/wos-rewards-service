@@ -67,10 +67,12 @@ messages would be dropped by the production rule before reaching the Worker. In 
 `staging` stack only, `SPIKE_SENDER_ALLOWLIST` (dedicated spike bot / webhook sender ids)
 is consulted by **both** tiers:
 
-- The **`DiscordEventSource`** (companion in Option 2, or the DO in Option 1) does **not**
-  drop a non-webhook bot whose `author_id` is allow-listed or a webhook message whose
-  `webhook_id` is allow-listed; it forwards the event with all flags intact. This is the
-  only change that lets the spike message *reach* the Worker.
+- The separately gated **spike `DiscordEventSource`** (the DO in Option 1 or a future
+  spike-capable Option 2 source) does **not** drop a non-webhook bot whose `author_id` is
+  allow-listed or a webhook message whose `webhook_id` is allow-listed; it forwards the event
+  with all flags intact. This is the only change that lets the spike message *reach* the Worker.
+  The Task 09 companion is intentionally not that harness: it has no spike allow-list input and
+  drops every bot, system, webhook, and application-authored message.
 - The **Ingestion Worker** remains the **authoritative staging gate**: only after the request
   passes `INGESTION_SHARED_SECRET` authentication does it re-check the same
   `SPIKE_SENDER_ALLOWLIST`, drop any bot/webhook sender not on it, and **assert
@@ -94,10 +96,13 @@ or webhook is allow-listed. Configuration rejects an allow-list containing
 | Secrets it holds | Discord bot token (Worker secret) | Discord bot token + `INGESTION_SHARED_SECRET` |
 | Decision | The ADR 0001 spike tests whether Option 1 is reliable enough; if it passes, Option 1 is preferred (fewer moving parts) | Provisional reference until the spike completes or is explicitly waived |
 
-**Blocking rule:** a deployable `DiscordEventSource` adapter (either implementation) is **not
-selected or enabled** until the ADR 0001 spike completes or is explicitly waived. Task 08C's
-local-only Durable Object integration below is a test harness for Option 1's mechanics, not a
-topology decision or a live event source. Phases 1–4
+**Production-decision rule:** a production `DiscordEventSource` topology is **not selected or
+enabled** until the ADR 0001 spike completes or is explicitly waived. Task 09 is an expressly
+bounded exception for a usable **staging-only MVP**: it implements the provisional Option 2
+companion on a user-controlled Windows host. This neither passes nor waives the 72-hour spike,
+does not select Option 2 for production, and does not make Task 08C deployable. Task 08C's
+local-only Durable Object integration below remains a test harness for Option 1's mechanics.
+Phases 1–4
 ([§23](../architecture.md#23-phased-implementation-order)) build everything to the right of this boundary
 against `RegistrationMessageEvent` alone.
 
@@ -157,15 +162,29 @@ safety rules around Discord's documented Resume behavior, not claims of contiguo
 exactly-once delivery. Live residency, missed-event reconciliation, and 72-hour behavior remain
 measurements for the separately authorized spike.
 
-### Companion validation scope (Option 2)
+### Implemented Task 09 companion scope (Option 2, staging MVP)
 
-The companion validates **only**: transport schema of its own forward request, its auth
-context (`INGESTION_SHARED_SECRET`), `guild_id`, `channel_id` (must equal
-`DISCORD_REGISTRATION_CHANNEL_ID`), and the author gate above — drop bot / system / webhook /
-own-application messages in production; in staging forward senders in
-`SPIKE_SENDER_ALLOWLIST` unchanged. It **forwards `content` verbatim even when the
-registration syntax is invalid**, because the Cloudflare business layer must generate the
-Discord validation reply **[inference]**. It has no D1 access and never writes to Discord.
+The `discord.js` companion requests only the Guilds, Guild Messages, and privileged Message
+Content intents. It accepts events only from `DISCORD_GUILD_ID` and the registration/admin
+channels, and drops bot, system, webhook, application-authored, wrong-guild, and wrong-channel
+messages. For the registration channel it **forwards `content` byte-for-byte as represented by
+the JS string**, even when syntax is invalid, because the Cloudflare business layer generates
+the validation reply **[inference]**. For the admin channel it accepts only an allow-listed
+human and exact `!wos-code CODE` syntax, normalizing surrounding/command whitespace before
+forwarding the code. It authenticates both Worker requests with `INGESTION_SHARED_SECRET`, uses
+a five-second per-attempt timeout and at most three attempts, and logs fixed outcome categories
+only. It has no D1 access and never writes directly to Discord.
+
+This companion is not the ADR spike sender/observer harness and deliberately does not forward
+`SPIKE_SENDER_ALLOWLIST` automation. The Task 08B/08C spike acceptance path remains local-only;
+the 72-hour spike is deferred.
+
+The manual-code request has the same immutable Discord identity/scope/author/timestamp fields as
+`RegistrationMessageEvent`, replacing `content` with `code`. The Worker accepts only the exact
+ten-key JSON shape, at most 2 KiB, with a current RFC-3339 timestamp and a 1–64 character
+`[A-Za-z0-9_-]` code. It rechecks guild, admin channel, human flags, and administrator identity
+after bearer authentication. Results are deliberately limited to
+`accepted | duplicate | ignored | unauthorized | unavailable`.
 
 ---
 
@@ -393,13 +412,16 @@ finalisable and produces a **single-chunk** zero-result summary
 
 ## 7. New-code fan-out flow
 
-1. **Discover** a candidate code via `GiftCodeSource`
-   ([§9](operations-and-reliability.md#9-scheduled-cron-components-and-the-trigger-budget),
-   [§11](redemption-state-machine.md#11-whiteoutprovider-and-giftcodesource-abstractions)). The source is **not
-   authorized** yet; the flow is defined so it works the moment an authorized source exists.
+1. **Supply** a candidate code. In Task 09 an allow-listed staging human uses
+   `!wos-code CODE`, which reaches authenticated `POST /manual-code`. Automatic
+   `GiftCodeSource` discovery remains unauthorized and disabled
+   ([§11](redemption-state-machine.md#11-whiteoutprovider-and-giftcodesource-abstractions)).
 2. **Deduplicate** on `gift_codes.code` (unique). A re-seen code is a no-op.
-3. **Open a `code_distribution_run` operation** and fix a **stable player snapshot
-   boundary** in `operation_players_snapshot`, copying player IDs and display names in the opening D1 transaction. The cap is 2,000 players, enforced atomically; `expected_count` is the exact accepted membership size. Phase 4 exposes only an internal synthetic input helper, with no discovery implementation or public endpoint.
+3. **Open a `code_distribution_run` operation** through the existing `openDistribution` flow and
+   fix a **stable player snapshot boundary** in `operation_players_snapshot`, copying player IDs
+   and display names in the opening D1 transaction. The same batch inserts the Discord message-id
+   marker in `manual_code_commands`; a duplicate event or code opens no second operation. The cap
+   is 2,000 players, enforced atomically; `expected_count` is the exact accepted membership size.
 4. **Bounded, restartable expansion:** the fan-out expansion worker repeatedly reads the
    next 128 snapshot members after `expansion_cursor` and, in one atomic D1
    batch, writes that page's `operation_items` rows + per-item `outbox_jobs` rows + the

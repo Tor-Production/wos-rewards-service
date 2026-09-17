@@ -1,5 +1,10 @@
 import { loadConfig } from "../config";
-import { dispatchOutput, type DiscordTransport } from "../discord/delivery";
+import {
+  createDiscordRestTransport,
+  dispatchOutput,
+  type DiscordFetch,
+  type DiscordTransport,
+} from "../discord/delivery";
 import { expandPage } from "../operations/distribution";
 import { recover } from "../operations/recovery";
 import { summaryPage } from "../operations/summary";
@@ -11,10 +16,15 @@ import { budgetDatabase } from "./db";
 
 export async function scheduledWork(
   env: Env,
-  options: { now?: () => Date; transport?: DiscordTransport } = {},
+  options: { now?: () => Date; transport?: DiscordTransport; fetcher?: DiscordFetch } = {},
 ): Promise<void> {
   const config = loadConfig(env);
   const clock = options.now ?? (() => new Date());
+  const transport =
+    options.transport ??
+    (config.discordDeliveryEnabled && config.discordBotToken
+      ? createDiscordRestTransport(config.discordBotToken, options.fetcher)
+      : undefined);
   const now = clock().toISOString();
   const db = budgetDatabase(env.STAGING_DB, 39);
   const lanes: [number, (db: D1Database) => Promise<unknown>][] = [
@@ -36,7 +46,7 @@ export async function scheduledWork(
     ],
     [8, (db) => recover(db, config, now)],
     [6, (db) => summaryPage(db, now)],
-    [9, (db) => dispatchOutput(db, config, clock, options.transport)],
+    [9, (db) => dispatchOutput(db, config, clock, transport)],
   ];
   for (const [limit, run] of lanes)
     try {

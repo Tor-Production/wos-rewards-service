@@ -125,13 +125,17 @@ requires it. Counts always cover the complete sealed snapshot, including overflo
 Long/control-bearing codes receive a bounded sanitized `code_label` at sealing; original
 codes remain in the snapshot, and fixed-size hashed sort keys avoid oversized cursors.
 
-The output client is injectable and no live transport or bot-token lookup exists. Missing
-transport leaves attempts untouched. A global durable claim serializes dispatch and stores
-a conservative shared cooldown; lower unsent chunks block later chunks in their group.
-Persisted `blocked_at` / `alerted_at` flags surface authentication, permission, malformed
-request and attempt-exhaustion failures for human attention. Restart uses the same nonce
-and content hash; a stale claim token cannot save a late result. Raw response/error bodies
-are never logged. Tests model a suppression window; its length is not a Discord guarantee.
+The output client remains injectable for deterministic tests. Task 09 adds a staging-only real
+transport that constructs `POST https://discord.com/api/v10/channels/{channel}/messages` and
+adds `Authorization: Bot …` only at the final fetch boundary. The scheduler constructs it only
+when `DISCORD_DELIVERY_ENABLED` is exactly true and `DISCORD_BOT_TOKEN` passed configuration;
+otherwise missing transport leaves attempts untouched. A global durable claim serializes
+dispatch and stores a conservative shared cooldown; lower unsent chunks block later chunks in
+their group. Persisted `blocked_at` / `alerted_at` flags surface authentication, permission,
+malformed request and attempt-exhaustion failures for human attention. Restart uses the same
+nonce and content hash; a stale claim token cannot save a late result. Raw response/error bodies,
+headers, credentials, and exception text are never logged. Tests use an injected fake fetch and
+model a suppression window; its length is not a Discord guarantee.
 
 Migration 0003's staging-spike validation-reply rows are evidence, not queued output. They
 are inserted directly as `superseded`, dispatch-ineligible, suppression-marked and
@@ -177,6 +181,9 @@ delivered by the same dispatcher. The runtime footer is present in that one chun
   so `@everyone`, role, and user mentions never fire. This is the authoritative mention
   control; label escaping is an additional rendering safeguard. The Phase 4 injectable
   Create Message client applies this to summaries and validation replies alike.
+- **Code fidelity:** control/format characters are replaced and Discord Markdown delimiters are
+  escaped rather than deleted. In particular, the underscore allowed by the Task 09 command
+  grammar remains visibly present in a summary while `allowed_mentions` stays authoritative.
 - **No silent mutation:** the service never edits or deletes a message it did not just
   create; summaries and replies are new messages only.
 - **Deterministic chunking:** the layout pass splits on `summary_item_snapshot` row

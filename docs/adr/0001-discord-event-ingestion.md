@@ -10,6 +10,11 @@
 > spike in [§6](#6-decision-proposed-spike-gated) completes or is explicitly waived by the
 > maintainers.
 
+> **Task 09 MVP note (2026-09-13).** The maintainers authorized a small Option 2 companion for
+> the staging MVP on a user-controlled Windows host and deferred the 72-hour Option 1 spike.
+> This is not a spike pass, not a waiver, not an Accepted decision, and not production evidence.
+> Task 08C's Durable Object remains local-test-only and must not be deployed.
+
 Evidence is tagged **[fact:<ref>]** (confirmed by an official page in [§10](#10-official-evidence)),
 **[inference]**, or **[assumption]**.
 
@@ -152,10 +157,12 @@ for anything missed. **Option 4 is rejected**: it still requires `MESSAGE_CONTEN
 **[fact:D3]**, adds latency and REST rate-limit pressure, and has no official
 "stream since" semantics, so gaps and duplicates are inherent.
 
-The real `DiscordEventSource` adapter (either implementation) is **not built** until this
-spike completes or the maintainers explicitly waive it. Backend phases 1–4 in
-[architecture.md §23](../architecture.md#23-phased-implementation-order) proceed against the
-`RegistrationMessageEvent` contract alone.
+The production `DiscordEventSource` selection remains blocked until this spike completes or the
+maintainers explicitly waive it. Task 09 is a bounded exception: its provisional Option 2
+companion may support the staging MVP, with human messages only, minimal intents, immediate
+bounded forwarding retries, no persistent catch-up, and no production environment. Backend
+business logic continues to depend on `RegistrationMessageEvent`; the manual staging command is
+a separate authenticated event shape and still opens the existing distribution flow.
 
 ### Spike — reproducible design
 
@@ -261,6 +268,9 @@ evidence for this decision; they are not platform commitments.
   `/ingest` with `INGESTION_SHARED_SECRET`.
 - Cloudflare remains the system of record and the only Discord writer.
 - Monitoring: companion liveness/health check, forward error rate, reconnect counters.
+
+The Task 09 companion does not establish this final branch of the decision: it is a deliberately
+smaller foreground MVP process without supervision or monitoring infrastructure.
 
 ### Either way
 

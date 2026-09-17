@@ -4,13 +4,14 @@ import { describe, expect, it } from "vitest";
 
 const STAMP = "2026-09-12T03:00:00.000Z";
 const PHASE5_MIGRATION = "0003_phase5_spike_output_suppression.sql";
+const LIVE_STAGING_MIGRATION = "0004_live_staging_manual_commands.sql";
 
 async function applyPhase4(db: D1Database): Promise<void> {
   await applyD1Migrations(db, env.TEST_MIGRATIONS.slice(0, 2));
 }
 
 async function applyPhase5(db: D1Database): Promise<void> {
-  await applyD1Migrations(db, env.TEST_MIGRATIONS);
+  await applyD1Migrations(db, env.TEST_MIGRATIONS.slice(0, 3));
 }
 
 async function seedNormalInvalid(
@@ -94,6 +95,7 @@ describe("Phase 5 migration", () => {
       "0001_initial_schema.sql",
       "0002_phase4_consumers_and_delivery.sql",
       PHASE5_MIGRATION,
+      LIVE_STAGING_MIGRATION,
     ]);
 
     const processedColumns = (

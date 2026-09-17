@@ -3,19 +3,21 @@
 A Cloudflare-hosted Discord service for registering Whiteout Survival players and processing
 gift codes.
 
-This repository implements **Phases 1–3**: a strict TypeScript Worker, the twelve-table D1
-baseline schema, a synthetic `POST /ingest` boundary, atomic registration acceptance,
-and a transactional outbox with local Queue producers. Valid events capture the complete
-active-code membership in one transaction; invalid registrations persist a validation reply
-for future delivery. No Gateway adapter, Queue consumer, Discord delivery, or provider call
-is implemented. See
+This repository implements the **Task 09 staging MVP slice** on top of Phases 1–4: a
+strict TypeScript Worker, D1 migrations, Queue/DLQ consumers, `MockWhiteoutProvider`, durable
+summary/output delivery, and a small `discord.js` companion. The companion forwards plain human
+registration messages unchanged to authenticated `POST /ingest` and forwards an allow-listed
+`!wos-code CODE` command to authenticated `POST /manual-code`. Real Discord REST output is
+enabled only in the isolated staging environment under an explicit smoke-test gate. The Worker,
+D1 schema, Queues/DLQ, Cron and route are deployed; the approved live smoke test completed with the
+companion stopped afterward. See
 [`docs/README.md`](docs/README.md) for current state and documentation routing, and
 [`AGENTS.md`](AGENTS.md) for the binding safety and engineering contract.
 
 ## Prerequisites
 
 - Node.js 20 or later, with npm.
-- No Cloudflare account or login is required for anything in this repository.
+- Local builds and tests require no Cloudflare login, Discord connection, or real credentials.
 
 ## Commands
 
@@ -44,6 +46,12 @@ Run the test suite once, in the Workers runtime:
 npm test
 ```
 
+Run only the Worker and companion tests concentrated on the staging MVP:
+
+```
+npm run test:mvp
+```
+
 Run the same suite with shuffled files and tests:
 
 ```
@@ -63,17 +71,41 @@ Run everything the way CI would:
 npm run check
 ```
 
-Local development server (staging configuration, no remote resources):
+Local development server (staging configuration with local Miniflare storage; provisioned remote
+resources are not contacted):
 
 ```
 npm run dev
 ```
 
+The safe top-level Discord identifiers remain deliberate sentinels. `env.staging` now contains the
+reviewed non-secret identifiers; the local test runner still injects isolated synthetic values.
+
+### Windows companion
+
+The companion is intentionally a foreground process, not a Windows service or HA system. After
+the non-secret staging configuration and the two secret names documented below have been entered
+manually in the host's process environment, start it from PowerShell with:
+
+```
+npm run companion:start
+```
+
+Stop it with Ctrl+C. The process handles `SIGINT` and `SIGTERM`, closes the Discord client, and
+logs only fixed event categories. Required companion names are `COMPANION_WORKER_BASE_URL`,
+`DISCORD_GUILD_ID`, `DISCORD_REGISTRATION_CHANNEL_ID`, `DISCORD_MVP_ADMIN_CHANNEL_ID`,
+`DISCORD_MVP_ADMIN_USER_ALLOWLIST`, `DISCORD_APPLICATION_ID`, `DISCORD_BOT_TOKEN`, and
+`INGESTION_SHARED_SECRET`. Never put their secret values in chat, documentation, committed files,
+commands, or logs. Use the exact non-secret values recorded in
+[`docs/architecture/configuration.md`](docs/architecture/configuration.md#task-09-staging-deployment-record-non-secret).
+
 ## Database migrations
 
 The D1 schema lives in `migrations/`. The baseline is `0001_initial_schema.sql`, which creates
-all twelve tables of
+the original twelve tables of
 [`docs/architecture/data-model-and-outbox.md` section 12](docs/architecture/data-model-and-outbox.md#12-d1-data-model).
+Additive migrations 0002 and 0003 add Phase 4 state and immutable Task 08B spike evidence;
+migration 0004 adds the Task 09 `manual_code_commands` idempotency ledger.
 
 `npm test` applies the migrations inside the Workers runtime before every run and verifies the
 resulting schema, so the test suite is the authoritative migration gate. To apply them to the
@@ -86,13 +118,11 @@ npm run d1:migrate:local
 That is `wrangler d1 migrations apply STAGING_DB --local --env staging`. It writes only to
 `.wrangler/`, which is git-ignored. Running it a second time reports `No migrations to apply!`.
 
-**There is deliberately no remote-apply command.** No real staging D1 resource has been
-provisioned and no remote migration has been applied. `wrangler.jsonc` declares the
-`STAGING_DB` binding with the all-zero `database_id`
-`00000000-0000-0000-0000-000000000000` — an intentional local-only sentinel, **not** a real
-Cloudflare database id. It is present rather than omitted so that Wrangler cannot
-automatically provision a database on deploy. A future, explicitly authorized task provisions
-the real staging database and replaces the sentinel; remote application stays **staging first,
+**There is deliberately no remote-apply command.** The staging-only provisioning gate created
+`wos-rewards-service-staging` in `EEUR`, and `env.staging.STAGING_DB` uses its real id
+`6dc171c2-27f5-4ef2-8788-ebd243cd354f`. Under the separate deployment/migration approval on
+2026-09-15, migrations 0001–0004 were applied remotely to that staging database and a second
+Wrangler check reported no migrations to apply. Future remote application stays **staging first,
 production only later, after review** and explicit authorization (see
 [`docs/architecture/operations-and-reliability.md` section 19](docs/architecture/operations-and-reliability.md#19-staging-and-production-separation)).
 
@@ -111,13 +141,16 @@ committed together with a freshly generated types file.
 
 ## Safety
 
-- **No Cloudflare resources have been provisioned, and deployment is outside this task.**
-  `wrangler.jsonc` declares the local-only `STAGING_DB` sentinel, producer bindings for
-  `wos-rewards-registration-jobs-staging` and `wos-rewards-code-fanout-jobs-staging`, and one
-  one-minute Cron trigger, all under `env.staging`. These names are local configuration;
-  neither Queue nor the Cron trigger has been deployed. There is no consumer or DLQ yet:
-  DLQ configuration belongs with the future Queue consumers. There is no Durable Object,
-  KV namespace, route, or custom domain. `npm run validate` uses
+- **The staging provisioning and deployment/migration gates are complete; Discord connection
+  remains behind a separate approval gate.** Worker version
+  `7a083c14-a7ac-4875-ad11-04de4b10b139` is deployed to the existing `workers.dev` route with the
+  reviewed D1, two work queues, redemption DLQ, and one-minute Cron. Preview URLs remain disabled,
+  migrations 0001–0004 are current, and both required Worker secret names are bound with values
+  hidden. `DISCORD_DELIVERY_ENABLED=true` only in `env.staging`, and the completed smoke test left
+  one synthetic player/code path with no duplicate operation, no retry, no DLQ row, and two successful
+  Discord API subrequests. The companion is stopped and the top/default scope stays disabled. There
+  is no deployable Durable Object, KV namespace, production environment, or custom domain.
+  `npm run validate` uses
   `wrangler deploy --dry-run`, which compiles locally and publishes nothing.
 - Staging is the only environment. There is no production environment, and the configuration
   loader rejects any value other than `ENVIRONMENT=staging`.
@@ -126,14 +159,16 @@ committed together with a freshly generated types file.
   [`docs/whiteout-provider-decision.md`](docs/whiteout-provider-decision.md)).
   `PRODUCTION_REDEMPTION_ENABLED` and `CODE_DISCOVERY_ENABLED` are `false`, and the loader
   rejects `true` for either.
-- The Worker makes no Discord or Whiteout Survival network calls, and `MockWhiteoutProvider`
-  performs no I/O and holds no secrets.
+- `MockWhiteoutProvider` performs no I/O and holds no secrets. The only implemented live network
+  client is Discord Create Message; it is inert while `DISCORD_DELIVERY_ENABLED=false`, requires
+  `DISCORD_BOT_TOKEN` when enabled, uses API v10 with deterministic nonce enforcement, and disables
+  unintended mentions. No Whiteout Survival access or automatic code discovery exists.
 - Ingestion is tested with synthetic events, local D1 and local Queues. It requires
   `INGESTION_SHARED_SECRET`; tests inject an unusable test-only value. Real secrets are
-  neither required nor used by the checks. Registrations with more than 2,000 active codes
-  are refused atomically. The dispatcher marks exhausted or unsendable jobs `dead`;
-  reopening, repair, summaries, and Discord delivery remain Phase 4 work. Local Miniflare
-  accepts producer sends without a consumer and drops those messages, so these tests do
-  not exercise downstream delivery.
+  neither required nor used by the checks. Registrations with more than 2,000 active codes are
+  refused atomically. Task 09 additionally authenticates and validates manual-code commands and
+  uses the Discord message id as a durable D1 key. Local integration tests carry one registration
+  and one manual mock distribution through acceptance, Queue consumption, the mock provider,
+  summary construction, and an injected Discord transport without contacting an external service.
 - No secrets are committed. `.dev.vars` and `.env*` are ignored; never commit, print, or log a
   token, credential, cookie, or session secret.

@@ -1,8 +1,8 @@
 import type { AppConfig } from "../config";
 import { contentHash } from "../ingest/identity";
 
-/** No live implementation is supplied. Injection is explicit in synthetic tests only. */
 export type DiscordTransport = (request: Request) => Promise<Response>;
+export type DiscordFetch = (request: Request) => Promise<Response>;
 interface Output {
   delivery_id: string;
   delivery_group: string;
@@ -19,6 +19,18 @@ export interface SendResult {
   messageId?: string;
   delay: number;
   reason: string | null;
+}
+
+/** Adds the bot credential at the final network boundary and never exposes it to diagnostics. */
+export function createDiscordRestTransport(
+  botToken: string,
+  fetcher: DiscordFetch = (request) => fetch(request),
+): DiscordTransport {
+  return async (request) => {
+    const headers = new Headers(request.headers);
+    headers.set("authorization", `Bot ${botToken}`);
+    return fetcher(new Request(request, { headers }));
+  };
 }
 function seconds(value: unknown): number | null {
   if (typeof value !== "number" && !(typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value)))
@@ -38,7 +50,7 @@ export async function createMessage(
       method: "POST",
       redirect: "manual",
       signal: controller.signal,
-      headers: { "content-type": "application/json", authorization: "Bot synthetic-local-only" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         content: row.content,
         nonce: row.nonce,

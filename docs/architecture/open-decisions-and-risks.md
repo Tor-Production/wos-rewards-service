@@ -15,9 +15,10 @@
 
 ### Resolved
 
-- **Ingestion outcome framing:** spike Option 1 first, then decide. ADR 0001 stays
-  **Proposed**; Option 2 is the provisional reference topology; Option 1 is not rejected;
-  the real adapter is blocked until the spike completes or is explicitly waived.
+- **Ingestion outcome framing:** ADR 0001 stays **Proposed** and Option 1 is not rejected.
+  Task 09 expressly uses the Option 2 companion as a staging-only MVP on a user-controlled
+  Windows host while deferring the 72-hour Option 1 spike. That implementation is not a spike
+  pass, waiver, production selection, or production reliability claim.
 - **Slash commands:** documented only in ADR 0001 (Option 3 / fallback), not as a secondary
   path here.
 - **Event acceptance:** atomic (`processed_events` marker only in the same batch as the
@@ -34,7 +35,8 @@
   cap, the insert attempts `expected_count = -1`, rolling back every event write and
   returning `503`. This needs no migration. Raising the cap requires a separate design;
   resumable registration expansion would need durable code membership such as a future
-  `operation_codes_snapshot` table. Distribution fan-out remains cursor-based Phase 4 work.
+  `operation_codes_snapshot` table. The implemented Phase 4 distribution fan-out remains
+  cursor-based.
 - **Redemption serialization:** the global `redemptions (player_id, code)` record is the
   sole provider-call authority; operation items reuse its terminal outcome.
 - **Retry-budget identity vs invocation claim:** the durable **`attempt_id`** (queue body,
@@ -88,7 +90,13 @@
 - **Discord output:** durable per-chunk `discord_output_deliveries` built by a **paged,
   crash-resumable** seal + layout + render process over the immutable snapshot, bounded per
   `db.batch()`, capped at `SUMMARY_MAX_CHUNKS`; one logical result, at-least-once delivery,
-  bounded duplicate suppression; footer only in the final chunk.
+  bounded duplicate suppression; footer only in the final chunk. Task 09 adds the real API-v10
+  transport behind an explicit staging flag and bot-token presence; safe defaults perform no
+  request and tests inject fake fetch.
+- **Manual staging code intake:** exact authenticated `POST /manual-code` request, human admin
+  checks in companion and Worker, 64-character ASCII grammar, five-minute age bound, and an
+  additive `manual_code_commands` ledger keyed by Discord message id. The command opens the
+  existing distribution path atomically; it is not automatic discovery.
 - **D1 → Queue reliability:** per-item transactional outbox carrying `attempt_id`; `dead`
   rows are atomic-reopened (fresh `attempt_id`) while `summary_state='none'`, or the outcome
   is recorded in `operation_late_results` + handed to a `repair_run` once the snapshot is
@@ -104,7 +112,8 @@
 
 - Whether a permanently hosted Cloudflare Gateway client (Option 1) is reliable enough —
   the ADR 0001 spike decides.
-- Where the companion runs if Option 2 stands (infra decision).
+- Where a production companion runs if Option 2 ultimately stands (Task 09 fixes only the MVP
+  location: a foreground process on the user-controlled Windows host).
 - Tuning during implementation: lease durations (`ITEM_CLAIM_LEASE_SECONDS`;
   `REDEMPTION_CLAIM_LEASE_SECONDS` — the **invocation** lease, which **must exceed the
   provider call timeout** so a lease never expires mid-call (T3 then guarantees no second
@@ -128,15 +137,19 @@
 - Compact JSON UTF-8 size plus a 100-byte per-message charge is a conservative Queue
   body estimate with reserved headroom, not an exact envelope measurement. Any platform
   rejection still follows bounded send-failure backoff and eventual `dead` marking.
-- Local producer bindings accept and drop messages while no consumer is configured.
-  These tests prove producer compatibility and durable outbox behavior, not real
-  end-to-end delivery; Queue consumers and the required DLQ remain future work.
+- The narrow 2026-09-17 staging smoke sent one registration and one synthetic manual code, then
+  replayed the code once to exercise durable deduplication. The registration and code-fanout Queues,
+  D1 state, `MockWhiteoutProvider`, and Discord delivery completed with one registration summary,
+  one distribution summary, no duplicate operation, and no observed backlog, retry, DLQ message,
+  Worker error, or exceeded-resource event. This single low-volume smoke does not establish
+  throughput, Queue or end-to-end latency, retry timing, sustained CPU behavior, or billing.
 - Privileged `MESSAGE_CONTENT` intent could gate future scaling (approval needed above
   ~100 guilds / 10,000 users) **[fact:D3]**; mitigation: stay small or plan verification
   early.
 - If Option 2 stands, the companion is a single point of failure for live ingestion;
-  mitigation: supervised restart, health checks, alerting, atomic accept + PK conflict so
-  re-sends are safe.
+  the MVP has no service manager, health check, or persistent catch-up buffer. Mitigation today:
+  foreground operation, bounded immediate retries, atomic accept + PK conflict, and manual re-send.
+  Supervision/health checks and a bounded backfill decision remain later work.
 - Cloudflare hibernation/eviction timings (~10 s / ~70–140 s idle; 15-minute cap on how
   long an active outbound connection *prevents* eviction) are documented but operational
   **[fact:C1][fact:C2]**; the spike must observe actual behaviour and must not be read as a
@@ -158,5 +171,5 @@
   `redemptions` write can double-apply a code — hence the production-provider
   idempotency-key / reconciliation requirement; until met, production redemption stays
   blocked.
-- The gift-code source remaining unauthorized blocks any real end-to-end; staging stays on
-  the mock provider indefinitely.
+- The gift-code source and real provider remaining unauthorized block automatic discovery and
+  real redemption. Task 09 supplies a manual staging code only to `MockWhiteoutProvider`.
