@@ -49,6 +49,10 @@ export default defineConfig(async () => {
             TEST_MIGRATIONS: migrations,
             // Synthetic local test input; unusable as a real credential.
             INGESTION_SHARED_SECRET: "test-only-not-a-secret",
+            // The deployed staging environment may enable real Discord delivery under an
+            // explicit gate. General tests remain network-inert; the dedicated delivery suite
+            // enables this flag with a synthetic token and injected transport when needed.
+            DISCORD_DELIVERY_ENABLED: false,
             DISCORD_GUILD_ID: "100000000000000001",
             DISCORD_REGISTRATION_CHANNEL_ID: "100000000000000002",
             DISCORD_APPLICATION_ID: "100000000000000003",
