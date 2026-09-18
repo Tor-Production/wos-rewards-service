@@ -495,10 +495,11 @@ wording does not permit an offline or staging adapter merely because production 
 
 ### Task 15 exact narrow amendment — NOT ACCEPTED
 
-Repository maintainer `Yurii-Tor` published the following proposal on 2026-09-18 in
+The orchestrator drafted and posted the following proposal on 2026-09-18 in
 [issue #20](https://github.com/Tor-Production/wos-rewards-service/issues/20#issuecomment-5727504963)
-and explicitly requested a separate acceptance decision. No accepting response was supplied
-to Task 15. Decision authority, acceptance date and approved scope are therefore **pending**;
+through the maintainer's GitHub account, under the authorized tracker-maintenance scope, and
+requested a separate maintainer acceptance decision. No accepting response was supplied to
+Task 15. Decision authority, acceptance date and approved scope are therefore **pending**;
 the proposal is reproduced exactly rather than applied by implication:
 
 > Before implementing a real provider, items 1 and 2 remain mandatory: recorded human
