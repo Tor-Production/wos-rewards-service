@@ -480,6 +480,15 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
 
 ## 22. Failure modes and recovery
 
+Task 13's [dispatch hold](redemption-state-machine.md#durable-uncertainty-hold-task-13)
+qualifies every recovery rule below: an expired potentially applying invocation is retained
+for verification, never reset to pending or safely retry-exhausted. The redrive lane can
+account held grants even after their operation freezes. Dead-outbox selection skips held
+pairs; registration, distribution and generic repair cannot clear a hold. A parked repair
+created before uncertainty also cannot be authorized to reset it. Existing statement/page
+limits and lane scheduling are unchanged. Definite non-applied failures and explicit safe
+retry results retain their prior recovery behavior. No new operator control is introduced.
+
 | Failure | Effect | Recovery |
 |---|---|---|
 | `DiscordEventSource` down | Live `MESSAGE_CREATE` events missed while down | Supervised restart; on reconnect, Discord replays only within session/Resume limits [fact:D1]; missed events need bounded REST catch-up or manual re-send ([§24](open-decisions-and-risks.md#24-unresolved-decisions-and-risks)) |

@@ -198,8 +198,8 @@ implementation must fill in.
 |---|---|---|---|
 | Redemption applied now | `success` | — | none; store `providerReceipt` if returned |
 | Code was already redeemed for this player | **`already_redeemed`** (success-equivalent terminal — **not** a failure) | `already_redeemed` | none |
-| HTTP 429 / explicit "rate limited" | `retryable` | `provider_rate_limited` | none — backoff + `Retry-After` |
-| HTTP 5xx / gateway / timeout / connection reset | `retryable` | `provider_unavailable` | watch error rate |
+| Contract-confirmed non-applied HTTP 429 / explicit "rate limited" | `retryable` | `provider_rate_limited` | none — backoff + `Retry-After` |
+| HTTP 5xx / gateway / timeout / connection reset without conclusive non-application evidence | `uncertain` | `outcome_uncertain` | retain durable hold; verification needed |
 | Malformed / rejected request that a retry cannot fix | `permanent` | `provider_bad_request` | investigate adapter |
 | Invalid / unknown gift code | `permanent` | `code_invalid` | mark code `disabled` |
 | Expired gift code | `permanent` | `code_expired` | mark code `expired` |
@@ -414,6 +414,25 @@ contract-backed idempotent replay (including in-flight requests) or authorized r
 that proves application/non-application before replay. Client cancellation, even if added,
 would not prove upstream cancellation. Current `retry_exhausted` is local accounting, not
 proof that no reward was applied. These gaps are recorded, not fixed in Task 10.
+
+### Task 13 local containment update — 2026-09-18
+
+The dated Task 10 inspection above remains historical. Task 13 adds an explicit uncertain
+provider result and an atomic pre-dispatch hold to the global pair ledger. Timeout,
+exception, lost result persistence and process loss no longer permit an unsafe replay.
+Recovery, DLQ, state changes, re-registration, distribution and generic repair retain the
+hold. Summary accounting reports verification separately. The only process-loss replay
+exemption is the actual unmodified network-free mock; explicit contract-safe retry results
+retain the existing invocation budget. See the owning
+[state machine](architecture/redemption-state-machine.md#durable-uncertainty-hold-task-13)
+and [additive migration](architecture/data-model-and-outbox.md#implemented-additive-task-13-uncertainty-migration-0005).
+
+This closes the local uncertainty-representation/replay gap, not upstream authorization,
+idempotency or reconciliation evidence. There is no real adapter, lookup, operator command,
+hold-clear API or provider-routing change. §13 remains pending. Task 12's §16 sequential
+already-redeemed observation does not justify replay after a lost response. Both historical
+experiments and their consumed/disabled records are untouched. All Task 13 evidence is
+local and synthetic; remote schema/runtime activation requires a later explicit gate.
 
 ## 12. Minimum mock-to-real isolation recommendation
 

@@ -19,6 +19,7 @@ describe("fixture selection is deterministic", () => {
       "already_redeemed",
       { outcome: "already_redeemed", providerReceipt: "mock-receipt:redeem:v1:1234567890:CODE" },
     ],
+    ["uncertain", { outcome: "uncertain", reasonCode: "outcome_uncertain" }],
     ["rate_limited", { outcome: "retryable", reasonCode: "provider_rate_limited" }],
     ["provider_unavailable", { outcome: "retryable", reasonCode: "provider_unavailable" }],
     ["code_invalid", { outcome: "permanent", reasonCode: "code_invalid" }],

@@ -14,6 +14,7 @@ import { REASON_CODES } from "../domain/whiteout-provider";
 export type MockOutcome =
   | "success"
   | "already_redeemed"
+  | "uncertain"
   | "rate_limited"
   | "provider_unavailable"
   | "code_invalid"
@@ -46,6 +47,8 @@ function receiptFor(idempotencyKey: string): string {
 
 function toRedeemResult(outcome: MockOutcome, idempotencyKey: string): RedeemResult {
   switch (outcome) {
+    case "uncertain":
+      return { outcome: "uncertain", reasonCode: REASON_CODES.OUTCOME_UNCERTAIN };
     case "success":
       return { outcome: "success", providerReceipt: receiptFor(idempotencyKey) };
     case "already_redeemed":
@@ -122,4 +125,14 @@ export class MockWhiteoutProvider implements WhiteoutProvider {
     }
     return this.#defaultOutcome;
   }
+}
+
+// Only this exact network-free implementation is safe to repeat after process loss.
+// Configuration, subclasses and replaced/instrumented methods cannot grant this allowance.
+const mockRedeem = MockWhiteoutProvider.prototype.redeem;
+export function isReplaySafeMock(provider: WhiteoutProvider): boolean {
+  return (
+    Object.getPrototypeOf(provider) === MockWhiteoutProvider.prototype &&
+    provider.redeem === mockRedeem
+  );
 }

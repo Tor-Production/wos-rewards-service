@@ -17,7 +17,8 @@
 every item is terminal and `count(operation_items) = expected_count`
 (and, for distribution runs, `expansion_state = 'expanded'`). `permanent_failure` here
 includes `reason_code = 'state_reevaluation_limit'` (T8) — a terminal failure that lets the
-operation finish.
+operation finish. Effective `uncertain` rows (`permanent_failure` /
+`outcome_uncertain`) also close local accounting, but are not failures.
 
 **Source freeze — the instant `summary_state` leaves `none`:** the mirror write from a
 consumer or the sweeper is guarded so it mutates `operation_items` **only while
@@ -29,10 +30,22 @@ immutable from creation. So every `operation_items` row that feeds the paged sea
 at one logical transition — no page can combine a status or a label from a different moment.
 
 **After sealing:** all summary-facing counts (`applied = success + already_redeemed`,
-failure counts) are recomputed **from `summary_item_snapshot`**, the same immutable version
+failure and uncertainty counts) are recomputed **from `summary_item_snapshot`**, the same immutable version
 the rendered rows come from. `already_redeemed` counts toward `applied` and is never a
 failure; a `state_reevaluation_limit` row is a failure line, rendered truthfully (e.g.
 "state re-check limit — manual review"), never as "ineligible".
+
+Task 13 keeps uncertainty separate: `uncertain_count` counts frozen rows with
+`reason_code='outcome_uncertain'`; `permanent_failure_count` excludes them. Applied and
+retry-exhausted counts are unchanged. `completed_count` includes locally closed uncertain
+items, so they are not simultaneously unfinished. Headers show “N need verification” and
+item lines say “verification needed”. These use the existing chunk, sanitization, mention
+suppression and final-only footer rules.
+
+A hold finalized after source freeze is audited through `operation_late_results` and
+cannot rewrite the frozen item/snapshot/counts. A crash not yet accounted at freeze remains
+truthfully “unfinished” in that historical summary; the later uncertainty observation is
+audit-only. No current-redemption lookup is mixed into the paged frozen snapshot.
 
 ---
 

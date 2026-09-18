@@ -1,6 +1,7 @@
 import type { AppConfig } from "../config";
 import { isRedemptionJobBody, type RedemptionJobBody } from "../domain/queue-jobs";
 import type { RedeemResult, WhiteoutProvider } from "../domain/whiteout-provider";
+import { isReplaySafeMock } from "../providers/mock-whiteout-provider";
 import { budgetDatabase, freeze, mutableOperation } from "../runtime/db";
 import { applyRecipients, initiatingRecipientStatements, recipients } from "./reconcile";
 
@@ -19,8 +20,10 @@ export interface ConsumerInput {
   now: () => Date;
   token?: () => string;
 }
-const due = `((r.status='pending' AND (r.last_attempt_id IS NULL OR r.last_attempt_id<>?1 OR r.last_attempt_budget_generation=r.budget_generation)) OR (r.status='retry_wait' AND r.current_attempt_id=?1 AND r.current_invocation_token IS NULL AND r.retry_due_at<=?2)
-  OR (r.status='in_progress' AND r.current_attempt_id=?1 AND r.invocation_expires_at<?2))`;
+const due = `(r.dispatch_hold_token IS NULL AND ((r.status='pending' AND (r.last_attempt_id IS NULL OR r.last_attempt_id<>?1 OR r.last_attempt_budget_generation=r.budget_generation)) OR (r.status='retry_wait' AND r.current_attempt_id=?1 AND r.current_invocation_token IS NULL AND r.retry_due_at<=?2)
+  OR (r.status='in_progress' AND r.current_attempt_id=?1 AND r.invocation_expires_at<?2)))`;
+const expiredHold = `(r.dispatch_hold_token IS NOT NULL AND r.status IN ('pending','in_progress','retry_wait')
+  AND (r.invocation_expires_at IS NULL OR r.invocation_expires_at<?2))`;
 const observationTime = `CASE WHEN last_observation_at IS NOT NULL AND last_observation_at>=?2
   THEN strftime('%Y-%m-%dT%H:%M:%fZ',last_observation_at,'+0.001 seconds') ELSE ?2 END`;
 
@@ -33,7 +36,7 @@ export function insertObservation(
   return db
     .prepare(
       `INSERT INTO terminal_observations(player_id,code,budget_generation,status,reason_code,attempt_state,cause,observed_at)
-    SELECT player_id,code,budget_generation,status,reason_code,attempt_state,?3,last_observation_at FROM redemptions
+    SELECT player_id,code,budget_generation,status,reason_code,attempt_state,CASE WHEN reason_code='outcome_uncertain' THEN 'uncertain_dispatch' ELSE ?3 END,last_observation_at FROM redemptions
     WHERE player_id=?1 AND code=?2 AND current_terminal_generation=budget_generation AND changes()>0
     ON CONFLICT DO NOTHING`,
     )
@@ -79,7 +82,7 @@ async function validJob(
   return { ...body, state: row.state };
 }
 
-export async function closeBudget(
+export async function closeExpiredOrExhausted(
   db: D1Database,
   job: RedemptionJobBody,
   now: string,
@@ -87,7 +90,7 @@ export async function closeBudget(
   route?: "registration" | "distribution",
 ): Promise<void> {
   const eligibility = recovery
-    ? `(${due} OR (r.current_attempt_id=?1 AND r.status IN ('in_progress','retry_wait') AND (r.invocation_expires_at IS NULL OR r.invocation_expires_at<?2)))`
+    ? `(${due} OR (r.dispatch_hold_token IS NULL AND r.current_attempt_id=?1 AND r.status IN ('in_progress','retry_wait') AND (r.invocation_expires_at IS NULL OR r.invocation_expires_at<?2)))`
     : due;
   const outboxAuthority = route
     ? `AND EXISTS(SELECT 1 FROM outbox_jobs b WHERE b.job_id=?5 AND b.attempt_id=?1
@@ -96,10 +99,12 @@ export async function closeBudget(
   await db.batch([
     db
       .prepare(
-        `UPDATE redemptions AS r SET status='retry_exhausted',reason_code='provider_retry_exhausted',
+        `UPDATE redemptions AS r SET status=CASE WHEN dispatch_hold_token IS NOT NULL THEN 'permanent_failure' ELSE 'retry_exhausted' END,
+      reason_code=CASE WHEN dispatch_hold_token IS NOT NULL THEN 'outcome_uncertain' ELSE 'provider_retry_exhausted' END,
       current_attempt_id=NULL,current_invocation_token=NULL,invocation_expires_at=NULL,retry_due_at=NULL,
       current_terminal_generation=budget_generation,last_observation_at=${observationTime},terminal_at=?2,updated_at=?2
-      WHERE player_id=?3 AND code=?4 AND provider_invocations>=provider_invocation_limit AND ${eligibility}
+      WHERE player_id=?3 AND code=?4 AND ((provider_invocations>=provider_invocation_limit AND ${eligibility})
+        OR (${expiredHold} AND ${recovery ? "true" : "r.current_attempt_id=?1"}))
       ${outboxAuthority}`,
       )
       .bind(
@@ -121,6 +126,10 @@ export async function consume(
   const db = budgetDatabase(input.db, 16);
   const { config } = input;
   try {
+    // Keep the checked implementation identical to the one invoked after the D1 await.
+    const provider = input.provider;
+    const redeem = provider.redeem;
+    const safeMock = isReplaySafeMock(provider);
     const job = await validJob(db, message.body, route);
     if (!job) {
       message.ack();
@@ -173,12 +182,15 @@ export async function consume(
       db
         .prepare(
           `UPDATE redemptions AS r SET status='in_progress',current_invocation_token=?7,invocation_expires_at=?10,
+        dispatch_hold_token=CASE WHEN ?11=1 THEN NULL ELSE ?7 END,
+        dispatch_hold_generation=CASE WHEN ?11=1 THEN NULL ELSE budget_generation END,
+        dispatch_hold_at=CASE WHEN ?11=1 THEN NULL ELSE ?2 END,
         retry_due_at=NULL,attempt_state=(SELECT state FROM players WHERE player_id=?3),provider_invocations=provider_invocations+1,
         attempts=CASE WHEN current_attempt_id=?1 THEN attempts+1 ELSE 1 END,
         attempt_generation=attempt_generation+CASE WHEN current_attempt_id=?1 THEN 0 ELSE 1 END,
         current_attempt_id=?1,last_attempt_id=?1,last_attempt_budget_generation=budget_generation,first_claimed_at=COALESCE(first_claimed_at,?2),updated_at=?2
         WHERE player_id=?3 AND code=?4 AND ${due} AND provider_invocations<provider_invocation_limit AND ${eligibleItem}
-        RETURNING attempt_state,provider_invocations,provider_invocation_limit`,
+        RETURNING attempt_state,provider_invocations,provider_invocation_limit,budget_generation`,
         )
         .bind(
           job.attempt_id,
@@ -191,17 +203,23 @@ export async function consume(
           job.job_id,
           route,
           exp,
+          safeMock ? 1 : 0,
         ),
     ]);
     const claim = results[2]!.results[0] as
-      | { attempt_state: string; provider_invocations: number; provider_invocation_limit: number }
+      | {
+          attempt_state: string;
+          provider_invocations: number;
+          provider_invocation_limit: number;
+          budget_generation: number;
+        }
       | undefined;
     if (!claim) {
-      // T3 must be write-free; close only the separately classified exhausted eligible row.
+      // T3 is write-free. Expired holds and exhausted safe budgets close without a call.
       const exhausted = await db
         .prepare(
-          `SELECT 1 FROM redemptions r WHERE player_id=?3 AND code=?4 AND ${due}
-          AND provider_invocations>=provider_invocation_limit
+          `SELECT 1 FROM redemptions r WHERE player_id=?3 AND code=?4 AND ((${due} AND provider_invocations>=provider_invocation_limit)
+          OR (${expiredHold} AND r.current_attempt_id=?1))
           AND EXISTS(SELECT 1 FROM outbox_jobs b WHERE b.job_id=?5 AND b.attempt_id=?1
             AND b.operation_id=?6 AND b.item_key=?7 AND b.type=?8)`,
         )
@@ -216,7 +234,7 @@ export async function consume(
           route,
         )
         .first();
-      if (exhausted) await closeBudget(db, job, now, false, route);
+      if (exhausted) await closeExpiredOrExhausted(db, job, now, false, route);
       message.ack();
       return;
     }
@@ -224,20 +242,21 @@ export async function consume(
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       outcome = await Promise.race([
-        input.provider.redeem(
+        redeem.call(
+          provider,
           { playerId: job.player_id, state: claim.attempt_state },
           job.code,
           `redeem:v1:${job.player_id}:${job.code}`,
         ),
         new Promise<RedeemResult>((resolve) => {
           timeout = setTimeout(
-            () => resolve({ outcome: "retryable", reasonCode: "provider_unavailable" }),
+            () => resolve({ outcome: "uncertain", reasonCode: "outcome_uncertain" }),
             config.providerTimeoutSeconds * 1000,
           );
         }),
       ]);
     } catch {
-      outcome = { outcome: "retryable", reasonCode: "provider_unavailable" };
+      outcome = { outcome: "uncertain", reasonCode: "outcome_uncertain" };
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
     }
@@ -250,7 +269,8 @@ export async function consume(
       const changed = await db
         .prepare(
           `UPDATE redemptions SET status='retry_wait',current_invocation_token=NULL,retry_due_at=?1,
-        invocation_expires_at=?2,updated_at=?3 WHERE player_id=?4 AND code=?5 AND status='in_progress' AND current_attempt_id=?6 AND current_invocation_token=?7`,
+        dispatch_hold_token=NULL,dispatch_hold_generation=NULL,dispatch_hold_at=NULL,
+        invocation_expires_at=?2,updated_at=?3 WHERE player_id=?4 AND code=?5 AND status='in_progress' AND current_attempt_id=?6 AND current_invocation_token=?7 AND budget_generation=?8`,
         )
         .bind(
           new Date(Date.parse(stamp) + backoff * 1000).toISOString(),
@@ -262,6 +282,7 @@ export async function consume(
           job.code,
           job.attempt_id,
           token,
+          claim.budget_generation,
         )
         .run();
       if (changed.meta.changes) message.retry({ delaySeconds: backoff });
@@ -269,25 +290,29 @@ export async function consume(
       return;
     }
     const reason =
-      outcome.outcome === "retryable"
-        ? "provider_retry_exhausted"
-        : outcome.outcome === "permanent"
-          ? [
-              "player_ineligible",
-              "code_invalid",
-              "code_expired",
-              "provider_bad_request",
-              "provider_auth_failed",
-            ].includes(outcome.reasonCode)
-            ? outcome.reasonCode
-            : "provider_bad_request"
-          : null;
+      outcome.outcome === "uncertain"
+        ? "outcome_uncertain"
+        : outcome.outcome === "retryable"
+          ? "provider_retry_exhausted"
+          : outcome.outcome === "permanent"
+            ? [
+                "player_ineligible",
+                "code_invalid",
+                "code_expired",
+                "provider_bad_request",
+                "provider_auth_failed",
+              ].includes(outcome.reasonCode)
+              ? outcome.reasonCode
+              : "provider_bad_request"
+            : null;
     const status =
-      outcome.outcome === "retryable"
-        ? "retry_exhausted"
-        : outcome.outcome === "permanent"
-          ? "permanent_failure"
-          : outcome.outcome;
+      outcome.outcome === "uncertain"
+        ? "permanent_failure"
+        : outcome.outcome === "retryable"
+          ? "retry_exhausted"
+          : outcome.outcome === "permanent"
+            ? "permanent_failure"
+            : outcome.outcome;
     const mismatch = `(?8='player_ineligible' AND attempt_state<>(SELECT state FROM players WHERE player_id=?3))`;
     const reopen = `(${mismatch} AND reeval_count<?9)`;
     const terminalResult = await db.batch([
@@ -304,8 +329,11 @@ export async function consume(
         attempts=CASE WHEN ${reopen} THEN 0 ELSE attempts END,
         attempt_generation=attempt_generation+CASE WHEN ${reopen} THEN 1 ELSE 0 END,
         reeval_count=reeval_count+CASE WHEN ${reopen} THEN 1 ELSE 0 END,
+        dispatch_hold_token=CASE WHEN ?8='outcome_uncertain' THEN ?5 ELSE NULL END,
+        dispatch_hold_generation=CASE WHEN ?8='outcome_uncertain' THEN budget_generation ELSE NULL END,
+        dispatch_hold_at=CASE WHEN ?8='outcome_uncertain' THEN COALESCE(dispatch_hold_at,?2) ELSE NULL END,
         provider_receipt=?10,current_attempt_id=NULL,current_invocation_token=NULL,invocation_expires_at=NULL,retry_due_at=NULL,updated_at=?2
-        WHERE player_id=?3 AND code=?4 AND status='in_progress' AND current_attempt_id=?1 AND current_invocation_token=?5 AND ?6=?6 RETURNING reason_code`,
+        WHERE player_id=?3 AND code=?4 AND status='in_progress' AND current_attempt_id=?1 AND current_invocation_token=?5 AND ?6=?6 AND budget_generation=?12 RETURNING reason_code`,
         )
         .bind(
           job.attempt_id,
@@ -321,6 +349,7 @@ export async function consume(
             ? (outcome.providerReceipt ?? null)
             : null,
           config.providerMaxInvocations,
+          claim.budget_generation,
         ),
       insertObservation(
         db,
@@ -361,7 +390,8 @@ export async function consumeDlq(
     const result = await db.batch([
       db
         .prepare(
-          `UPDATE redemptions SET status='retry_exhausted',reason_code='provider_retry_exhausted',
+          `UPDATE redemptions SET status=CASE WHEN dispatch_hold_token IS NOT NULL THEN 'permanent_failure' ELSE 'retry_exhausted' END,
+        reason_code=CASE WHEN dispatch_hold_token IS NOT NULL THEN 'outcome_uncertain' ELSE 'provider_retry_exhausted' END,
         current_terminal_generation=budget_generation,last_observation_at=${observationTime},terminal_at=?2,updated_at=?2,
         current_attempt_id=NULL,current_invocation_token=NULL,invocation_expires_at=NULL,retry_due_at=NULL
         WHERE player_id=?3 AND code=?4 AND current_attempt_id=?1 AND

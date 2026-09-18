@@ -18,7 +18,7 @@ describe("Task 09 additive manual-command migration", () => {
          VALUES ('900000000000000004','3607',NULL,'Preserved Player','2026-09-13T00:00:00Z','2026-09-13T00:00:00Z')`,
       )
       .run();
-    await applyD1Migrations(db, env.TEST_MIGRATIONS);
+    await applyD1Migrations(db, env.TEST_MIGRATIONS.slice(0, 4));
     expect(
       (
         await db.prepare("SELECT name FROM d1_migrations ORDER BY id").all<{ name: string }>()
@@ -78,7 +78,7 @@ describe("Task 09 additive manual-command migration", () => {
         .run(),
     ).rejects.toThrow(/FOREIGN KEY constraint failed/i);
     expect(await db.prepare("SELECT COUNT(*) AS n FROM manual_code_commands").first("n")).toBe(0);
-    await applyD1Migrations(db, env.TEST_MIGRATIONS);
+    await applyD1Migrations(db, env.TEST_MIGRATIONS.slice(0, 4));
     expect(await db.prepare("SELECT COUNT(*) AS n FROM d1_migrations").first("n")).toBe(4);
     expect((await db.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
   });

@@ -2,7 +2,7 @@
 
 - **Parent:** [architecture.md](../architecture.md) — overview, component map, cross-cutting
   invariants, phased implementation order, and the [traceability map](../architecture.md#traceability-map).
-- **Status:** Draft. The provider abstractions, the Queue/DLQ boundary, and the **T1–T16** transition table that governs every provider call.
+- **Status:** Draft. The provider abstractions, the Queue/DLQ boundary, and the **T1–T17** transition table that governs every provider call.
 
 > Evidence tags carry the same meaning as in the overview: **[fact:<ref>]** (confirmed by an
 > official page listed in [architecture.md §25](../architecture.md#25-official-sources)),
@@ -26,7 +26,8 @@ interface PlayerRef {
 type RedeemResult =
   | { outcome: 'success'; providerReceipt?: string }          // terminal, IMMUTABLE, counts as applied
   | { outcome: 'already_redeemed'; providerReceipt?: string } // terminal, IMMUTABLE, success-equivalent, counts as applied
-  | { outcome: 'retryable'; reasonCode: string }              // 429 / 5xx / network / provider "rate limited"
+  | { outcome: 'uncertain'; reasonCode: 'outcome_uncertain' } // application cannot be established
+  | { outcome: 'retryable'; reasonCode: string }              // authoritative non-application / proven safe retry
   | { outcome: 'permanent'; reasonCode: string };             // reasonCode classifies terminality/reopen (§15.2):
                                                              //   code-dependent  : code_invalid | code_expired            (repair_run only)
                                                              //   state-dependent : player_ineligible -> T7 re-drive under cap;
@@ -35,8 +36,8 @@ type RedeemResult =
 
 interface WhiteoutProvider {
   // Apply ONE gift code to ONE player. `idempotencyKey` is the stable per-(player,code)
-  // key from the global redemptions record; a compliant real provider uses it (or an
-  // authorized reconciliation lookup) so a retried redemption is a safe no-op.
+  // key from the global redemptions record. It does not prove upstream deduplication.
+  // Unknown application must return uncertain; retryable requires evidence of safety.
   redeem(player: PlayerRef, code: string, idempotencyKey: string): Promise<RedeemResult>;
 }
 
@@ -99,7 +100,8 @@ interface GiftCodeSource {
   only to an `in_progress` row that still carries a `current_invocation_token`:
   ```sql
   UPDATE redemptions
-     SET status = 'retry_exhausted', reason_code = 'provider_retry_exhausted',
+     SET status = CASE WHEN dispatch_hold_token IS NOT NULL THEN 'permanent_failure' ELSE 'retry_exhausted' END,
+         reason_code = CASE WHEN dispatch_hold_token IS NOT NULL THEN 'outcome_uncertain' ELSE 'provider_retry_exhausted' END,
          current_attempt_id = NULL, current_invocation_token = NULL,
          invocation_expires_at = NULL, retry_due_at = NULL,
          terminal_at = :now, updated_at = :now
@@ -176,16 +178,20 @@ cannot do on its own **[inference]**.
     `attempt_id` from both calling the provider. `attempt_generation` is an audit counter
     only.
 - **Acquire-invocation** (one upsert; grants the first invocation of a new `attempt_id`, or
-  the next invocation of a due `retry_wait`, or steals a crashed invocation of the same
-  `attempt_id`):
+  the next invocation of a due `retry_wait`, or resumes an unmodified mock invocation of the same
+  `attempt_id` after process loss):
   The consumer first inserts a missing `pending` row and claims the eligible operation
   item in the same D1 batch. The authoritative update then includes all of:
   ```sql
   UPDATE redemptions AS r
      SET status='in_progress', current_attempt_id=:aid,
          current_invocation_token=:token, invocation_expires_at=:expiry,
-         provider_invocations=provider_invocations+1
+         provider_invocations=provider_invocations+1,
+         dispatch_hold_token=CASE WHEN :safe_mock THEN NULL ELSE :token END,
+         dispatch_hold_generation=CASE WHEN :safe_mock THEN NULL ELSE budget_generation END,
+         dispatch_hold_at=CASE WHEN :safe_mock THEN NULL ELSE :now END
    WHERE player_id=:pid AND code=:code
+     AND dispatch_hold_token IS NULL
      AND provider_invocations<provider_invocation_limit
      AND (
        (status='pending' AND (last_attempt_id IS NULL OR last_attempt_id<>:aid
@@ -202,11 +208,62 @@ cannot do on its own **[inference]**.
   A zero-row result is T3 unless it independently meets the exhausted-budget guard, in
   which case T12b records exhaustion without calling the provider.
 
+### Durable uncertainty hold (Task 13)
+
+Migration 0005 adds `dispatch_hold_token`, `dispatch_hold_generation` and
+`dispatch_hold_at` to the authoritative pair row. T1/T2 atomically write this evidence
+with the invocation grant **before** calling the provider. Every new grant and every
+reset/reopen requires no hold. The token identifies a possible dispatch, not an upstream
+receipt. Existing attempt identity, budget generation and charged invocation count retain
+its context. A crash between the grant and transmission is conservatively ambiguous.
+
+Only the exact unmodified `MockWhiteoutProvider.redeem` implementation is exempt from
+pre-dispatch holds: it is network-free and has no external reward side effects, including
+across instances. `isReplaySafeMock` checks the actual implementation, not `providerMode`;
+subclasses and replaced methods are conservative. Explicit `retryable` results from any
+provider release the hold under the exact invocation/generation guard and retain the
+existing bounded retry budget. A provider must establish non-application or safe replay
+before returning that result; HTTP errors alone cannot do so.
+
+Timeouts, thrown exceptions and explicit `uncertain` results finalize local accounting as
+physical `permanent_failure` with reserved `reason_code='outcome_uncertain'`, retaining
+the hold. This is an **effective uncertain state**, not a definitive failure. The same
+physical encoding is used in items, observations, late audits and frozen snapshots to
+preserve the existing SQLite CHECK constraints. Summary accounting treats it separately.
+No upstream receipt is fabricated. The result/observation/item transaction commits before
+ack; if it fails, the grant's hold remains durable. Redelivery can recover persistence but
+cannot obtain a new grant.
+
+Expired held invocations take **T17**, regardless of remaining budget: Queue redelivery,
+DLQ or the sweeper records uncertainty without a provider call or outbox reset. Sweeper
+selection includes held grants whose originating operation has already frozen/expired,
+then existing observation reuse writes late audits. Active or finalized holds suppress
+ordinary recovery and generic repair, including previously parked repairs. New registration
+and distribution items can reuse the uncertainty observation; they cannot reopen the pair.
+Held work does not loop through enqueue/retry cycles, and other pairs retain fair service.
+
+**Late-result policy:** an exact attempt, invocation token and captured budget generation
+may save a conclusive result while the physical row is still `in_progress`, even after its
+lease expires, provided timeout/recovery has not finalized uncertainty. This clears the
+provisional hold, preserves any real receipt, and uses the existing freeze/audit rules.
+Once uncertainty is finalized, late promise results are ignored; there is no background
+persistence callback or automatic hold resolution. The original request may still finish.
+Stale tokens/generations and immutable success rows cannot be overwritten. Cancellation
+or any local write cannot undo an applied game reward.
+
+No hold-clearing command/API, lookup, or replay override exists. A later separately
+authorized reconciliation workflow must establish authoritative pair-specific evidence,
+fence the exact held invocation/generation, preserve prior observations and frozen outputs,
+and prove safety before permitting any new submission. Generic T14 repair is insufficient.
+
 ### State-transition table (the single source of truth)
 
 Every SQL guard, Queue-message field, DLQ rule, sweeper rule, scenario, and test below
 conforms to this table. `A` = the caller's `attempt_id`; `X` = its fresh
 `current_invocation_token`; all rows require `PK = (:pid, :code)`.
+T1/T2 and T12–T15 require `dispatch_hold_token IS NULL`. T4–T9 require the
+captured `budget_generation` as well as attempt/token identity. A held expired invocation
+takes T17 instead of T2/T10/T12, and a handled uncertain result takes T17 directly.
 
 | # | From (`status`, invocation) | Trigger | Guard | To | Effect |
 |---|---|---|---|---|---|
@@ -228,6 +285,7 @@ conforms to this table. `A` = the caller's `attempt_id`; `X` = its fresh
 | T14 | `permanent_failure` (**any** reason, incl. `state_reevaluation_limit`) / `retry_exhausted` | operator `repair_run` | — | `pending` | `attempt_generation+=1`; operator may reset `reeval_count`; increment `budget_generation`, reset `provider_invocations=0`, capture the configured limit, clear current terminal pointer |
 | T15 | `permanent_failure`/`player_ineligible` (already terminal, predates T7) | Operation sweeper, `attempt_state<>players.state AND reeval_count<:max AND` a non-terminal `operation_items` waits | sweeper | `pending` | as T13; increment `budget_generation`, reset `provider_invocations=0`, capture the configured limit, clear current terminal pointer |
 | T16 | `success` / `already_redeemed` | anything | — | *(immutable)* | — |
+| T17 | `in_progress` with held dispatch, or an explicit uncertain result | timeout, exception, uncertain result, expired held grant | exact token/generation for consumer result; expired held row for recovery; exact attempt for DLQ | effective `uncertain` (`permanent_failure` / `outcome_uncertain`) | preserve hold and budget, publish observation, close local accounting, no replay or repair reset |
 
 ### Logical invocation authority and terminal reconciliation (Phase 4)
 
@@ -268,8 +326,8 @@ future retention auditing and is not needed to reuse a current result.
 |---|---|---|
 | **Two concurrent deliveries, same `attempt_id`** | D1 wins T1/T2 (token `X`, `in_progress`). D2 finds a live invocation → **T3**: no provider call, `ack`. | Exactly one provider call. |
 | **Legitimate sequential owner retry** | Provider `retryable` → **T9**: release invocation + record `retry_due_at`, *then* `message.retry`. The redelivered body (same `attempt_id`) arrives ≥ `retry_due_at` → **T2** (`attempts+=1`) → calls the provider. | Retry budget stays on `attempt_id`; no premature retry (T3 blocks any early duplicate until `retry_due_at`). |
-| **Invocation crash** | `invocation_expires_at` passes with token still set. Next redelivery → **T2** (`in_progress AND invocation_expires_at<:now`). If none arrives, **T12** → `pending` + fresh `attempt_id`. | Re-driven exactly once. |
-| **Execution lease expires during a provider call** | D2 steals via **T2** (token `Y`). D1's `redeem` returns; its terminal write is guarded `current_invocation_token=X` → matches nothing → **discarded**; D2's result wins. | During *normal* (non-expired) lease operation T3 prevents any second call. On the abnormal expiry case the production-provider **idempotency key** prevents double-apply; tune `REDEMPTION_CLAIM_LEASE_SECONDS` above the provider timeout. |
+| **Invocation crash (unmodified mock only)** | `invocation_expires_at` passes with token still set. Next redelivery → **T2** (`in_progress AND invocation_expires_at<:now`). If none arrives, **T12** → `pending` + fresh `attempt_id`. | Re-driven exactly once. |
+| **Execution lease expires during a potentially applying call** | The dispatch hold denies T2; T17 records uncertainty. A late exact result may settle only before that finalization. | No second unsafe provider call; stale results are discarded. |
 | **DLQ message arrives while an invocation is active** | Exact `attempt_id`, `in_progress`, live lease → **T11** `dlq_invocation_active`, audit-only, `ack`; that invocation drives `success` / `permanent` / `retry_wait`, and *its* later DLQ message hits **T10**. If instead the row is `retry_wait` (invocation already released by **T9**), the DLQ message is **T10** `retry_exhausted` immediately — a future `retry_due_at` / pickup-grace does **not** defer it, and **T12** cannot then mint a fresh `attempt_id`. | Terminalizes iff no invocation is active. |
 | **Stale attempt after a newer attempt took ownership** | `current_attempt_id = B ≠ A`. A's DLQ message → **T11** `dlq_stale_attempt`. A's late provider result → terminal write guarded `current_attempt_id = A` → discarded. | The newer attempt `B` owns the outcome. |
 
@@ -277,15 +335,15 @@ future retention auditing and is not needed to reuse a current result.
 
 Every terminal (or `retry_wait`) write from a **consumer** (T4–T9) carries
 `WHERE status = 'in_progress' AND current_attempt_id = :aid AND current_invocation_token =
-:itok` (T6/T7/T8 add the `attempt_state` vs `players.state` comparison). The **DLQ**
+:itok AND budget_generation = :captured_generation` (T6/T7/T8 add the `attempt_state` vs `players.state` comparison). The **DLQ**
 terminal write (T10) carries `WHERE current_attempt_id = :msg_attempt_id AND ((status =
 'retry_wait' AND current_invocation_token IS NULL) OR (status = 'in_progress' AND
 (current_invocation_token IS NULL OR invocation_expires_at < :now)))` — an exact
 `attempt_id` match **and** no invocation active. A `retry_wait` row always satisfies this
 (its invocation was released by T9, so the pickup-grace `invocation_expires_at` is not
 consulted); the lease-expiry comparison applies only to an `in_progress` row still holding a
-`current_invocation_token`. The sweeper (T12) moves the row **only → `pending`**, never
-writes a terminal status, and its `status IN ('in_progress','retry_wait')` guard skips the
+`current_invocation_token`. Held expiry records T17 uncertainty. Unheld sweeper T12a
+returns to `pending`; T12b records safe exhaustion. Its `status IN ('in_progress','retry_wait')` guard skips the
 `retry_exhausted` row T10 produced.
 
 The T1/T2 claim transaction also revalidates that the message's exact `job_id`,
@@ -300,7 +358,8 @@ The recovery reservation runs terminal-item reuse every other minute. Observatio
 stuck-pair redrive and dead-outbox handling rotate through the intervening minutes, so each
 of those classes runs every sixth minute. The stuck-pair class processes one pair per turn:
 
-- **T12:** resets `redemptions` rows in `in_progress` / `retry_wait` whose
+- **T17:** finalizes expired held grants as uncertainty, including after operation freeze;
+- **T12:** resets unheld `redemptions` rows in `in_progress` / `retry_wait` whose
   `invocation_expires_at` has passed (crashed invocation, or a `retry_wait` whose retried
   message never arrived **and produced no DLQ message** — a DLQ message would have hit
   **T10** first and moved the row to the terminal `retry_exhausted`, which this guard's
@@ -329,6 +388,7 @@ fairness bounds are specified in [§9](operations-and-reliability.md#9-scheduled
 | `permanent_failure` / **`state_reevaluation_limit`** (state re-evaluation cap reached — **T8**) | **terminal failure** | **`repair_run` only (T14)** — never auto-reopened, never reported as the obsolete `player_ineligible` applying to the current `state`; raises an operator alert |
 | `permanent_failure` / `code_invalid`, `code_expired` (**code-dependent**) | terminal | operator `repair_run` only (T14; e.g. after correcting `gift_codes.status`) |
 | `permanent_failure` / `provider_bad_request`, `provider_auth_failed` (**operational**) | terminal | operator `repair_run` only (T14), after the operational cause is fixed |
+| `permanent_failure` / `outcome_uncertain` (effective uncertain) | verification required; separate from failure/applied counts | no runtime reopening; separately authorized future reconciliation only |
 | `retry_exhausted` (**operational**) | terminal for accounting | operator `repair_run` (T14) only |
 
 **T13 — state-change reopen** (runs inside the same atomic acceptance `db.batch()` as the
@@ -344,6 +404,7 @@ UPDATE redemptions
        budget_generation=budget_generation+1, provider_invocations=0,
        provider_invocation_limit=:configured_limit, current_terminal_generation=NULL
  WHERE player_id = :pid
+   AND dispatch_hold_token IS NULL
    AND status = 'permanent_failure'
    AND reason_code = 'player_ineligible'               -- state-dependent, under cap only
    AND reeval_count < :max_reeval
@@ -361,14 +422,12 @@ production provider is required to be, or acceptance fails
 
 ### Crash ambiguity
 
-If a real provider performs the redemption but the Worker crashes before the guarded
-terminal write, the invocation lease expires and the redelivered message re-acquires an
-invocation for the same `attempt_id` (**T2**), then calls the provider again. This is why a
-production `WhiteoutProvider` **must** support a stable redemption idempotency key or an
-authorized reconciliation lookup
-([whiteout-provider-decision.md §5](../whiteout-provider-decision.md#5-acceptance-criteria-for-a-production-provider));
-without one, production redemption stays blocked. During *normal* (non-expired) lease
-operation, T3 guarantees no two invocations of the same `attempt_id` call the provider.
+A possibly applied request whose response is lost remains held. Lease expiry never proves
+non-application and does not permit another submission. The additive dispatch evidence
+covers process loss before and after transmission; only the network-free mock exemption
+may replay after process loss. The hold provides local containment, not upstream outcome
+evidence. Production activation and authorized reconciliation contracts remain blocked by
+[the provider decision](../whiteout-provider-decision.md#5-acceptance-criteria-for-a-production-provider).
 
 ---
 
@@ -376,9 +435,9 @@ operation, T3 guarantees no two invocations of the same `attempt_id` call the pr
 
 | Provider / transport signal | Class (`reason_code`) | Action | Reopen |
 |---|---|---|---|
-| HTTP 429, `Retry-After` present | `retryable` | **T9**: atomically → `retry_wait` (clear invocation, set `retry_due_at` from `Retry-After` / backoff), **then** `message.retry` | — |
-| HTTP 5xx, connection reset, timeout | `retryable` | **T9a** with exponential backoff while logical grants remain; final grant **T9b** terminalizes directly | — |
-| Provider "rate limited" / "temporarily unavailable" | `retryable` | **T9** with backoff | — |
+| Contract-confirmed non-applied HTTP 429, `Retry-After` present | `retryable` | **T9**: atomically → `retry_wait` (clear invocation, set `retry_due_at` from `Retry-After` / backoff), **then** `message.retry` | — |
+| HTTP 5xx, connection reset, timeout, exception or lost response without conclusive evidence | `uncertain` (`outcome_uncertain`) | T17 durable hold; verification needed | no runtime replay |
+| Provider contract establishes safely retryable "rate limited" / "temporarily unavailable" | `retryable` | **T9** with backoff | — |
 | Redemption succeeded now | `success` | **T4** terminal, guarded on `current_invocation_token`; record `provider_receipt` if returned | **never** (T16) |
 | Redemption already applied for this pair | `already_redeemed` | **T4** **terminal, success-equivalent**; no retry; counts toward `applied`; never a failure | **never** (T16) |
 | Invalid / expired / disabled code | `permanent` (`code_invalid` / `code_expired`) | **T5** terminal `permanent_failure`, no retry, **never DLQ** | operator `repair_run` (T14) only |
