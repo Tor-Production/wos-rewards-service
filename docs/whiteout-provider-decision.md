@@ -14,13 +14,13 @@ gift-code redemption can be enabled. It contains **no tokens, cookies, or secret
 **Task 10 research, 2026-09-17:** no acceptable authorized integration contract was found
 in the public sources examined. [§10–§15](#10-task-10-public-evidence--2026-09-17) record the
 evidence, implementation gaps, isolated-test proposal, and pending decisions. This is
-preparation for blocked roadmap phase 8, not completion of it. The four-part §4 gate
-remains binding for general integration, except for the narrow Task 12 exception in §16.
-Task 15 consolidates the sanitized observations and remaining gaps in
-[§17](#17-task-15-consolidated-observed-contract-and-evidence-matrix--2026-09-18), but the
-exact narrow amendment and the earlier broader staged proposal in §13 are both **proposed,
-not approved**. Merging this documentation does not accept either proposal or authorize
-provider calls, implementation, production enablement, or credential provisioning.
+preparation for blocked roadmap phase 8, not completion of it. Task 15 consolidates the
+sanitized observations and remaining gaps in
+[§17](#17-task-15-consolidated-observed-contract-and-evidence-matrix--2026-09-18). On
+2026-09-18 the human maintainer explicitly accepted the exact narrow amendment reproduced
+in §13, and §4 now applies it. The earlier broader staged proposal remains **proposed, not
+approved**. This policy acceptance does not authorize provider calls, implementation,
+production enablement, credential provisioning, or any other operational action.
 
 ---
 
@@ -62,14 +62,20 @@ provider calls, implementation, production enablement, or credential provisionin
 
 Task 12's one-test exception is recorded in §16. It does not enable service redemption.
 
-Task 15 received no separate maintainer acceptance of its proposed narrow amendment. The
-accepted policy is therefore still §§4, 5 and 8; §13 records the pending proposals, and §17
-separates the sanitized historical observations from the external evidence still required.
+Task 15 received no separate maintainer acceptance while that task was being reviewed and
+merged. Later on 2026-09-18, the human maintainer explicitly accepted its exact narrow
+amendment as repository policy; §13 records the authority, time, source, scope and exclusions.
+The accepted policy is §§4, 5 and 8 as now amended. The broader stage A–D proposal remains
+pending, and §17 separates the sanitized historical observations from the external evidence
+still required.
 
 **No authorized production `WhiteoutProvider` exists.** Production gift-code redemption is
-**disabled** and stays disabled until every item in [§4](#4-required-authorization-and-evidence-before-adding-a-real-provider)
-and [§5](#5-acceptance-criteria-for-a-production-provider) is satisfied and a maintainer
-records explicit approval here.
+**disabled** and stays disabled until the production-activation prerequisites in
+[§4](#4-required-authorization-and-evidence-before-adding-a-real-provider) and every item in
+[§5](#5-acceptance-criteria-for-a-production-provider) are satisfied and a maintainer records
+explicit activation approval here. A separately approved offline implementation slice also
+remains blocked until §4's implementation prerequisites are satisfied; no such slice is
+approved by this amendment acceptance.
 
 - `PRODUCTION_REDEMPTION_ENABLED` must be `false` in every environment.
 - `PROVIDER_MODE` is `mock` in development, automated tests, and staging.
@@ -148,7 +154,7 @@ Identifiers passed to and stored by the provider adapter are **canonical strings
 
 ## 4. Required authorization and evidence before adding a real provider
 
-All of the following must exist **before** a real provider is implemented:
+Items 1 and 2 must exist **before** a real provider is implemented:
 
 1. A **human-recorded authorization** in this file: who approved it, the date, and the scope
    (which endpoints, which rate limits, which environments).
@@ -156,18 +162,27 @@ All of the following must exist **before** a real provider is implemented:
    mechanism, rate-limit rules, error codes, and idempotency semantics — sourced from
    official or explicitly authorized documentation.
 3. Explicit maintainer approval, recorded here, to set `PRODUCTION_REDEMPTION_ENABLED=true`
-   in production.
-4. Production credentials provisioned as Wrangler **secrets**. **Secret name(s) are defined
-   only when the contract exists** — this repository does not pre-declare a provider secret
-   and makes no assumption that authentication is by API key.
+   in production. This is a **production-activation prerequisite**, not an offline-
+   implementation prerequisite.
+4. Production credentials required by the authorized contract provisioned as Wrangler
+   **secrets**. This is a **production-activation prerequisite**, not an offline-
+   implementation prerequisite. **Secret name(s) are defined only when the contract exists**
+   — this repository does not pre-declare a provider secret or assume API-key authentication.
+   If the authorized contract requires no service credentials, the supporting contract
+   evidence and an explicit maintainer determination that provisioning is not applicable must
+   be recorded here. Neither was supplied by the amendment acceptance.
 
-Until items 1–4 are complete, do not add a real provider implementation, do not add a
-provider secret name, and do not enable production redemption.
+A separately approved offline implementation slice additionally requires recorded
+authorization from the upstream game/API operator for the intended integration and explicit
+maintainer approval of that exact slice. It must use injected fake transport with external
+network access denied and sanitized synthetic fixtures only. No real provider may be selected
+by the runtime under offline approval.
 
-The exact Task 15 proposal to move items 3 and 4 to a later activation gate is recorded as
-**pending** in §13. Its publication, this documentation work, a pull-request approval or
-merge, and issue progress are not amendment acceptance. Until an explicit accepting decision
-is recorded with authority, date, scope and exclusions, the four items above remain binding.
+Until items 1 and 2 and those offline-slice conditions are complete, do not add a real
+provider implementation. Until items 3 and 4 (as applicable), every §5 criterion and a
+separate activation approval are complete, do not activate a real provider. Do not invent a
+provider secret name or put protocol signing material in the repository. §13 records the
+accepted narrow amendment and its exclusions; the broader stage A–D proposal remains pending.
 
 ---
 
@@ -308,6 +323,7 @@ the supporting contract, before implementation.
 | 2026-08-31 | PR #3 review round 5: the DLQ "no invocation active" check reads `current_invocation_token`, not the pickup-grace `invocation_expires_at`. A `retry_wait` row always satisfies **T10** (invocation released by **T9**), so a retry exhausting `max_retries` before `retry_due_at` is recorded `retry_exhausted` rather than `dlq_invocation_active`; the lease-expiry comparison is reserved for an `in_progress` row still holding a token; **T12** never re-drives a row **T10** terminalized. No provider-contract change. | (pending review) |
 | 2026-09-17 | Task 10: dated public-source research, code/contract compatibility, mock-result isolation, pending staged-gate amendment, and bounded future-test design (§10–§15). Existing gates and prohibitions unchanged. | Research/documentation task authorized by the requesting human; no provider or amendment approval recorded |
 | 2026-09-18 | Task 15: consolidated the sanitized Task 12 request/response shape, outcome evidence and remaining external gaps; reproduced the exact narrow amendment from issue #20 as pending and kept the broader §13 proposal separately pending. §§4, 5 and 8 remain binding. | Documentation task authorized by the requesting human; no amendment, provider, activation or external-operator approval recorded |
+| 2026-09-18 | Task 16: recorded the human maintainer's later explicit acceptance of the exact Task 15 narrow amendment and applied it to §4. Items 1–2 plus the stated offline-slice conditions govern implementation; items 3–4 (as applicable) govern activation. The broader stage A–D proposal remains pending, and no implementation or activation was approved. | Human repository maintainer; acceptance recorded by the orchestrator at 2026-09-18T10:34:57Z in [issue #20](https://github.com/Tor-Production/wos-rewards-service/issues/20#issuecomment-5728792918) |
 
 ---
 
@@ -483,24 +499,42 @@ outbox/Queue routing, repair, reuse and frozen summaries, with an additive migra
 historical-data policy. That is larger than the first isolated test. Neither this proposal
 nor this task authorizes migration, provisioning, deletion, or changes to historical outcomes.
 
-## 13. Pending staged-gate amendment
+<a id="13-pending-staged-gate-amendment"></a>
+
+## 13. Accepted narrow provider-gate amendment and pending broader proposal
 
 Task 12 is separately authorized by the narrower §16 exception. The exact Task 15 narrow
-proposal and the earlier broader staged proposal below both remain pending.
+proposal was accepted on 2026-09-18 and is applied in §4. The earlier broader staged proposal
+below remains pending.
 
-**Current binding rule:** §4 requires all four items before any real-provider implementation:
-human-recorded authorization, documented API contract, explicit production-enablement
-approval, and production credentials provisioned as secrets. They are not complete. Its
-wording does not permit an offline or staging adapter merely because production stays off.
+**Current binding rule:** §4 requires items 1 and 2 before real-provider implementation and
+the additional upstream-authorization, maintainer-approval and isolation conditions for a
+separately approved offline slice. Items 3 and 4 (as applicable) are production-activation
+prerequisites. None of the missing implementation or activation evidence is supplied merely
+by acceptance of this policy wording.
 
-### Task 15 exact narrow amendment — NOT ACCEPTED
+<a id="task-15-exact-narrow-amendment--not-accepted"></a>
+
+### Task 15 exact narrow amendment — ACCEPTED 2026-09-18
 
 The orchestrator drafted and posted the following proposal on 2026-09-18 in
 [issue #20](https://github.com/Tor-Production/wos-rewards-service/issues/20#issuecomment-5727504963)
 through the maintainer's GitHub account, under the authorized tracker-maintenance scope, and
-requested a separate maintainer acceptance decision. No accepting response was supplied to
-Task 15. Decision authority, acceptance date and approved scope are therefore **pending**;
-the proposal is reproduced exactly rather than applied by implication:
+requested a separate maintainer acceptance decision. No accepting response had been supplied
+when Task 15 was reviewed and merged; that dated history remains true. Later, the human
+maintainer explicitly accepted this exact narrow amendment as repository policy. The
+orchestrator recorded the decision in
+[issue #20](https://github.com/Tor-Production/wos-rewards-service/issues/20#issuecomment-5728792918)
+at **2026-09-18T10:34:57Z**. That is the decision-recording time, not a reconstructed message
+timestamp. The approver was the human repository maintainer acting within repository-policy
+authority. This acceptance is distinct from the orchestrator's proposal publication through
+the maintainer's account and from the maintainer's earlier approval to merge PR #27.
+
+**Accepted scope and exclusions:** only the exact quote below is accepted. It changes the
+implementation/activation timing of §4 items 3 and 4 under the stated conditions. It does not
+accept the broader stage A–D proposal, determine that credentials are inapplicable, supply
+upstream operator authorization or an authorized contract, approve an offline implementation
+task, or authorize any live or operational action. The accepted text is reproduced exactly:
 
 > Before implementing a real provider, items 1 and 2 remain mandatory: recorded human
 > authorization for the exact scope and a documented, authorized API contract. For a
@@ -524,12 +558,12 @@ the proposal is reproduced exactly rather than applied by implication:
 > stage requires its own recorded scope and approvals. Acceptance of this narrow amendment
 > does not accept the broader §13 proposal.
 
-Even if this narrow text is later accepted, upstream game/API operator authorization and a
-versioned authorized contract would remain separate evidence; repository-maintainer authority
+This exact narrow text is now binding in §4. Upstream game/API operator authorization and a
+versioned authorized contract remain separate evidence; repository-maintainer authority
 cannot supply them. Production-enablement approval and any contract-required credential
-provisioning would move to activation, not disappear. The final determination that the
+provisioning moved to activation; they did not disappear. The final determination that the
 authorized contract needs no service credentials remains pending: the observed direct flow's
-lack of a login step is not sufficient evidence.
+lack of a login step is not sufficient evidence. Issue #21 therefore remains blocked.
 
 ### Earlier broader staged proposal — NOT ACCEPTED
 
@@ -548,10 +582,11 @@ stage does not imply approval of the next stage.
 | C — narrowly approved staging activation | B evidence; publisher permission for the exact upstream environment/actions; consenting test-player approval; explicit maintainer/operator approval for exact resources, revision, pair, window, numeric ceilings and rollback plan | Only separately approved provisioning, secret entry, deployment and bounded calls in the isolated stack; actions may be approved in smaller gates | Record authoritative outcomes and request accounting, then disable; unresolved outcome remains unresolved. No wider fanout, discovery, production rollout, prohibited authentication or bypass. A staging caller against the live game still needs real-redemption approval. |
 | D — production rollout | All §5 criteria, C evidence, publisher production scope, explicit maintainer production-enablement and rollout approval; production credentials provisioned as secrets after the contract defines names/mechanism | Only approved production provisioning/migrations/deployment/activation within rollout bounds | Reviewed operational evidence, monitored ceilings and tested disable procedure. No discovery or scope expansion by implication; separate approval is required for each. |
 
-No acceptance is inferred from a PR merge, a checked box, a test passing, or Task 09's
-mock-only smoke. Until explicit amendment acceptance, the original §4 gate controls B–D.
-If the publisher contract requires no credentials, resolve that conflict with current §4
-explicitly; do not silently mark its credential item satisfied or invent a secret.
+No acceptance of this broader proposal is inferred from acceptance of the narrow amendment,
+a PR merge, a checked box, a test passing, or Task 09's mock-only smoke. The accepted §4 rule,
+not this stage A–D model, controls. If the authorized contract requires no credentials, record
+the supporting evidence and explicit maintainer determination required by §4; do not silently
+mark credential provisioning inapplicable or invent a secret.
 
 ### Pending approval / evidence record template
 
@@ -572,10 +607,12 @@ secret values. A resource/credential action needs its own explicit permitted-act
 
 ## 14. Later one-pair test design — not executable yet
 
-Subject to §4 or an explicitly accepted §13 amendment, test **one consenting, explicitly
-approved real player and one manually supplied code**. No participant or code is selected
-here. The maintainer must record the exact pair privately or by an approved non-secret
-reference, the contract version, test revision, operator and window before execution.
+Any later test remains subject to §4, §5 where applicable, and separate offline/live action
+approvals. Acceptance of §13's narrow amendment alone does not make this design executable.
+The design uses **one consenting, explicitly approved real player and one manually supplied
+code**. No participant or code is selected here. The maintainer must record the exact pair
+privately or by an approved non-secret reference, the contract version, test revision,
+operator and window before execution.
 
 1. **Prepare offline:** prove §12 isolation, exact allowlist, request accounting, disabled
    discovery/Discord delivery and fail-closed provider routing. Use fakes to simulate all
@@ -622,23 +659,28 @@ even a single request can succeed upstream while its local outcome remains unkno
 
 ## 15. Recommended path, blockers and next slice
 
-**Recommend publisher authorization and contract acquisition, followed by offline validation
-under an explicitly accepted staged gate.** Keep mock mode and real redemption blocked
-while waiting. Public-site automation and community adapters are not acceptable substitutes
-for missing permission; indefinite unbounded exploration is not required to complete Task 10.
+**Recommend upstream game/API operator authorization and contract acquisition, followed only
+by a separately approved offline slice under the accepted narrow §4 gate.** Keep mock mode
+and real redemption blocked while waiting. Public-site automation and community adapters are
+not acceptable substitutes for missing permission; indefinite unbounded exploration is not
+required to complete Task 10. The broader §13 stage A–D proposal remains pending and is not
+needed to interpret the accepted narrow rule.
 
 Exact blockers, in order:
 
 1. Publisher permission and a versioned contract covering every §11 unknown, particularly
    in-flight replay, retention, reopened non-applied failures and post-crash reconciliation.
-2. Human decision on the proposed §13 amendment. Without acceptance, **all four original
-   §4 requirements still precede implementation**, including production approval and secrets.
-3. Separate approval of a bounded offline implementation task. Activation additionally
+2. Separate maintainer approval of a bounded offline implementation task using injected fake
+   transport, denied external network access, sanitized synthetic fixtures and no runtime
+   selection. The accepted amendment supplies policy wording, not this task approval.
+3. Activation additionally
    requires routing/timeout/limiter/unknown-outcome controls, request accounting and §12
    isolation proof; none is supplied by adding a class alone.
-4. Explicit C approvals, player consent and settled numeric test limits before any real
-   request; independent D evidence/production approvals afterward. Resource availability
-   and any publisher sandbox remain unknown and must be checked within that later scope.
+4. Separate live-action approvals, player consent and settled numeric test limits before any
+   real request; all §5 evidence, explicit production enablement, and applicable credential
+   provisioning afterward. Resource availability and any operator sandbox remain unknown and
+   must be checked within that later scope. Credential provisioning may be marked inapplicable
+   only with authorized-contract evidence and an explicit maintainer determination.
 
 **Draft request for the human to send through publisher support — not sent by this task:**
 
@@ -691,8 +733,10 @@ This is a one-test exception to the blanket prerequisites in §§4 and 8 and the
 executable design in §14. It authorizes a small original local driver and experimental
 WhiteoutProvider wrapper before any PR merge. Production enablement, production secrets,
 provisioning, deployment and acceptance of the entire §13 proposal are not prerequisites
-for this exception. General service integration and production acceptance gates remain
-unchanged; §13 remains NOT ACCEPTED. No Century Games endorsement is claimed.
+for this exception. General service integration and production acceptance gates remained
+unchanged by Task 12; at that historical point §13 had not been accepted. The later acceptance
+recorded in §13 is limited to the exact narrow amendment and does not retroactively expand
+Task 12. No Century Games endorsement is claimed.
 
 The caller is local, but its target is the LIVE game. At the initial authorization-record
 stage, the exact pair, supplied state, consent and window were pending human input.
@@ -992,9 +1036,9 @@ and was prepared without reopening the private Task 12 records or making a new g
 
 | Category | Status in this document | Canonical source / consequence |
 |---|---|---|
-| Accepted repository policy | §§4, 5 and 8 remain binding; runtime stays mock-only | A real provider, production redemption and automatic discovery remain disabled. |
-| Task 15 narrow gate text | **Pending**, reproduced exactly in §13 | No separate maintainer acceptance was supplied; implementation and activation remain unauthorized. |
-| Earlier broader stage A–D proposal | **Pending**, separately retained in §13 | Acceptance of the narrow text, if later recorded, would not accept the broader proposal. |
+| Accepted repository policy | §§4, 5 and 8 remain binding as amended by the exact narrow text accepted on 2026-09-18; runtime stays mock-only | A real provider, production redemption and automatic discovery remain disabled. |
+| Task 15 narrow gate text | **Accepted**, reproduced exactly with its decision record in §13 and applied in §4 | Acceptance changes only the stated implementation/activation prerequisites; it approves no implementation or activation. |
+| Earlier broader stage A–D proposal | **Pending**, separately retained in §13 | Acceptance of the narrow text does not accept the broader proposal. |
 | Task 12 observations | Historical, bounded evidence only | §16 owns the dated authorizations, source pins, observations and consumed budgets. |
 | External authority and contract | Missing | Upstream game/API operator authorization and an authorized versioned contract remain prerequisites distinct from maintainer scope approval. |
 
@@ -1047,9 +1091,9 @@ automatically retried under unverified semantics.
 
 | Required determination | Evidence still missing | Current consequence |
 |---|---|---|
-| Integration authority | Recorded authorization or applicable official permission from the upstream game/API operator for this service acting for consenting players | Maintainer repository approval, a Discord forwarding channel or a Telegram bot cannot substitute. General implementation remains blocked under current §4. |
+| Integration authority | Recorded authorization or applicable official permission from the upstream game/API operator for this service acting for consenting players | Maintainer repository approval, a Discord forwarding channel or a Telegram bot cannot substitute. A separately approved offline implementation remains blocked under current §4. |
 | Versioned contract | Operator-authorized methods, fields, schema/version policy, response semantics and proof of non-application for each failure class | Community fixtures remain synthetic evidence only; §6 cannot be treated as observed upstream behavior. |
-| Authentication / credentials | Authorized service-authentication/signing requirements, scope, revocation and environment separation | Absence of a login in the observed flow does not prove that credentials are unnecessary. No secret name is invented. Under the pending narrow proposal, any applicable provisioning and production-enablement approval would occur at activation. |
+| Authentication / credentials | Authorized service-authentication/signing requirements, scope, revocation and environment separation | Absence of a login in the observed flow does not prove that credentials are unnecessary. No secret name is invented. Under accepted §4, any applicable provisioning and production-enablement approval occur at activation; no evidence or maintainer determination marks provisioning inapplicable. |
 | Quotas and concurrency | Operator-documented quotas, windows, burst/concurrency scope, cooldown and request accounting | Task 12's N=1/A=0/L=0/concurrency-one ceilings were local historical controls, not upstream limits. |
 | Idempotency and reconciliation | Contract-backed stable-key behavior or an authorized lookup covering lost responses, concurrent requests, retention and reopen horizons | The sequential RECEIVED/40008 observation and Task 13 local hold do not satisfy §5. Unresolved work stays held. |
 | Activation gate | Exact revision, upstream environment/actions, consenting players, physical-request ceilings, time window, rollback/disable steps, and separate maintainer/operator approval | No staging or production activation, game request, lookup, resource, migration, deployment or secret action is authorized by this record. Production adds every §5 requirement. |
@@ -1057,4 +1101,5 @@ automatically retried under unverified semantics.
 Both Task 12 request budgets remain consumed and disabled. `MockWhiteoutProvider` remains the
 only selectable provider; all service game access remains constrained to the
 `WhiteoutProvider` interface; production redemption and automatic discovery remain disabled.
-No Task 15 documentation, issue action, pull-request action or merge changes those facts.
+Neither Task 15's documentation/merge nor Task 16's narrow policy acceptance changes those
+runtime and operational facts.

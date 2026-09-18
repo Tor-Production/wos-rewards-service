@@ -110,10 +110,12 @@
 
 ### Open
 
-- Task 10's [provider evidence and staged-gate proposal](../whiteout-provider-decision.md#10-task-10-public-evidence--2026-09-17):
-  no acceptable authorized contract found in examined public sources; publisher evidence and
-  an explicit human decision on the pending amendment remain necessary. The original §4 gate
-  still binds real-provider implementation, including offline/staging work.
+- Task 10's [provider evidence and gate record](../whiteout-provider-decision.md#10-task-10-public-evidence--2026-09-17):
+  no acceptable authorized contract was found in examined public sources. The human maintainer
+  accepted the exact narrow amendment on 2026-09-18, but upstream operator authorization, a
+  versioned authorized contract and separate approval of any isolated offline slice remain
+  necessary under §4. The broader stage A–D proposal remains pending. Production activation
+  separately requires applicable credentials, explicit activation approval and all §5 evidence.
 
 - Whether a permanently hosted Cloudflare Gateway client (Option 1) is reliable enough —
   the ADR 0001 spike decides.
