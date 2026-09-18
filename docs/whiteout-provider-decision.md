@@ -180,9 +180,11 @@ by the runtime under offline approval.
 
 Until items 1 and 2 and those offline-slice conditions are complete, do not add a real
 provider implementation. Until items 3 and 4 (as applicable), every §5 criterion and a
-separate activation approval are complete, do not activate a real provider. Do not invent a
-provider secret name or put protocol signing material in the repository. §13 records the
-accepted narrow amendment and its exclusions; the broader stage A–D proposal remains pending.
+separate production-activation approval are complete, do not activate production redemption.
+Any live stage, including staging, still requires its own recorded scope and approvals; none
+is authorized by this amendment. Do not invent a provider secret name or put protocol signing
+material in the repository. §13 records the accepted narrow amendment and its exclusions; the
+broader stage A–D proposal remains pending.
 
 ---
 
@@ -323,7 +325,7 @@ the supporting contract, before implementation.
 | 2026-08-31 | PR #3 review round 5: the DLQ "no invocation active" check reads `current_invocation_token`, not the pickup-grace `invocation_expires_at`. A `retry_wait` row always satisfies **T10** (invocation released by **T9**), so a retry exhausting `max_retries` before `retry_due_at` is recorded `retry_exhausted` rather than `dlq_invocation_active`; the lease-expiry comparison is reserved for an `in_progress` row still holding a token; **T12** never re-drives a row **T10** terminalized. No provider-contract change. | (pending review) |
 | 2026-09-17 | Task 10: dated public-source research, code/contract compatibility, mock-result isolation, pending staged-gate amendment, and bounded future-test design (§10–§15). Existing gates and prohibitions unchanged. | Research/documentation task authorized by the requesting human; no provider or amendment approval recorded |
 | 2026-09-18 | Task 15: consolidated the sanitized Task 12 request/response shape, outcome evidence and remaining external gaps; reproduced the exact narrow amendment from issue #20 as pending and kept the broader §13 proposal separately pending. §§4, 5 and 8 remain binding. | Documentation task authorized by the requesting human; no amendment, provider, activation or external-operator approval recorded |
-| 2026-09-18 | Task 16: recorded the human maintainer's later explicit acceptance of the exact Task 15 narrow amendment and applied it to §4. Items 1–2 plus the stated offline-slice conditions govern implementation; items 3–4 (as applicable) govern activation. The broader stage A–D proposal remains pending, and no implementation or activation was approved. | Human repository maintainer; acceptance recorded by the orchestrator at 2026-09-18T10:34:57Z in [issue #20](https://github.com/Tor-Production/wos-rewards-service/issues/20#issuecomment-5728792918) |
+| 2026-09-18 | Task 16: recorded the human maintainer's later explicit acceptance of the exact Task 15 narrow amendment and applied it to §4. Items 1–2 plus the stated offline-slice conditions govern implementation; items 3–4 (as applicable) govern production activation. The broader stage A–D proposal remains pending, and no implementation or live activation was approved. | Human repository maintainer; acceptance recorded by the orchestrator at 2026-09-18T10:34:57Z in [issue #20](https://github.com/Tor-Production/wos-rewards-service/issues/20#issuecomment-5728792918) |
 
 ---
 
@@ -530,9 +532,10 @@ timestamp. The approver was the human repository maintainer acting within reposi
 authority. This acceptance is distinct from the orchestrator's proposal publication through
 the maintainer's account and from the maintainer's earlier approval to merge PR #27.
 
-**Accepted scope and exclusions:** only the exact quote below is accepted. It changes the
-implementation/activation timing of §4 items 3 and 4 under the stated conditions. It does not
-accept the broader stage A–D proposal, determine that credentials are inapplicable, supply
+**Accepted scope and exclusions:** only the exact quote below is accepted. It moves §4 items
+3 and 4 from offline-implementation prerequisites to production-activation prerequisites
+under the stated conditions. It does not accept the broader stage A–D proposal, determine that
+credentials are inapplicable, supply
 upstream operator authorization or an authorized contract, approve an offline implementation
 task, or authorize any live or operational action. The accepted text is reproduced exactly:
 
@@ -1037,7 +1040,7 @@ and was prepared without reopening the private Task 12 records or making a new g
 | Category | Status in this document | Canonical source / consequence |
 |---|---|---|
 | Accepted repository policy | §§4, 5 and 8 remain binding as amended by the exact narrow text accepted on 2026-09-18; runtime stays mock-only | A real provider, production redemption and automatic discovery remain disabled. |
-| Task 15 narrow gate text | **Accepted**, reproduced exactly with its decision record in §13 and applied in §4 | Acceptance changes only the stated implementation/activation prerequisites; it approves no implementation or activation. |
+| Task 15 narrow gate text | **Accepted**, reproduced exactly with its decision record in §13 and applied in §4 | Acceptance changes only the stated offline-implementation and production-activation prerequisites; it approves no implementation or live activation. |
 | Earlier broader stage A–D proposal | **Pending**, separately retained in §13 | Acceptance of the narrow text does not accept the broader proposal. |
 | Task 12 observations | Historical, bounded evidence only | §16 owns the dated authorizations, source pins, observations and consumed budgets. |
 | External authority and contract | Missing | Upstream game/API operator authorization and an authorized versioned contract remain prerequisites distinct from maintainer scope approval. |
