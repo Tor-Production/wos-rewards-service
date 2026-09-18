@@ -570,3 +570,29 @@ reapplication is a journal no-op. It does not inject a failing 0004 migration, s
 atomic migration-rollback test is not evidence for 0004 rollback. These tests use local storage.
 The same migration is applied to staging D1; a remote ledger check reported no pending migrations,
 and the later narrow staging smoke populated only its expected synthetic player/code path.
+
+### Implemented additive Task 13 uncertainty migration (0005)
+
+`redemptions.dispatch_hold_token`, `dispatch_hold_generation` and `dispatch_hold_at`
+record possible dispatch authority before the provider call. They prevent fresh grants,
+state reevaluation, budget resets and generic repair. Their values are local evidence,
+never provider receipts. The effective uncertain state uses the existing physical
+`permanent_failure` status plus reserved `outcome_uncertain` reason across redemptions,
+operation items, observations, late audits and summary snapshots. Consumers must interpret
+both fields; `permanent_failure` alone is not a truthful failure count.
+
+`operations.uncertain_count` is nullable until sealing and recomputed from the frozen
+snapshot. It is separate from definite failures, applied outcomes and unfinished work.
+Existing CHECK domains, foreign keys, ledger history and receipts are unchanged.
+
+Upgrade from 0004 retains legacy `in_progress`, `retry_wait`, and charged `pending`
+rows with a hold using their existing invocation token (or the literal local marker `legacy-unattributed` if absent), current
+budget generation and last update timestamp. It does not assert success, failure, a new
+invocation or a receipt, and does not change existing statuses, counters or observations.
+This conservative legacy hold is not inferred to be replay-safe from environment mode.
+Old retry-wait could originate in the former timeout handler, and charged pending work
+could originate in expired-grant recovery; neither proves a safe retry. Other legacy rows
+and terminal history remain unchanged, without retrospective outcome reconstruction.
+Reapplication through the D1 migration journal is a no-op. The migration is additive; no populated table is rebuilt or dropped.
+Apply it before activating the new runtime under a separately authorized deployment gate;
+older runtime code must not run against held work because it does not enforce these guards.

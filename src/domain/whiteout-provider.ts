@@ -29,6 +29,7 @@ export interface PlayerRef {
 export type RedeemResult =
   | { outcome: "success"; providerReceipt?: string }
   | { outcome: "already_redeemed"; providerReceipt?: string }
+  | { outcome: "uncertain"; reasonCode: "outcome_uncertain" }
   | { outcome: "retryable"; reasonCode: string }
   | { outcome: "permanent"; reasonCode: string };
 
@@ -37,8 +38,9 @@ export interface WhiteoutProvider {
    * Apply ONE gift code to ONE player.
    *
    * `idempotencyKey` is the stable per-(player, code) key from the global redemptions record.
-   * A compliant provider uses it (or an authorized reconciliation lookup) so that retrying a
-   * redemption that already succeeded is a safe no-op.
+   * The local key is not evidence of upstream idempotency. `permanent` asserts definitive
+   * non-application; `retryable` requires non-application or proven safe replay. If it cannot be
+   * established, return `uncertain`; a timeout or thrown exception is also uncertain.
    */
   redeem(player: PlayerRef, code: string, idempotencyKey: string): Promise<RedeemResult>;
 }
@@ -51,6 +53,7 @@ export interface WhiteoutProvider {
  * authorized adapter adds the remaining codes together with its documented contract.
  */
 export const REASON_CODES = {
+  OUTCOME_UNCERTAIN: "outcome_uncertain",
   PROVIDER_RATE_LIMITED: "provider_rate_limited",
   PROVIDER_UNAVAILABLE: "provider_unavailable",
   CODE_INVALID: "code_invalid",

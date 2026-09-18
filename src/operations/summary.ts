@@ -30,6 +30,7 @@ interface Operation {
   permanent_failure_count: number | null;
   retry_exhausted_count: number | null;
   completed_count: number | null;
+  uncertain_count: number | null;
 }
 interface Row {
   source_id?: number;
@@ -80,20 +81,22 @@ function safeCode(code: string): string {
 function line(row: Row, ctx: Context, capacity = 160): string {
   const subject = ctx.code ? row.display_label : safeCode(row.code);
   const status =
-    row.status === "success" || row.status === "already_redeemed"
-      ? "applied"
-      : row.status === "still_pending"
-        ? "unfinished"
-        : row.reason_code === "state_reevaluation_limit"
-          ? "state re-check limit"
-          : "failed";
+    row.reason_code === "outcome_uncertain"
+      ? "verification needed"
+      : row.status === "success" || row.status === "already_redeemed"
+        ? "applied"
+        : row.status === "still_pending"
+          ? "unfinished"
+          : row.reason_code === "state_reevaluation_limit"
+            ? "state re-check limit"
+            : "failed";
   return `${short(subject, Math.max(8, Math.min(160, capacity - status.length - 4)))} — ${status}\n`;
 }
 function header(op: Operation, ctx: Context): string {
   const applied = (op.success_count ?? 0) + (op.already_redeemed_count ?? 0);
   const failed = (op.permanent_failure_count ?? 0) + (op.retry_exhausted_count ?? 0);
   const unfinished = op.expected_count - (op.completed_count ?? 0);
-  return `${ctx.code ? `Code ${safeCode(ctx.code)}` : short(ctx.label ?? "Registration", 48)}\n${ctx.code ? `Applied to ${applied} players` : `${applied} codes applied`}; ${failed} failed; ${unfinished} unfinished.\n`;
+  return `${ctx.code ? `Code ${safeCode(ctx.code)}` : short(ctx.label ?? "Registration", 48)}\n${ctx.code ? `Applied to ${applied} players` : `${applied} codes applied`}; ${failed} failed; ${op.uncertain_count ? `${op.uncertain_count} need verification; ` : ""}${unfinished} unfinished.\n`;
 }
 
 /** One pass/page per call. Cursors and all page output commit together. */
@@ -174,7 +177,8 @@ export async function summaryPage(db: D1Database, now: string): Promise<void> {
         snapshot_sealed_at=CASE WHEN ?3=0 THEN ?4 ELSE NULL END,updated_at=?4,
         success_count=(SELECT COUNT(*) FROM summary_item_snapshot WHERE operation_id=?1 AND status='success'),
         already_redeemed_count=(SELECT COUNT(*) FROM summary_item_snapshot WHERE operation_id=?1 AND status='already_redeemed'),
-        permanent_failure_count=(SELECT COUNT(*) FROM summary_item_snapshot WHERE operation_id=?1 AND status='permanent_failure'),
+        permanent_failure_count=(SELECT COUNT(*) FROM summary_item_snapshot WHERE operation_id=?1 AND status='permanent_failure' AND reason_code IS NOT 'outcome_uncertain'),
+        uncertain_count=(SELECT COUNT(*) FROM summary_item_snapshot WHERE operation_id=?1 AND reason_code='outcome_uncertain'),
         retry_exhausted_count=(SELECT COUNT(*) FROM summary_item_snapshot WHERE operation_id=?1 AND status='retry_exhausted'),
         completed_count=(SELECT COUNT(*) FROM summary_item_snapshot WHERE operation_id=?1 AND status<>'still_pending')
         WHERE operation_id=?1 AND summary_state='sealing' AND snapshot_cursor IS ?5`,

@@ -215,7 +215,7 @@ describe("logical invocation authority and transitions", () => {
       if (stale) expect(await redemption(f.pid)).toEqual(before);
     },
   );
-  it("DLQ cannot close a live invocation, and stale invocation results cannot win", async () => {
+  it("DLQ cannot close a live invocation; expiry holds an injected provider and fences late results", async () => {
     const f = await setup();
     const latch = deferred<RedeemResult>();
     const started = deferred<void>();
@@ -233,8 +233,9 @@ describe("logical invocation authority and transitions", () => {
     await run(f.jobs[0]!, provider);
     latch.resolve({ outcome: "permanent", reasonCode: "code_invalid" });
     await old;
-    expect((await redemption(f.pid))?.status).toBe("success");
-    expect((await redemption(f.pid))?.provider_invocations).toBe(2);
+    expect((await redemption(f.pid))?.status).toBe("permanent_failure");
+    expect((await redemption(f.pid))?.reason_code).toBe("outcome_uncertain");
+    expect((await redemption(f.pid))?.provider_invocations).toBe(1);
   });
   it.each([0, 3])("in-flight state changes honor the reevaluation cap %s", async (cap) => {
     const f = await setup();

@@ -107,7 +107,7 @@ export async function acceptRegistrationEvent(input: AcceptanceInput): Promise<A
         current_invocation_token=NULL, invocation_expires_at=NULL, retry_due_at=NULL,
         reason_code=NULL, terminal_at=NULL, attempts=0, attempt_generation=attempt_generation+1,
         reeval_count=reeval_count+1, updated_at=?1, budget_generation=budget_generation+1, provider_invocations=0, provider_invocation_limit=?5, current_terminal_generation=NULL
-        WHERE player_id=?2 AND status='permanent_failure' AND reason_code='player_ineligible'
+        WHERE player_id=?2 AND dispatch_hold_token IS NULL AND status='permanent_failure' AND reason_code='player_ineligible'
           AND reeval_count < ?3 AND (attempt_state IS NULL OR attempt_state <> ?4)
           AND EXISTS (SELECT 1 FROM players p WHERE p.player_id=?2 AND p.state <> ?4)`,
         )

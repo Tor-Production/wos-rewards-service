@@ -1,7 +1,7 @@
 import { deterministicUuid } from "../ingest/identity";
 import { renderDisplayLabel } from "../ingest/sanitize";
 import type { AppConfig } from "../config";
-import { closeBudget } from "../redemption/consumer";
+import { closeExpiredOrExhausted } from "../redemption/consumer";
 import { mirrorObservation, reuseTerminal } from "../redemption/reconcile";
 import { mutableOperation, progress, rotation, terminalStatuses } from "../runtime/db";
 interface Stuck {
@@ -14,6 +14,7 @@ interface Stuck {
   attempt_id: string;
   current_attempt_id: string | null;
   status: string | null;
+  dispatch_hold_token: string | null;
   provider_invocations: number | null;
   provider_invocation_limit: number | null;
   outbox_status: string;
@@ -58,34 +59,42 @@ export async function redrive(db: D1Database, config: AppConfig, now: string): P
   const threshold = new Date(Date.parse(now) - config.redemptionLeaseSeconds * 1000).toISOString();
   const row = await db
     .prepare(
-      `SELECT i.*,b.attempt_id,b.status AS outbox_status,r.status AS status,r.current_attempt_id,r.provider_invocations,r.provider_invocation_limit
+      `SELECT i.*,b.attempt_id,b.status AS outbox_status,r.status AS status,r.dispatch_hold_token,r.current_attempt_id,r.provider_invocations,r.provider_invocation_limit
     FROM operation_items i JOIN operations o ON o.operation_id=i.operation_id JOIN outbox_jobs b ON b.job_id=i.job_id
     LEFT JOIN redemptions r ON r.player_id=i.player_id AND r.code=i.code JOIN players p ON p.player_id=i.player_id
-    WHERE ${mutableOperation} AND o.deadline_at>?1 AND i.status IN ('pending','in_progress')
+    WHERE (r.dispatch_hold_token IS NOT NULL AND r.status IN ('pending','in_progress','retry_wait')
+      AND (r.invocation_expires_at IS NULL OR r.invocation_expires_at<?1))
+    OR (${mutableOperation} AND o.deadline_at>?1 AND i.status IN ('pending','in_progress')
+    AND r.dispatch_hold_token IS NULL
     AND (r.player_id IS NULL OR r.status='pending' OR (r.status IN ('in_progress','retry_wait') AND (r.invocation_expires_at IS NULL OR r.invocation_expires_at<?1))
       OR (r.status='permanent_failure' AND r.reason_code='player_ineligible' AND r.attempt_state<>p.state AND r.reeval_count<?3))
-    AND b.status IN ('enqueued','dead') AND b.updated_at<?2 AND (r.updated_at IS NULL OR r.updated_at<?2)
+    AND b.status IN ('enqueued','dead') AND b.updated_at<?2 AND (r.updated_at IS NULL OR r.updated_at<?2))
     ORDER BY ${rotation("redrive")} LIMIT 1`,
     )
     .bind(now, threshold, config.redemptionMaxReeval)
     .first<Stuck>();
   if (!row) return;
   if (
-    row.status !== "permanent_failure" &&
-    (row.provider_invocations ?? 0) >=
-      (row.provider_invocation_limit ?? config.providerMaxInvocations)
+    row.dispatch_hold_token !== null ||
+    (row.status !== "permanent_failure" &&
+      (row.provider_invocations ?? 0) >=
+        (row.provider_invocation_limit ?? config.providerMaxInvocations))
   ) {
-    await closeBudget(
+    await closeExpiredOrExhausted(
       db,
       { ...row, attempt_id: row.current_attempt_id ?? row.attempt_id },
       now,
       true,
     );
+    // Closed holds must advance the same operation rotation as ordinary redrives.
+    await progress(db, "redrive", row.operation_id).run();
     return;
   }
   const aid = crypto.randomUUID();
   const guard = `EXISTS(SELECT 1 FROM operations o WHERE o.operation_id=?1 AND ${mutableOperation} AND deadline_at>?3)
-    AND EXISTS(SELECT 1 FROM outbox_jobs b WHERE b.job_id=?2 AND b.attempt_id=?4 AND b.status IN ('enqueued','dead'))`;
+    AND EXISTS(SELECT 1 FROM outbox_jobs b WHERE b.job_id=?2 AND b.attempt_id=?4 AND b.status IN ('enqueued','dead'))
+    AND NOT EXISTS(SELECT 1 FROM operation_items i JOIN redemptions r ON r.player_id=i.player_id AND r.code=i.code
+      WHERE i.job_id=?2 AND r.dispatch_hold_token IS NOT NULL)`;
   await db.batch([
     db
       .prepare(
@@ -96,7 +105,7 @@ export async function redrive(db: D1Database, config: AppConfig, now: string): P
       reeval_count=reeval_count+CASE WHEN status='permanent_failure' THEN 1 ELSE 0 END,
       attempts=CASE WHEN status='permanent_failure' THEN 0 ELSE attempts END,attempt_generation=attempt_generation+CASE WHEN status='permanent_failure' THEN 1 ELSE 0 END,
       current_terminal_generation=NULL,reason_code=NULL,terminal_at=NULL,updated_at=?3
-      WHERE player_id=?5 AND code=?6 AND ${guard} AND (status='pending' OR (status IN ('in_progress','retry_wait') AND (invocation_expires_at IS NULL OR invocation_expires_at<?3))
+      WHERE player_id=?5 AND code=?6 AND dispatch_hold_token IS NULL AND ${guard} AND (status='pending' OR (status IN ('in_progress','retry_wait') AND (invocation_expires_at IS NULL OR invocation_expires_at<?3))
         OR (status='permanent_failure' AND reason_code='player_ineligible' AND attempt_state<>(SELECT state FROM players WHERE player_id=?5) AND reeval_count<?7))`,
       )
       .bind(
@@ -113,7 +122,7 @@ export async function redrive(db: D1Database, config: AppConfig, now: string): P
       .prepare(
         `UPDATE operation_items SET status='pending',claim_token=NULL,claim_expires_at=NULL,updated_at=?3
       WHERE job_id=?2 AND status IN ('pending','in_progress') AND ${guard}
-      AND NOT EXISTS(SELECT 1 FROM redemptions r WHERE r.player_id=operation_items.player_id AND r.code=operation_items.code AND r.status<>'pending')`,
+      AND NOT EXISTS(SELECT 1 FROM redemptions r WHERE r.player_id=operation_items.player_id AND r.code=operation_items.code AND (r.dispatch_hold_token IS NOT NULL OR r.status<>'pending'))`,
       )
       .bind(row.operation_id, row.job_id, now, row.attempt_id),
     db
@@ -132,7 +141,9 @@ export async function deadOutbox(db: D1Database, now: string): Promise<void> {
     .prepare(
       `SELECT i.*,b.attempt_id,o.summary_state,o.state,o.deadline_at,o.summary_context FROM outbox_jobs b
     JOIN operation_items i ON i.job_id=b.job_id JOIN operations o ON o.operation_id=i.operation_id
-    WHERE b.status='dead' AND NOT EXISTS(SELECT 1 FROM operations repair WHERE repair.operation_id='repair:'||b.job_id||':'||b.attempt_id)
+    WHERE b.status='dead'
+    AND NOT EXISTS(SELECT 1 FROM redemptions r WHERE r.player_id=i.player_id AND r.code=i.code AND r.dispatch_hold_token IS NOT NULL)
+    AND NOT EXISTS(SELECT 1 FROM operations repair WHERE repair.operation_id='repair:'||b.job_id||':'||b.attempt_id)
     AND (i.status IN ('pending','in_progress') OR o.summary_state<>'none') ORDER BY b.updated_at,b.job_id LIMIT 1`,
     )
     .first<
@@ -151,7 +162,7 @@ export async function deadOutbox(db: D1Database, now: string): Promise<void> {
   ) {
     const aid = crypto.randomUUID();
     const eligible = `EXISTS(SELECT 1 FROM operations o WHERE o.operation_id=?1 AND ${mutableOperation} AND deadline_at>?3)
-      AND NOT EXISTS(SELECT 1 FROM redemptions r WHERE r.player_id=?5 AND r.code=?6 AND (r.status IN (${terminalStatuses}) OR (r.status IN ('in_progress','retry_wait') AND r.invocation_expires_at>=?3)))`;
+      AND NOT EXISTS(SELECT 1 FROM redemptions r WHERE r.player_id=?5 AND r.code=?6 AND (r.dispatch_hold_token IS NOT NULL OR r.status IN (${terminalStatuses}) OR (r.status IN ('in_progress','retry_wait') AND r.invocation_expires_at>=?3)))`;
     await db.batch([
       db
         .prepare(
@@ -176,19 +187,23 @@ export async function deadOutbox(db: D1Database, now: string): Promise<void> {
     db
       .prepare(
         `INSERT INTO operation_late_results(operation_id,player_id,code,observed_at,status,reason_code)
-      VALUES (?1,?2,?3,?4,'retry_exhausted','outbox_dead') ON CONFLICT DO NOTHING`,
+      SELECT ?1,?2,?3,?4,'retry_exhausted','outbox_dead'
+      WHERE NOT EXISTS(SELECT 1 FROM redemptions WHERE player_id=?2 AND code=?3 AND dispatch_hold_token IS NOT NULL) ON CONFLICT DO NOTHING`,
       )
       .bind(row.operation_id, row.player_id, row.code, now),
     db
       .prepare(
         `INSERT INTO operations(operation_id,type,trigger_kind,trigger_ref,snapshot_at,expected_count,expansion_state,deadline_at,created_at,updated_at,summary_context)
-      VALUES (?1,'repair_run','human_repair',?2,?3,1,'expanded',?3,?3,?3,?4) ON CONFLICT DO NOTHING`,
+      SELECT ?1,'repair_run','human_repair',?2,?3,1,'expanded',?3,?3,?3,?4
+      WHERE NOT EXISTS(SELECT 1 FROM redemptions WHERE player_id=?5 AND code=?6 AND dispatch_hold_token IS NOT NULL) ON CONFLICT DO NOTHING`,
       )
-      .bind(id, row.operation_id, now, row.summary_context),
+      .bind(id, row.operation_id, now, row.summary_context, row.player_id, row.code),
     db
       .prepare(
         `INSERT INTO operation_items(operation_id,item_key,player_id,code,job_id,status,display_label,updated_at)
-      VALUES (?1,?2,?2,?3,'distribution:'||?1||':'||?2,'pending',?4,?5) ON CONFLICT DO NOTHING`,
+      SELECT ?1,?2,?2,?3,'distribution:'||?1||':'||?2,'pending',?4,?5
+      WHERE EXISTS(SELECT 1 FROM operations WHERE operation_id=?1)
+      AND NOT EXISTS(SELECT 1 FROM redemptions WHERE player_id=?2 AND code=?3 AND dispatch_hold_token IS NOT NULL) ON CONFLICT DO NOTHING`,
       )
       .bind(id, row.player_id, row.code, row.display_label, now),
   ]);
@@ -208,7 +223,9 @@ export async function authorizeRepair(
     db
       .prepare(
         `UPDATE operations SET repair_authorized_at=?2,deadline_at=?3,updated_at=?2
-      WHERE operation_id=?1 AND type='repair_run' AND repair_authorized_at IS NULL AND summary_state='none'`,
+      WHERE operation_id=?1 AND type='repair_run' AND repair_authorized_at IS NULL AND summary_state='none'
+      AND NOT EXISTS(SELECT 1 FROM operation_items i JOIN redemptions r ON r.player_id=i.player_id AND r.code=i.code
+        WHERE i.operation_id=?1 AND r.dispatch_hold_token IS NOT NULL)`,
       )
       .bind(
         id,
@@ -220,7 +237,7 @@ export async function authorizeRepair(
         `UPDATE redemptions SET status='pending',budget_generation=budget_generation+1,provider_invocations=0,provider_invocation_limit=?3,attempt_generation=attempt_generation+1,attempts=0,
       current_terminal_generation=NULL,current_attempt_id=NULL,current_invocation_token=NULL,invocation_expires_at=NULL,retry_due_at=NULL,
       reason_code=NULL,terminal_at=NULL,reeval_count=CASE WHEN ?4=1 THEN 0 ELSE reeval_count END,updated_at=?2
-      WHERE status IN ('permanent_failure','retry_exhausted') AND EXISTS(SELECT 1 FROM operation_items i JOIN operations o ON o.operation_id=i.operation_id
+      WHERE dispatch_hold_token IS NULL AND status IN ('permanent_failure','retry_exhausted') AND EXISTS(SELECT 1 FROM operation_items i JOIN operations o ON o.operation_id=i.operation_id
         WHERE i.operation_id=?1 AND i.player_id=redemptions.player_id AND i.code=redemptions.code AND o.repair_authorized_at=?2)
         AND NOT EXISTS(SELECT 1 FROM outbox_jobs b WHERE b.operation_id=?1)`,
       )
@@ -230,7 +247,8 @@ export async function authorizeRepair(
         `INSERT INTO outbox_jobs(job_id,operation_id,item_key,type,attempt_id,payload_json,status,available_at,created_at,updated_at)
       SELECT i.job_id,i.operation_id,i.item_key,'distribution',?3,
         json_object('operation_id',i.operation_id,'item_key',i.item_key,'job_id',i.job_id,'player_id',i.player_id,'code',i.code,'attempt_id',?3),'pending',?2,?2,?2
-      FROM operation_items i JOIN operations o ON o.operation_id=i.operation_id WHERE i.operation_id=?1 AND o.repair_authorized_at=?2 ON CONFLICT DO NOTHING`,
+      FROM operation_items i JOIN operations o ON o.operation_id=i.operation_id WHERE i.operation_id=?1 AND o.repair_authorized_at=?2
+      AND NOT EXISTS(SELECT 1 FROM redemptions r WHERE r.player_id=i.player_id AND r.code=i.code AND r.dispatch_hold_token IS NOT NULL) ON CONFLICT DO NOTHING`,
       )
       .bind(id, stamp, aid),
   ]);
@@ -249,7 +267,7 @@ export async function openRepairRun(
   const id = await deterministicUuid(`repair:${requestId}`);
   const source = await db
     .prepare(
-      `SELECT p.display_name FROM players p JOIN redemptions r ON r.player_id=p.player_id WHERE p.player_id=?1 AND r.code=?2 AND r.status IN ('permanent_failure','retry_exhausted')`,
+      `SELECT p.display_name FROM players p JOIN redemptions r ON r.player_id=p.player_id WHERE p.player_id=?1 AND r.code=?2 AND r.dispatch_hold_token IS NULL AND r.status IN ('permanent_failure','retry_exhausted')`,
     )
     .bind(playerId, code)
     .first<{ display_name: string | null }>();
@@ -261,7 +279,7 @@ export async function openRepairRun(
       .prepare(
         `INSERT INTO operations(operation_id,type,trigger_kind,trigger_ref,snapshot_at,expected_count,expansion_state,deadline_at,created_at,updated_at,summary_context)
       SELECT ?1,'repair_run','human_repair',?2,?3,1,'expanded',?3,?3,?3,?4
-      WHERE EXISTS(SELECT 1 FROM redemptions WHERE player_id=?5 AND code=?6 AND status IN ('permanent_failure','retry_exhausted')) ON CONFLICT DO NOTHING`,
+      WHERE EXISTS(SELECT 1 FROM redemptions WHERE player_id=?5 AND code=?6 AND dispatch_hold_token IS NULL AND status IN ('permanent_failure','retry_exhausted')) ON CONFLICT DO NOTHING`,
       )
       .bind(
         id,
