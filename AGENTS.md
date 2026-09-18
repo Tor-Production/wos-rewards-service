@@ -37,6 +37,22 @@ This repository contains a Cloudflare-hosted Discord service for registering Whi
 - The agent must not merge or deploy automatically.
 - Tokens, credentials, cookies, API keys, Discord tokens, Cloudflare credentials, and session secrets must never be committed, printed, logged, or requested.
 
+## Issue-linked workflow
+
+- Before planning or implementation, inspect open and closed GitHub issues. Reuse an issue whose
+  scope matches; otherwise create one with focused acceptance criteria and explicit dependencies.
+- Name the relevant issue IDs or URLs in executor prompts, pull requests, and handoffs.
+- Use `Closes #N` or `Fixes #N` only when the pull request fully resolves the issue. Use
+  `Related to #N` for partial work and keep the remaining scope visible.
+- Keep exactly one applicable status label accurate while an issue is open: `status:backlog`,
+  `status:in-progress`, `status:in-review`, `status:blocked`, or `status:deferred`. Update
+  dependencies and status at implementation start, pull request/review, blocked or deferred
+  transitions, and completion.
+- Before recording completion, verify the merge and any automatic issue closure, then remove
+  obsolete status labels. A draft pull request does not complete or close unfinished scope.
+- Record material blockers and follow-up work in linked issues. Tracker updates never grant
+  deployment, production, provider, credential, or other operational permission.
+
 ## Player registration contract
 
 Supported Discord message forms:

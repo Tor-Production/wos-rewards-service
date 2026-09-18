@@ -172,13 +172,14 @@
   mitigated, not eliminated.
 - At-least-once delivery with no producer dedup key **[fact:C7]** ⇒ duplicate work unless
   the item lease and the global redemption claim are implemented exactly.
-- A real provider that redeems but whose Worker crashes before the conditional
-  `redemptions` write can double-apply a code — hence the production-provider
-  idempotency-key / reconciliation requirement; until met, production redemption stays
-  blocked.
-- Task 10 confirms that a consumer timeout does not cancel the provider call and local
-  terminal reconciliation is not upstream reconciliation. Mock and future real results
-  would share player/code identities without provider provenance. See the canonical
+- Task 10 established that a consumer timeout does not cancel a provider call and that local
+  terminal reconciliation is not upstream reconciliation. The merged Task 13 containment now
+  records a pre-dispatch hold and finalizes ambiguous timeout, crash, and lost-result paths as
+  uncertainty without automatic replay. That local guard does not prove whether the upstream
+  action applied, clear the hold, or supply provider idempotency/reconciliation; production
+  redemption therefore stays blocked.
+- Mock and future real results would share player/code identities without provider provenance.
+  See the canonical
   [compatibility assessment](../whiteout-provider-decision.md#11-contract-readiness-and-implementation-compatibility)
   and [isolated-stack recommendation](../whiteout-provider-decision.md#12-minimum-mock-to-real-isolation-recommendation)
   before considering a real test; a fresh code or receipt prefix is insufficient isolation.

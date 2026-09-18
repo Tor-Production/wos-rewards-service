@@ -1,94 +1,89 @@
 # wos-rewards-service — documentation
 
-A Cloudflare-hosted Discord service that registers Whiteout Survival players from plain
-messages in one configured registration channel (`PLAYER_ID [STATE] [NAME]`) and applies gift
-codes for them. The implemented backend is Workers + D1 + Queues in TypeScript strict mode,
-staging-first; a Durable Object Gateway adapter exists only in local tests. All Whiteout Survival
-access goes through the `WhiteoutProvider` interface, and `MockWhiteoutProvider` is the default in
-development, tests, and staging.
+This is the current-state and routing page for the Cloudflare-hosted Discord service. The service
+registers Whiteout Survival players from plain messages, accepts an allow-listed manual code
+command, and processes work through D1 and Cloudflare Queues. `AGENTS.md` is the binding source for
+safety, engineering, issue/branch workflow, registration parsing, and the runtime Discord footer.
 
-`AGENTS.md` at the repository root is the binding contract — safety boundaries, engineering
-requirements, the branch/PR workflow, the player registration contract, and the runtime
-Discord footer. It wins over anything written here.
+Use this page to choose the smallest authoritative document sections for a task. GitHub owns active
+work, future work, and pull-request history; repository documents own stable architecture, contracts,
+authorization records, and dated technical evidence.
 
 ## Current state
 
-Task 12 adds an isolated local one-pair experiment under the dated human exception in
-[provider decision §16](whiteout-provider-decision.md#16-task-12--bounded-local-live-experiment-2026-09-18).
-One authorized request ran on 2026-09-18 at 01:42:59 UTC and returned HTTP 403 with no
-recognized response envelope. The user subsequently supplied a successful Postman response
-and confirmed the gift arrived in-game after their own request. This confirms that flow's
-success; the agent's earlier 403 remains a separate unsuccessful HTTP observation. The
-export omits player/code values, so it does not establish exact pair attribution by itself.
-The user then explicitly authorized one duplicate check of the same pair. At 02:54:45 UTC,
-the agent's single additional request returned **HTTP 200, RECEIVED / 40008** (already redeemed).
-Both separate budgets are consumed and live invocation is disabled. The harness is outside
-runtime provider selection, D1, Queues and Discord. Service redemption
-and discovery remain disabled. This does not accept the general §13 staged-gate proposal.
-
-Task 10 (2026-09-17) is documentation-only provider feasibility research. Task 09 live-service
-details below (deployed version, migrations, smoke, companion shutdown) are historical records
-from its activation; Task 10 did not reverify live state. Test counts in historical records
-are not results of Task 10 checks.
-
-| | |
+| Area | Current meaning |
 |---|---|
-| **Repository contents** | Phases 1–4 plus the local Task 09 staging MVP: strict TypeScript Worker, atomic registration acceptance, transactional outbox, Queue/DLQ consumers, `MockWhiteoutProvider`, bounded distribution/summary pipelines, a provisional `discord.js` companion, authenticated manual-code intake, and opt-in real Discord REST delivery. Tasks 08A–08C remain local prerequisites for the separately gated ADR 0001 spike; their Durable Object has no deployable binding. The original twelve-table baseline is unchanged; migrations 0002–0004 add Phase 4 state, immutable spike evidence, and the manual-command idempotency ledger. |
-| **Task 13 local reliability** | Additive migration 0005 and the consumer/recovery guards retain uncertain player/code outcomes without automatic replay. Dispatch evidence is committed with the provider grant; expired held grants, timeout, exception and lost result persistence require verification. Frozen summaries count uncertainty separately; generic repair cannot clear it. Local synthetic tests only. This change is not deployed: remote staging remains on its existing Task 09 runtime and migrations 0001–0004. No real provider, lookup or hold-clearing workflow is enabled. |
-| **Implemented phase** | **Task 09 — staging MVP vertical slice, delivery enabled with completed smoke test** is implemented and tested on top of Phase 4. A human registration and an allow-listed manual mock code traversed the existing acceptance, D1, Queue, mock provider, summary, and output pipeline remotely in staging. The staging Worker, D1, Queues/DLQ, one-minute Cron and `workers.dev` route exist; version `7a083c14-a7ac-4875-ad11-04de4b10b139` is deployed and migrations 0001–0004 are current. Delivery is enabled only in staging under the approved smoke-test gate; the companion connected for the test and was then stopped. The 72-hour Durable Object spike is deferred—not passed or waived—and ADR 0001 remains Proposed. Discovery and production redemption remain absent and blocked. |
-| **Supported environments** | `staging` only. `wrangler.jsonc` declares a single environment-specific `workers.dev` route with preview URLs disabled and no production environment. The loader accepts only `ENVIRONMENT=staging`; `env.staging` contains the reviewed real Discord and D1 identifiers while the safe top-level scope retains sentinels and a disabled route. The staging route serves only the explicitly approved Task 09 version. |
-| **D1 database** | `wos-rewards-service-staging` (`6dc171c2-27f5-4ef2-8788-ebd243cd354f`) is provisioned in `EEUR` and bound only under `env.staging`. The baseline plus additive migrations 0002–0004 were applied remotely under the 2026-09-15 staging deployment/migration approval; a second check reported no migrations to apply, and the post-deployment read-only check found the application ledgers empty. Migration 0004 adds `manual_code_commands`, keyed by the Discord message id; tests cover 0003→0004 upgrade, its constraints, foreign-key integrity, and migration-journal no-op reapplication. Local application uses `npm run d1:migrate:local`; there is deliberately no reusable remote-apply script. |
-| **Registration acceptance** | One six-statement D1 transaction captures all currently active codes as `operation_items` plus per-item outbox rows and writes `work_committed`. The 2,000-code cap is enforced inside that transaction; exceeding it returns generic `503` and rolls back all event writes. There is no deferred registration shell; migration 0002 adds immutable summary context and logical budget state. Invalid human syntax creates a two-statement atomic marker + pending, dispatch-eligible validation reply. Invalid syntax from an authenticated, allow-listed staging bot/webhook creates a two-statement atomic finalized `staging_spike` marker + deterministic evidence row born superseded, ineligible, permanently blocked and immutable, with no operation, outbox, Queue, provider, Discord, or network work. |
-| **Manual mock distribution** | Authenticated `POST /manual-code` accepts one exact, bounded event schema from the configured staging guild/admin channel and a configured human administrator. The Discord message id is the durable key. One D1 batch records the command, deduplicates the code, opens the existing `code_distribution_run`, and freezes its player membership; replies expose only accepted/duplicate/ignored/unauthorized/unavailable. The companion command is exactly `!wos-code CODE`, with a 64-character ASCII code bound. |
-| **Queues** | The remote staging Queue objects `wos-rewards-registration-jobs-staging` and `wos-rewards-code-fanout-jobs-staging`, plus `wos-rewards-redemption-dlq-staging`, are attached to the deployed Worker with producer/consumer counts 1/1, 1/1 and 0/1. Consumer batches are two, concurrency one per queue, physical retries three. The live synthetic code produced one fanout job that completed with zero backlog/retries and no DLQ message. A separate atomic D1 budget permits at most four provider grants including the first call per logical generation, and the grant transaction revalidates the exact current outbox attempt. |
-| **Cron** | The deployed Worker has one active one-minute trigger running independent expansion, outbox, recovery, summary and output lanes. The complete invocation is capped at 39 D1 statements, eight sequential Queue sends, and one Discord request. `DISCORD_DELIVERY_ENABLED=true` only in staging and the hidden bot-token binding is present, so eligible durable outputs use the real API-v10 transport. The live smoke test recorded two successful `2xx` Discord subrequests, one registration summary, and one distribution summary; the companion is now stopped. Retention and discovery do not run. |
-| **Production gift-code redemption** | **BLOCKED.** No authorized production `WhiteoutProvider` exists; `PRODUCTION_REDEMPTION_ENABLED` is `false` and the configuration loader rejects `true` in every environment. See [whiteout-provider-decision.md](whiteout-provider-decision.md). |
-| **Task 10 — provider feasibility** | Public research found no acceptable authorized contract in the examined sources; this does not prove no private API exists. [Provider decision §10–§15](whiteout-provider-decision.md#10-task-10-public-evidence--2026-09-17) owns historical evidence and integration blockers. §4 still governs general integration; Task 12 has only the narrow §16 exception. The staged amendment is pending. Phase 8 remains blocked. |
-| **Gift-code discovery** | **Not authorized.** `GiftCodeSource` is an interface with no implementation; `CODE_DISCOVERY_ENABLED` is `false` and the configuration loader rejects `true`. |
-| **Ingestion topology** | **Provisional MVP exception.** Task 09 implements Option 2 as a small foreground `discord.js` process on a user-controlled Windows host. It listens only to one configured guild and the registration/admin channels, drops non-human traffic, forwards registrations unchanged, and accepts manual commands only from configured human administrators. The companion completed the approved staging smoke test and was shut down cleanly. [ADR 0001](adr/0001-discord-event-ingestion.md) remains **Proposed**: this staging MVP defers its 72-hour Option 1 spike and supplies no production evidence. Task 08C's Durable Object remains local-test-only and must not be deployed. |
-| **Checks that apply today** | `npm run format:check`; `npm run typecheck` (Wrangler type freshness plus strict Worker, test, and companion TypeScript); `npm run test:mvp`; `npm test` (Workers-runtime plus companion deterministic suites); `npm run test:shuffle`; and `npm run validate` (staging dry-run only). `npm run check` runs formatting, types, deterministic/shuffled suites, and dry-run validation. `npm run d1:migrate:local` applies migrations to local D1 only. |
+| Repository runtime | Strict TypeScript Worker, D1, Queue/DLQ consumers, durable summary/output delivery, authenticated registration and manual-code intake, and a provisional foreground `discord.js` companion. Development, tests, runtime routing, and the recorded staging deployment use `MockWhiteoutProvider`. |
+| Task 13 in `main` | Additive migration `0005` and the merged consumer/recovery guards retain potentially applied player/code outcomes as uncertainty without automatic replay. Dispatch evidence is written before a potentially applying call; timeout, exception, lost result, and process-loss paths preserve the hold. Frozen summaries count uncertainty separately. This is local/repository state, not a real-provider implementation or upstream reconciliation guarantee. |
+| Deployed evidence | The latest committed record is historical Task 09 evidence: staging provisioning on 2026-09-14, deployment and migrations `0001`–`0004` on 2026-09-15, and the mock-only Discord smoke on 2026-09-17. Task 13 and migration `0005` are **merged, not deployed**. No live-resource state was reverified by the later documentation/provider tasks. |
+| Task 12 experiment | A narrow, dated local exception exercised one private pair and one separate already-applied check against the live game. Both agent request budgets are consumed and disabled. The harness remains outside the Worker, D1, Queues, Discord, and provider selection; it does not authorize a general provider, replay after an unknown outcome, or production activation. |
+| Environments and Discord topology | The application accepts `staging` only. The Task 09 Option 2 companion is provisional and was stopped after its dated smoke. ADR 0001 remains **Proposed**; the 72-hour Option 1 spike is deferred, not passed or waived, and the Task 08C Durable Object remains local-test-only. |
+| Active gates | Production redemption and automatic discovery are disabled. No authorized production `WhiteoutProvider` or `GiftCodeSource` exists. The pending provider amendment is not accepted; publisher authorization, a verified contract, and the documented activation approvals remain separate prerequisites. |
 
-> **Maintenance note.** Any future task that changes the implemented phase, the current gates
-> (production redemption, code discovery, the ADR 0001 spike), or the supported environments
-> **must update this Current state section in the same pull request** as the change. A stale
-> Current state is treated as a defect, not as documentation debt.
+For the exact historical non-secret staging inventory, use the
+[Task 09 deployment record](architecture/configuration.md#task-09-staging-deployment-record-non-secret).
+For the dated activation sequence and limitations, use the
+[staging MVP gate](architecture/operations-and-reliability.md#task-09-staging-mvp-activation-gate).
+Neither link is a claim of fresh live verification.
+
+Active work and dependencies are maintained in the
+[GitHub issue tracker](https://github.com/Tor-Production/wos-rewards-service/issues) and the pinned
+[project roadmap and working agreement](https://github.com/Tor-Production/wos-rewards-service/issues/25).
+Task numbers identify repository milestones; issue numbers identify tracker records and are not the
+same sequence.
 
 ## Documentation routing
 
-| Document | Read it when you need |
+| Document | Read it for |
 |---|---|
-| [architecture.md](architecture.md) | Orientation: scope and goals, system context and deployment topology, component boundaries, cross-cutting idempotency invariants, the phased implementation order, and the official-sources table every `[fact:<ref>]` tag resolves against. Also carries the **Document map** and the **Traceability map**. |
-| [architecture/configuration.md](architecture/configuration.md) | Every non-secret variable and every secret, **names only**, with what reads each one. |
-| [architecture/discord-ingestion-and-registration.md](architecture/discord-ingestion-and-registration.md) | The `DiscordEventSource` boundary, the production author gate and the staging spike exception, message parsing, atomic acceptance, and the two flows that follow it. |
-| [architecture/data-model-and-outbox.md](architecture/data-model-and-outbox.md) | Identifier handling, the D1 tables and what the baseline migration adds to them (checks, foreign keys, indexes), and the transactional outbox. |
-| [architecture/redemption-state-machine.md](architecture/redemption-state-machine.md) | The provider abstractions, Queue and DLQ boundaries, the item lease, the global redemption record with the **T1–T16** transition table, and retry / permanent-failure classification. |
-| [architecture/summary-and-delivery.md](architecture/summary-and-delivery.md) | Completion accounting and the source freeze, the paged seal → layout → render → deliver pipeline, zero-result operations, and Discord output safety including footer placement. |
-| [architecture/operations-and-reliability.md](architecture/operations-and-reliability.md) | Scheduled components and the Cron budget, staging/production separation, observability, the testing strategy, failure modes and recovery, and the scenario matrix. |
-| [architecture/open-decisions-and-risks.md](architecture/open-decisions-and-risks.md) | What is Resolved, what is Open, and the known Risks — check here before assuming a decision is settled. |
-| [adr/0001-discord-event-ingestion.md](adr/0001-discord-event-ingestion.md) | The ingestion-transport decision (**Proposed**), the options compared, and the spike design and pass thresholds. |
-| [whiteout-provider-decision.md](whiteout-provider-decision.md) | What Whiteout Survival access is authorized, mock/error contracts, real-provider acceptance and prohibitions. Task 10 §10–§15 owns dated source evidence, compatibility gaps, mock-to-real isolation, pending staged approvals, the future one-pair test and recommended next slice. |
+| [../README.md](../README.md) | Reader-facing purpose, supported Discord input, local setup, package commands, migrations, and current limits. |
+| [architecture.md](architecture.md) | Orientation: scope/non-goals, system context, component boundaries, cross-cutting idempotency, phase order (§23), official sources, and the traceability map. |
+| [architecture/configuration.md](architecture/configuration.md) | Configuration and secret names, validation constraints, and the dated Task 09 non-secret deployment record. |
+| [architecture/discord-ingestion-and-registration.md](architecture/discord-ingestion-and-registration.md) | Discord source boundaries, author filtering, parsing, atomic registration acceptance, and manual-code intake. |
+| [architecture/data-model-and-outbox.md](architecture/data-model-and-outbox.md) | D1 schema, migrations, identifiers, transactional outbox, and Task 13 migration `0005`. |
+| [architecture/redemption-state-machine.md](architecture/redemption-state-machine.md) | Provider interfaces, Queue/DLQ ownership, the T1–T17 transitions, retry classification, and the durable Task 13 uncertainty hold. |
+| [architecture/summary-and-delivery.md](architecture/summary-and-delivery.md) | Frozen completion accounting and the paged seal/layout/render/delivery pipeline, including Discord output safety. |
+| [architecture/operations-and-reliability.md](architecture/operations-and-reliability.md) | Cron budgets, staging separation, historical activation evidence, observability, testing, failure recovery, and scenario matrices. |
+| [architecture/open-decisions-and-risks.md](architecture/open-decisions-and-risks.md) | Settled decisions, open decisions, and risks; check before assuming a gate or topology is resolved. |
+| [adr/0001-discord-event-ingestion.md](adr/0001-discord-event-ingestion.md) | Proposed ingestion-topology decision, the deferred Gateway spike, and its pass thresholds. |
+| [whiteout-provider-decision.md](whiteout-provider-decision.md) | Provider authorization and evidence, mock/error contracts, real-provider acceptance gates, Task 10 research, Task 13 qualification, and Task 12’s dated exception/evidence. Use the targeted routing below instead of loading it wholesale. |
+| [../experiments/task12/README.md](../experiments/task12/README.md) | Offline-default Task 12 harness behavior, consumed budgets, and disabled-state evidence boundaries. Do not inspect private local records for ordinary work. |
 
-Each subject has exactly one owning document. `architecture.md` summarizes and links; it does
-not restate a normative rule another document owns. The runtime Discord footer **text** lives
-only in `AGENTS.md` and is reproduced in no document.
+Each subject has one owner. The overview and this router summarize and link; they do not replace a
+normative rule. Historical evidence stays in its owning document and is loaded only when the task
+needs it.
+
+### Provider-decision section routing
+
+The provider decision is a large evidence record. Load only the sections relevant to the question:
+
+| Task | Sections |
+|---|---|
+| Check current provider status or permission | [§1 current status](whiteout-provider-decision.md#1-current-status), [§4 required authorization](whiteout-provider-decision.md#4-required-authorization-and-evidence-before-adding-a-real-provider), [§5 acceptance](whiteout-provider-decision.md#5-acceptance-criteria-for-a-production-provider), and [§8 prohibitions](whiteout-provider-decision.md#8-explicit-prohibition-statement). |
+| Change or validate mock behavior | [§3 mock behavior](whiteout-provider-decision.md#3-mockwhiteoutprovider-behaviour) plus the provider interface/state-machine sections that own the changed code. |
+| Map provider errors or retries | [§6 error mapping](whiteout-provider-decision.md#6-provider-rate-limits-and-error-mapping), [state machine §11 and §15.2](architecture/redemption-state-machine.md), and Task 13’s [§11 containment update](whiteout-provider-decision.md#task-13-local-containment-update--2026-09-18). |
+| Evaluate automatic code discovery | [§7 discovery status](whiteout-provider-decision.md#7-gift-code-discovery-source-status), §8, and the discovery risk in [open decisions](architecture/open-decisions-and-risks.md#24-unresolved-decisions-and-risks). |
+| Decide the proposed staged-gate amendment | [§13 pending amendment](whiteout-provider-decision.md#13-pending-staged-gate-amendment), together with §§4–5 and the exact new human decision/evidence. A merge or issue update is not acceptance. |
+| Interpret Task 10 evidence or plan a later provider slice | [§10–§15](whiteout-provider-decision.md#10-task-10-public-evidence--2026-09-17), especially §11’s dated compatibility analysis and Task 13 qualification. |
+| Audit the completed Task 12 exception | [§16](whiteout-provider-decision.md#16-task-12--bounded-local-live-experiment-2026-09-18). Load it only when the experiment’s authorization, contract, observations, or consumed budgets are directly relevant. |
 
 ## What to read per implementation phase
 
-Phases are the ones in [architecture.md §23](architecture.md#23-phased-implementation-order).
-Load the sections listed — not the whole corpus. If a task grows beyond its row, load the
-containing document rather than guessing.
+Phases are defined in [architecture §23](architecture.md#23-phased-implementation-order). Every
+task also inherits `AGENTS.md`; expand beyond a row only when the scope actually crosses that
+boundary.
 
-| Phase | Sections to load |
+| Phase or work type | Minimum focused context |
 |---|---|
-| **1 — Scaffold** (TypeScript strict, Wrangler config for the `staging` stack, `MockWhiteoutProvider`, test harness) | this file (Current state); [architecture.md](architecture.md) §1, §23; [configuration.md](architecture/configuration.md) §4 (`ENVIRONMENT`, `PROVIDER_MODE`, `PRODUCTION_REDEMPTION_ENABLED`, `LOG_LEVEL`) and Secrets; [redemption-state-machine.md](architecture/redemption-state-machine.md) §11 (the `WhiteoutProvider` interface and `MockWhiteoutProvider` requirements); [whiteout-provider-decision.md](whiteout-provider-decision.md) §1, §3 (`MockWhiteoutProvider` behaviour), §5 (rollback switch, mock parity); [operations-and-reliability.md](architecture/operations-and-reliability.md) §21 (mandated unit tests, Workers-compatible runner, pre-finish gate), §19 (staging/production separation) |
-| **2 — D1 schema + migrations** | [data-model-and-outbox.md](architecture/data-model-and-outbox.md) §10, §12 (all tables); [operations-and-reliability.md](architecture/operations-and-reliability.md) §19 (migrations staging first, then production after review) |
-| **3 — Ingestion Worker + `DiscordEventSource` interface + atomic acceptance + transactional outbox + Queue producers** (implemented locally) | [discord-ingestion-and-registration.md](architecture/discord-ingestion-and-registration.md) §3, §5, §6, §7; [data-model-and-outbox.md](architecture/data-model-and-outbox.md) §12 (`processed_events`, `operations`, `operation_items`, `outbox_jobs`), §14; [redemption-state-machine.md](architecture/redemption-state-machine.md) §13 (queue names, batching and retry limits **[fact:C6–C8]**, consumer-side dedup — there is no producer idempotency key); [configuration.md](architecture/configuration.md) §4 (`DISCORD_*`, `DEFAULT_STATE`, `*_QUEUE`, `OUTBOX_DISPATCH_MAX_ATTEMPTS`, `FANOUT_EXPANSION_PAGE_SIZE`, `SPIKE_SENDER_ALLOWLIST`) and Secrets (`INGESTION_SHARED_SECRET`); [operations-and-reliability.md](architecture/operations-and-reliability.md) §9 (outbox dispatcher cadence), §21 (atomic-acceptance, author-filter, parser, outbox-`dead` tests); [architecture.md](architecture.md) §16 (event-acceptance and outbox → queue idempotency) |
-| **4 — Consumers + global redemption serialization + operation aggregation + durable output delivery** | [redemption-state-machine.md](architecture/redemption-state-machine.md) §11 (`RedeemResult`), §15.1, §15.2 (**T1–T16**), §13 (DLQ consumer, T10/T11), §17; [whiteout-provider-decision.md](whiteout-provider-decision.md) §6 (provider rate limits and the error-mapping contract the adapter must fill in); [summary-and-delivery.md](architecture/summary-and-delivery.md) §15.3, §15.4, §15.5, §18 (footer placement); [data-model-and-outbox.md](architecture/data-model-and-outbox.md) §12 (`redemptions`, `operation_items`, `operation_late_results`, `summary_item_snapshot`, `summary_chunk_layout`, `discord_output_deliveries`); [operations-and-reliability.md](architecture/operations-and-reliability.md) §9 (summary builder, output dispatcher, sweeper), §20 (invocation-transition metrics), §21 (serialization, T3, T9 → T2, DLQ, state-cap, summary tests), §22, §15.6; [configuration.md](architecture/configuration.md) §4 (lease TTLs, `PROVIDER_MAX_RETRIES`, `SUMMARY_*`, `REDEMPTION_*`, `OPERATION_DEADLINE_SECONDS`) |
-| **5 — ADR 0001 spike** | [adr/0001-discord-event-ingestion.md](adr/0001-discord-event-ingestion.md) in full, especially §5, §6 (spike design, containment, pass thresholds, reporting rule), §8; [discord-ingestion-and-registration.md](architecture/discord-ingestion-and-registration.md) §3 (Author filtering, Staging spike exception), §5 (atomic spike acceptance); [data-model-and-outbox.md](architecture/data-model-and-outbox.md) §12 (`processed_events`, `discord_output_deliveries`, migration 0003); [summary-and-delivery.md](architecture/summary-and-delivery.md) §15.4 (dispatcher suppression guards); [configuration.md](architecture/configuration.md) §4 (`SPIKE_SENDER_ALLOWLIST`, `ENVIRONMENT`, `DISCORD_*`) and Secrets; [operations-and-reliability.md](architecture/operations-and-reliability.md) §19 (staging-only allow-list, reconciliation/abort/cleanup SQL), §20 (Gateway reconnect / RESUME / IDENTIFY counters); [open-decisions-and-risks.md](architecture/open-decisions-and-risks.md) §24 (Open — Option 1 reliability; Risks) |
-| **6 — Provisional staging companion MVP** *(Task 09 exception; production topology still spike-gated)* | [adr/0001-discord-event-ingestion.md](adr/0001-discord-event-ingestion.md) §3, §6–§8; [discord-ingestion-and-registration.md](architecture/discord-ingestion-and-registration.md) §3 and the manual-code subsection; [configuration.md](architecture/configuration.md) §4 and secret names; [data-model-and-outbox.md](architecture/data-model-and-outbox.md) migration 0004; [summary-and-delivery.md](architecture/summary-and-delivery.md) §15.4 and §18; [operations-and-reliability.md](architecture/operations-and-reliability.md) §19–§22 and the staging MVP runbook. |
-| **7 — Observability, sweepers, DLQ consumer, hardening** | [operations-and-reliability.md](architecture/operations-and-reliability.md) §9 (all scheduled jobs including the operation sweeper and retention), §20 in full, §22, §15.6, §21; [redemption-state-machine.md](architecture/redemption-state-machine.md) §15.2 (Crash-safe re-drive — T12/T15; Terminal-write guards; Terminality is per `reason_code`), §13 (DLQ inspection consumer — T10/T11), §17; [summary-and-delivery.md](architecture/summary-and-delivery.md) §15.3 (the freeze guard sweeper mirror writes must honour), §15.4 (seal on force-close); [data-model-and-outbox.md](architecture/data-model-and-outbox.md) §12 (`redemptions`, `operation_late_results`), §14 (`dead` handling, atomic reopen, `repair_run`); [configuration.md](architecture/configuration.md) §4 (`SWEEPER_REDRIVE_BATCH`, `REDEMPTION_MAX_REEVAL`, `REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED`, `OPERATION_DEADLINE_SECONDS`, `*_CLAIM_LEASE_SECONDS`, `OUTPUT_DISPATCH_MAX_ATTEMPTS`) |
-| **8 — Blocked: authorized `WhiteoutProvider` / `GiftCodeSource`, production redemption** | [whiteout-provider-decision.md](whiteout-provider-decision.md) in full (§4 required authorization and evidence, §5 acceptance criteria, §6 error mapping, §7 discovery-source status, §8 prohibitions, §9 change log); [redemption-state-machine.md](architecture/redemption-state-machine.md) §11 (`GiftCodeSource` — **not authorized**); [configuration.md](architecture/configuration.md) §4 (`PRODUCTION_REDEMPTION_ENABLED`, `PROVIDER_MODE`, `CODE_DISCOVERY_ENABLED`, `PROVIDER_RATE_LIMIT_PER_SECOND`); [architecture.md](architecture.md) §1 (Non-goals); [open-decisions-and-risks.md](architecture/open-decisions-and-risks.md) §24 (Open — the discovery source; Risks) |
+| **1 — Scaffold/configuration** | This Current state; architecture §1 and §23; configuration §4 and secret names; state machine §11 provider interfaces; provider decision §1, §3, and the rollback requirement in §5; operations §19 and §21. |
+| **2 — D1 schema/migrations** | Data model §10 and §12 plus the relevant additive-migration subsection; operations §19 migration separation. |
+| **3 — Ingestion/outbox** | Discord ingestion §3 and §§5–7; data model §12/§14; state machine §13 Queue rules; relevant configuration names; operations §9/§21; architecture §16 idempotency. |
+| **4 — Consumers/redemption/summary** | State machine §11, §13, §15.1–§15.2 and §17; data model’s affected tables/migration; summary §§15.3–15.5 and §18; operations §9 and §§20–22; provider decision §6. Include the Task 13 hold sections for any retry/recovery work. |
+| **5 — ADR 0001 spike** | ADR 0001 in full; the spike-specific ingestion/data/output guards; configuration spike names; operations spike reconciliation and Gateway metrics; open decisions §24. |
+| **6 — Provisional staging companion** | ADR 0001 §§3 and 6–8; companion/manual-code ingestion; configuration names; migration `0004`; summary delivery; operations Task 09 gate and runbook. |
+| **7 — Hardening/recovery** | Operations §9 and §§20–22; state machine T1–T17 and §17; relevant summary/data-model recovery sections; configuration lease, retry, and deadline names. |
+| **8 — Real provider or discovery (blocked)** | Use the provider-decision routing above. Always load §§1, 4, 5, and 8; add §6 for provider errors, §7 for discovery, §11 for compatibility/Task 13 containment, §13 for the pending amendment, or §16 only for Task 12 history. Also load state machine §11, relevant configuration switches, architecture §1 non-goals, and open decisions §24. Do **not** treat the whole historical provider record as routine required context. |
 
-Every phase additionally inherits `AGENTS.md`: staging is the default environment, no
-production action without explicit human approval, and no secret is ever committed, printed,
-logged, or requested.
+When a task changes the supported runtime/environment, active gates, or merged-versus-deployed
+state, update this Current state section in the same pull request. Record active task progress and
+future scheduling in GitHub rather than adding a second roadmap here.
