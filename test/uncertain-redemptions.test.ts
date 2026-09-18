@@ -361,13 +361,35 @@ it("a crash discovered after deadline produces an audit and leaves the frozen un
   expect(await db.prepare("SELECT * FROM summary_item_snapshot").first()).toEqual(snapshot);
 });
 
+it("classifies the captured method when a one-shot mock accessor restores itself", async () => {
+  const f = await setup();
+  const provider = new MockWhiteoutProvider();
+  const original = provider.redeem;
+  const applying = vi.fn(async (): Promise<RedeemResult> => ({ outcome: "success" }));
+  Object.defineProperty(provider, "redeem", {
+    configurable: true,
+    get() {
+      Object.defineProperty(provider, "redeem", { configurable: true, value: original });
+      return applying;
+    },
+  });
+  await run(f.jobs[0]!, provider, faultBatch(2));
+  const afterLostWrite = await row(f.pid);
+  clock = new Date(clock.getTime() + 400_000);
+  await run(f.jobs[0]!, { redeem: applying });
+  expect.soft(afterLostWrite?.dispatch_hold_token).not.toBeNull();
+  expect.soft(applying).toHaveBeenCalledTimes(1);
+});
+
 it("only the unmodified network-free mock permits crash replay; explicit safe retry results retain their budget", async () => {
-  expect(isReplaySafeMock(new MockWhiteoutProvider())).toBe(true);
+  const mock = new MockWhiteoutProvider();
+  expect(isReplaySafeMock(mock, mock.redeem)).toBe(true);
   const overridden = new MockWhiteoutProvider();
   vi.spyOn(overridden, "redeem");
-  expect(isReplaySafeMock(overridden)).toBe(false);
+  expect(isReplaySafeMock(overridden, overridden.redeem)).toBe(false);
   class Derived extends MockWhiteoutProvider {}
-  expect(isReplaySafeMock(new Derived())).toBe(false);
+  const derived = new Derived();
+  expect(isReplaySafeMock(derived, derived.redeem)).toBe(false);
   const f = await setup();
   await run(f.jobs[0]!, new MockWhiteoutProvider(), faultBatch(1, true));
   expect((await row(f.pid))?.dispatch_hold_token).toBeNull();

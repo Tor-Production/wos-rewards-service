@@ -130,9 +130,11 @@ export class MockWhiteoutProvider implements WhiteoutProvider {
 // Only this exact network-free implementation is safe to repeat after process loss.
 // Configuration, subclasses and replaced/instrumented methods cannot grant this allowance.
 const mockRedeem = MockWhiteoutProvider.prototype.redeem;
-export function isReplaySafeMock(provider: WhiteoutProvider): boolean {
+export function isReplaySafeMock(
+  provider: WhiteoutProvider,
+  redeem: WhiteoutProvider["redeem"],
+): boolean {
   return (
-    Object.getPrototypeOf(provider) === MockWhiteoutProvider.prototype &&
-    provider.redeem === mockRedeem
+    Object.getPrototypeOf(provider) === MockWhiteoutProvider.prototype && redeem === mockRedeem
   );
 }

@@ -129,7 +129,7 @@ export async function consume(
     // Keep the checked implementation identical to the one invoked after the D1 await.
     const provider = input.provider;
     const redeem = provider.redeem;
-    const safeMock = isReplaySafeMock(provider);
+    const safeMock = isReplaySafeMock(provider, redeem);
     const job = await validJob(db, message.body, route);
     if (!job) {
       message.ack();
