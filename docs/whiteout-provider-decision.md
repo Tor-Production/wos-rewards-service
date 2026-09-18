@@ -8,14 +8,14 @@
 
 This document is the single place that records what Whiteout Survival access is authorized,
 what the provider abstraction may do, and exactly what evidence is required before real
-gift-code redemption can be enabled. It contains **no real endpoints, tokens, cookies, or
-secret values.**
+gift-code redemption can be enabled. It contains **no tokens, cookies, or secret values**;
+§16 records the sole endpoint authorized for the bounded Task 12 experiment.
 
 **Task 10 research, 2026-09-17:** no acceptable authorized integration contract was found
 in the public sources examined. [§10–§15](#10-task-10-public-evidence--2026-09-17) record the
 evidence, implementation gaps, isolated-test proposal, and pending decisions. This is
 preparation for blocked roadmap phase 8, not completion of it. The four-part §4 gate
-remains binding, including before a staging adapter; the staged amendment in §13 is
+remains binding for general integration, except for the narrow Task 12 exception in §16; the staged amendment in §13 is
 **proposed, not approved**. Merging this documentation does not authorize provider calls,
 production enablement, or credential provisioning.
 
@@ -56,6 +56,8 @@ production enablement, or credential provisioning.
 > reserved for an `in_progress` row still holding a token. No provider-contract change.
 
 ## 1. Current status
+
+Task 12's one-test exception is recorded in §16. It does not enable service redemption.
 
 **No authorized production `WhiteoutProvider` exists.** Production gift-code redemption is
 **disabled** and stays disabled until every item in [§4](#4-required-authorization-and-evidence-before-adding-a-real-provider)
@@ -451,6 +453,8 @@ nor this task authorizes migration, provisioning, deletion, or changes to histor
 
 ## 13. Pending staged-gate amendment
 
+Task 12 is separately authorized by the narrower §16 exception; this proposal remains pending.
+
 **Current binding rule:** §4 requires all four items before any real-provider implementation:
 human-recorded authorization, documented API contract, explicit production-enablement
 approval, and production credentials provisioned as secrets. They are not complete. Its
@@ -599,3 +603,308 @@ Task 09's deployed-version, migration, companion-shutdown and test-count records
 redemption. Automatic discovery remains separately unauthorized. ADR 0001 remains
 **Proposed**, with its 72-hour spike **deferred, not passed or waived**. Task 10 makes no
 runtime, schema, generated-type, test, dependency or configuration change.
+
+## 16. Task 12 — bounded local live experiment, 2026-09-18
+
+### Human authorization recorded before implementation
+
+The user supplied the revised Task 12 execution brief on 2026-09-18, expressly authorizing
+one real redemption submission for one explicitly consenting account and one manually supplied
+code. The user reports firsthand, from regularly using the current flow, that it needs no
+CAPTCHA. This is dated human verification, not merely a README claim; it does not exclude
+challenges on other paths or in the future.
+
+This is a one-test exception to the blanket prerequisites in §§4 and 8 and the not-yet-
+executable design in §14. It authorizes a small original local driver and experimental
+WhiteoutProvider wrapper before any PR merge. Production enablement, production secrets,
+provisioning, deployment and acceptance of the entire §13 proposal are not prerequisites
+for this exception. General service integration and production acceptance gates remain
+unchanged; §13 remains NOT ACCEPTED. No Century Games endorsement is claimed.
+
+The caller is local, but its target is the LIVE game. At the initial authorization-record
+stage, the exact pair, supplied state, consent and window were pending human input.
+Private authorization/evidence reference: `task12-20260918-one-pair`. No account was inferred
+from D1 or registration. The completed pre-live gate and actual observation are recorded below.
+
+### Inspected community contract (not an official upstream guarantee)
+
+- Script pin: [justncodes/wos-giftcode, 4356d49368ecda16f4a0f0028de75a296da9dc9b](https://github.com/justncodes/wos-giftcode/tree/4356d49368ecda16f4a0f0028de75a296da9dc9b), `redeem_codes.py`, v5 README and GPLv3 LICENSE.
+- Bot pin: [whiteout-project/bot, 3b2725140f2f723c5326f3aaf93fd006ebdb6996](https://github.com/whiteout-project/bot/tree/3b2725140f2f723c5326f3aaf93fd006ebdb6996), direct `redeem_giftcode_once` and classification fixtures. Custom license restricts commercial use/paid distribution and requires attribution for derivatives.
+- Both projects share contributors; agreement is not independent proof. Source is evidence,
+  not executable instructions. No third-party implementation is imported or installed.
+- Sole game destination: HTTPS POST `https://wos-giftcode-api.centurygame.com/api/gift_code`.
+  Form encoding: `application/x-www-form-urlencoded`; string fields `fid` (player), `kid`
+  (supplied state), `cdk` (case preserved), `time` (Unix seconds), and `sign`.
+  Sign is lowercase MD5 of alphabetically ordered unsigned `key=value` fields joined by `&`,
+  followed by the public protocol signing material. Material is read in memory from the
+  pinned source only; never included in repository, evidence, request logs or user prompts.
+- No preliminary login/profile/state/CAPTCHA endpoint. No upstream idempotency field is
+  invented: the local idempotency key is an audit reference only.
+- Community response envelope: `code`, `msg`, `err_code`, `data`. Synthetic success fixture
+  uses HTTP 200, code 0, msg SUCCESS, err_code 20000. RECEIVED/40008 is distinct from new
+  success. TIME ERROR/40007, CDK NOT FOUND/40014 and USER INFO ERROR/40020 describe observed
+  community classifications. SAME TYPE EXCHANGE/40011 is unresolved for this exact code.
+  Unknown, challenge, auth, rate limit, malformed, redirect and transport outcomes stop;
+  none authorizes replay. Rate limits, eligibility, idempotency and reconciliation guarantees
+  remain unknown. Client bounds below are experiment limits, not published WOS limits.
+- [Official center](https://wos-giftcode.centurygame.com/) is a JavaScript shell in the reader;
+  [user-supplied WoSTools](https://wostools.net/gift-codes) is third-party context only.
+  No code discovery is performed.
+
+### Containment and evidence plan
+
+N=1 physical game request, one submission, A=0 authentication, L=0 reconciliation,
+concurrency 1; redirects/retries/polling/lookups/fallbacks forbidden. Client deadline is
+30 seconds; dispatch requires at least 30 seconds left in the human window. Exception
+expires at cutoff or budget consumption, whichever is earlier. Any challenge stops.
+
+Fixed persistent attempt marker (outside all worktrees/version control):
+`C:/Users/morta/AppData/Local/wos-rewards-service/task12-20260918/attempt.json`.
+Sibling `authorization.json`, `evidence.json`, and `disabled.json` hold private input,
+allowlisted evidence and the permanent disable latch. Atomic exclusive creation of the
+marker precedes dispatch; consumed/uncertain attempts are never cleared or refunded.
+No configurable run ID or marker path exists in the live driver.
+
+Default invocation and automated tests are offline. Injected signer/transport tests prove
+input/window gating, atomic restart/concurrency protection, one request only, timeout
+uncertainty and redaction. The wrapper stays outside `src` and imports only provider types.
+Runtime factory/configuration/Queue remain mock-only; the experiment never invokes the Worker,
+companion, Cron, Queues, D1, Discord or Telegram and never reinterprets mock successes.
+
+Sanitized evidence records source and harness digests, UTC times, private pair reference,
+HTTP status, allowlisted response fields, request accounting, marker state and stop reason.
+Raw bodies, signed forms, headers, arbitrary exception messages and account data are omitted.
+Human in-game mail confirmation is separate from the API observation and currently pending.
+After attempt or explicit abort, permanently disable this invocation and retain evidence.
+
+Source-inspection incident: the first redaction filter missed the publicly embedded signing
+constant and it appeared in tool output. It was not written to repository files; subsequent
+inspection suppresses all key assignments. No constant value is reproduced in this record.
+
+### Pre-live gate recorded 2026-09-18T01:42:11Z
+
+The user supplied the exact pair/state privately, then explicitly confirmed ownership,
+unredeemed status and reservation, and authorized the next 30 minutes. Reference:
+`task12-20260918-one-pair`. Window: 2026-09-18T01:42:11Z through
+2026-09-18T02:12:11Z. Reported code validity is September 20 at 23:59 with timezone unknown;
+no UTC expiry is invented. The shorter explicit window controls dispatch.
+
+Pre-live harness SHA-256 (ordered filename + NUL + bytes for probe.ts, transport.ts,
+driver.ts, probe.test.ts, tsconfig.json, vitest.config.ts):
+`8684ccc844bf9d466084456faa9eaab41a872a661420233703d57a538411f2b7`.
+Base SHA: `496e63916bd6304f49e01167ec846878d72c1d42`.
+`npm run test:probe`: exit 0, strict compilation, 39/39 synthetic tests passed.
+Default driver: exit 0, offline notice only. `git diff --check`: exit 0.
+Source/runtime inspection found no experiment reference in src, companion or Wrangler.
+Synthetic request inspection verifies POST, exact endpoint, form fields and seconds; no
+upstream idempotency field. Full repository checks started independently and do not gate
+this expiring-code dispatch. N=1, A=0, L=0, concurrency 1, deadline 30 seconds unchanged.
+
+### Live observation and shutdown
+
+One physical HTTPS redemption request was dispatched at **2026-09-18T01:42:59.362Z**;
+the driver finished at **2026-09-18T01:43:00.004Z**. HTTP status: **403**. Allowlisted response
+fields: none. The transport could not provide the expected JSON envelope, so the original
+pre-live classifier recorded `unexpected_schema`. This is an unresolved experiment error,
+not a permanent player/code failure, proof of application, or proof of non-application.
+403's cause is unknown; no auth/signature correction, browser impersonation, CAPTCHA handling,
+additional endpoint, or second request was attempted. The user was asked to inspect in-game
+mail without submitting again. Human confirmation remains pending as of this record.
+
+Public source-content SHA-256 observed in memory:
+`dfed6b68f312eaaabee766f9202bb47a7ceac44a58fc01222994e8f4f743ae75`.
+Harness digest matches the pre-live gate. Physical game requests: **1**; authentication: **0**;
+reconciliation: **0**; retries/redirects: **0**. The persistent marker was consumed before
+submission and remains in place. `disabled.json` is present with `disabled: true`.
+A process inspection found no running Task 12 driver. No background job was created.
+No further live calls are allowed under this consumed authorization, including other accounts.
+
+Private evidence is retained at the fixed location above, with raw payloads/responses omitted.
+No successful redemption, upstream deduplication, quotas, eligibility guarantee, safe replay,
+production readiness or publisher endorsement was established. The narrower caller did not
+use source clients' rotating browser headers or retries. This observation does not contradict
+the user's firsthand report that their regularly used flow needs no CAPTCHA.
+
+External actions for this task: GitHub read/fetch; reads of the pinned public GitHub source
+and license files and public website pages; locked npm dependency download; the one game
+POST; and the authorized branch push/draft PR when completed. No Cloudflare resource change,
+deployment, migration, production enablement, Discord/Telegram message or game-account login.
+The full offline check suite may use local Wrangler dry-run validation; this does not deploy.
+
+### Offline validation and review handoff
+
+- `npm run test:probe`: exit 0; strict experiment TypeScript compilation and **39/39** tests.
+- `npm run check`: exit 0. Formatting and Wrangler type freshness/strict Worker, test,
+  companion TypeScript checks passed; experiment **39/39**; deterministic Workers **575/575
+  across 44 files**, companion **26/26 across 3 files**; shuffled Workers **575/575** with
+  seed `1789695873946`, companion **26/26** with seed `1789695999901`; staging dry-run passed.
+- `npm run test:mvp`: exit 0; Workers **12/12 across 4 files**, companion **26/26 across 3 files**.
+- `git diff --check` and staged diff check: exit 0. Staged-scope scan found no signing
+  constant or private approved pair values. Default driver invocation made zero requests.
+- Wrangler emitted missing-local-secret warnings during synthetic tests; no secrets were
+  requested or provided. All required commands passed without weakening assertions.
+- Harness source digest is unchanged from the pre-live gate. Final documentation updates
+  report this observation and validation; runtime code, schema and provider selection are unchanged.
+
+Branch: `codex/12-live-provider-probe`. Absolute worktree:
+`C:/Users/morta/AppData/Local/Temp/wos-rewards-service-12-live-provider-probe`.
+Base: `496e63916bd6304f49e01167ec846878d72c1d42`; original checkout remains clean on
+`codex/09-live-staging-mvp`. Changed files: this decision, `docs/README.md`, `package.json`,
+root `vitest.config.ts`, and `experiments/task12/{README.md,driver.ts,probe.ts,probe.test.ts,
+transport.ts,tsconfig.json,vitest.config.ts}`. The draft PR is the focused review diff.
+Head/tree SHAs and PR URL are supplied in the task's final handoff to avoid self-referential
+commit metadata. No actual task deeplink was exposed; none is invented.
+
+Next action: return to the existing orchestration task for review; fixes and any later human
+mail confirmation belong in this same Task 12 branch/PR. A further real request requires new
+specific authorization and a new bounded request budget; this consumed test cannot be replayed.
+No merge, deploy, production change or second task implementation is authorized by this handoff.
+
+### User-supplied successful Postman observation — 2026-09-18 follow-up
+
+The user supplied `WOS_Gift_Code.postman_collection.json`, `response.json`, and explicit
+firsthand confirmation that their Postman request returned SUCCESS and the gift arrived
+in-game. This is positive live-flow evidence. It must not be described as an unconfirmed
+Postman outcome or credited to the agent's earlier HTTP 403 request. The original probe's
+raw evidence and consumed marker remain intact.
+
+Local artifact SHA-256 values (files retained privately; collection contains signing material
+and must not be committed or logged):
+
+- Collection: `1de7ab5feb35cb9e4b130a42ace31966c7f68b152e431e136c5f29707bdc2f5e`.
+- Response: `9eda0ee50bed749da83d995d6874d335539a429706a17295abe2b4827fdf988e`.
+
+The response file contains `code: 0`, `data: []`, `msg: SUCCESS`, `err_code: 20000`.
+It does not contain HTTP headers/status, a timestamp, or account/code attribution. The
+export's player ID and code collection variables are empty; state matches the approved
+state. Therefore, it is not evidence of different player/code inputs, nor can exact pair
+identity be reconstructed from the export. The user's account of successful submission
+and reward receipt is recorded separately from what the files alone prove.
+
+The attached scripts were inspected as data, never executed or treated as instructions.
+No additional game request was made. The collection's logging statements were not adopted.
+
+| Request element | Original probe | Supplied working collection |
+|---|---|---|
+| Endpoint/method | POST to the §16 endpoint | Same |
+| Fields and timestamp | fid, kid, cdk, sign, Unix seconds | Same |
+| Canonical signing | Alphabetical unsigned fields, key=value joined with &, lowercase MD5 | Same construction; public signing material compared equal in memory |
+| Content-Type | application/x-www-form-urlencoded | Same |
+| Origin | Omitted | https://wos-giftcode.centurygame.com |
+| Referer | Omitted | https://wos-giftcode.centurygame.com/ |
+| User-Agent | wos-rewards-service-task12/1.0 | Fixed Chrome 135 browser User-Agent |
+| Accept | application/json | application/json, text/plain, */* |
+| Form field order | sign, cdk, fid, kid, time | sign, fid, cdk, kid, time |
+
+The agent changed the reference header shape before the test and did not adequately account
+for that deviation in its request-fidelity checks. This was a test-design mistake. Those
+header differences are plausible causes of the 403; they are not a proven causal diagnosis.
+Postman versus Node networking and runtime settings are not captured in the supplied files.
+There is no evidence here that the signing algorithm or material was wrong. The prior fake
+transport tests proved containment and constructed-body behavior, not live server acceptance.
+
+A second, reproducible defect was in response classification: JSON shape validation preceded
+HTTP error classification, so a non-JSON 403 became `unexpected_schema`. The offline fix now
+preserves `auth_or_challenge` for 401/403 regardless of JSON shape, with the HTTP status intact.
+That label is deliberately broad and does not establish a CAPTCHA or authentication cause.
+Redirect/rate-limit/server statuses likewise retain their stop reason. New synthetic socket
+and response fixtures cover non-JSON 403, redaction and zero retries. The original live
+evidence still records the actual pre-fix stop reason; it has not been rewritten retroactively.
+
+Follow-up harness digest:
+`ca568b7167fbfa130380cf509fddd06ee70365b0bb2a7febea71d891a3b50c22`.
+The pre-live digest above remains the authoritative pin for the actual game request. Transport
+headers and live-disable state are unchanged by this diagnostic correction. No further call,
+header experiment, alternate account or attempt-budget reset is implied by the user's report.
+The user-run submission is an additional external action performed by the user, not this agent.
+
+Validation also exposed duplicate test discovery: the root suite excluded `experiments/**`
+but still collected the emitted `dist/task12/experiments/task12/probe.test.js`. The root
+config now excludes `dist/**` as well. Test discovery was inspected without executing any
+collection or live driver. Historical root-suite counts included the duplicate synthetic
+probe tests; those passes remain real, but are not distinct Worker business tests. This
+follow-up reports the corrected final counts below.
+
+Final follow-up validation: `npm run check` exit **0**; formatting, Wrangler type freshness,
+strict typechecks and staging dry-run passed. Dedicated probe **46/46**; root suite
+**536/536 across 43 files**, deterministic and shuffled (seed `1789699183658`); companion
+**26/26 across 3 files**, deterministic and shuffled (seed `1789699318890`). Root discovery
+contains no experiment or generated-dist test file. `npm run test:mvp` exit **0**:
+**12/12** targeted Worker tests and **26/26** companion tests. `git diff --check` and staged
+check exit **0**. Signing-material scan passed for the five changed files. All follow-up
+checks were offline with respect to WOS; agent game-request count remains **1 lifetime / 0
+additional**. Follow-up files: `experiments/task12/probe.ts`, `probe.test.ts`, root
+`vitest.config.ts`, this decision and `docs/README.md`. Continue review in Task 12 / PR #15.
+
+### Separate replay-check authorization — recorded 2026-09-18T02:50:44Z
+
+The user explicitly instructed: "You can actually send the request again and check if you
+receive the confirmation of the code being already applied". This is a new specific budget
+for ONE further submission of the same previously approved private pair/state, following
+the user's successful Postman request and in-game confirmation. Prior ownership consent
+continues to apply. It does not rearm, clear or replace the consumed original attempt.
+
+Reference: `task12-20260918-already-applied-check`. Operator-imposed short dispatch window:
+2026-09-18T02:50:44Z through 2026-09-18T03:20:44Z; no silent extension. N=1 additional game
+POST, A=0, L=0, concurrency 1, 30-second deadline, no retries/redirects/lookups or other
+accounts. Same §16 endpoint/contract; a response other than RECEIVED/40008 is reported as
+observed, not coerced into already_redeemed. Any challenge/rate limit/auth failure stops.
+
+Use the supplied collection's fixed Origin, Referer, Accept and User-Agent values and form
+field order; canonical signing remains unchanged. No header rotation, challenge solving,
+credential acquisition, endpoint substitution or automatic fallback is authorized. This
+request records one complete request shape and cannot isolate a single cause of the old 403.
+
+A fixed new local directory is authorized solely for this separately approved budget:
+`C:/Users/morta/AppData/Local/wos-rewards-service/task12-20260918-replay-check`.
+Its authorization, attempt, disabled and sanitized evidence records are separate. Require
+both original consumed marker/disable records, exact original pair/state equality, and
+explicit already-applied confirmation. Never assert the code remains unredeemed. No generic
+run-ID/path override exists. Record the new harness digest and focused checks before dispatch.
+The original marker, disable latch and original response evidence remain unchanged. This
+same-Task-12 follow-up remains outside deployed runtime/D1/Queues/Discord and preserves all
+production integration gates. The exception expires on cutoff or budget consumption.
+
+Replay pre-live gate: strict `npm run test:probe` exit 0, **56/56** synthetic tests passed,
+including fixed headers, original/replay scope separation, preserved original consumption,
+exact pair matching, concurrent/restarted replay attempts, and RECEIVED/40008 handling.
+Default driver invocation: offline, exit 0. `git diff --check`: exit 0.
+Pre-live replay harness SHA-256:
+`fcdb771633c44640e4594e03f4287fa6e6192973efb9ac625171215094345032`.
+Parent head: `ad00851f63697dbb775d241f15148e03fe2cf6d9`. Source pins unchanged.
+The exact pair is in the private authorization, copied from the prior human-approved pair;
+the new record explicitly sets unredeemed=false and alreadyAppliedConfirmed=true.
+
+Replay observation: dispatched **2026-09-18T02:54:45.550Z**, completed
+**2026-09-18T02:54:46.252Z**. HTTP **200**; allowlisted response:
+`code: 1`, `msg: RECEIVED`, `err_code: 40008`. Provider result: **already_redeemed**.
+This is confirmation that the same approved pair was already applied, corroborating the
+user's earlier reported successful Postman request and in-game gift. It is not a new reward
+application by this replay. N=1 under the new authorization; A=0, L=0, redirects/retries=0.
+Total agent game requests in Task 12: **2**, under two distinct human authorizations.
+The user's own successful Postman submission is separate and is not counted as an agent call.
+
+Both fixed attempt markers are consumed and both disable latches are set. The original
+marker/disable/evidence hashes are checked against the saved pre-replay digests. New sanitized
+evidence is in the replay directory's `evidence.json`; no signatures, raw bodies or credentials
+are retained. The source digest is unchanged. No background probe remains. No third call is
+authorized. This is one observed sequential duplicate result, not a guarantee about concurrent
+replay, retention horizons, crash reconciliation, rate limits or production readiness.
+
+Matching the collection's request shape yielded an accepted request, but this single
+comparison cannot isolate which header, form ordering or other difference caused the old
+403. The original request/evidence and its historical digests remain unchanged.
+
+Replay final validation: `npm run check` exit **0**. Formatting, Wrangler type freshness,
+strict types and staging dry-run passed. Probe **56/56**; root **536/536 across 43 files**,
+deterministic and shuffled (seed `1789700344593`); companion **26/26 across 3 files**,
+deterministic and shuffled (seed `1789700479227`). `npm run test:mvp` exit **0**:
+**12/12** targeted Worker tests and **26/26** companion tests. Diff/staged checks and the
+signing-material/private-pair scan passed. Replay harness digest is unchanged from the
+pre-live pin. Seven files changed for this replay: `docs/README.md`, this decision, and
+`experiments/task12/{README.md,driver.ts,probe.ts,probe.test.ts,transport.ts}`.
+
+Additional external actions: pinned public-source read in memory, the single explicitly
+authorized game POST, and same-branch push/existing draft-PR update. No third game request,
+merge, deployment, resource/secret change or runtime integration occurred. Continue review
+in this same Task 12 branch/PR; no additional live action remains within these spent budgets.
