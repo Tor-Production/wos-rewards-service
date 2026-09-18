@@ -1,0 +1,5 @@
+{
+  "extends": "../../companion/tsconfig.json",
+  "compilerOptions": { "noEmit": false, "rootDir": "../..", "outDir": "../../dist/task12" },
+  "include": ["./*.ts", "../../src/domain/whiteout-provider.ts"]
+}

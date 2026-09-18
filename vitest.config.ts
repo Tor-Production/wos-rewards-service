@@ -1,5 +1,5 @@
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig(async () => {
   // Read every migration in `migrations/`, in migration-number order, and hand them to the
@@ -65,6 +65,8 @@ export default defineConfig(async () => {
       }),
     ],
     test: {
+      // The local experiment has its own Node-only synthetic suite.
+      exclude: [...configDefaults.exclude, "experiments/**"],
       // A Workers pool is substantially heavier than a normal Vitest worker. Keep high-core
       // developer machines and CI runners from trying to boot every test file at once.
       maxWorkers: 1,
