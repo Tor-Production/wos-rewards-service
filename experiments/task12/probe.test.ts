@@ -197,10 +197,20 @@ describe("offline containment", () => {
     expect(f.transport).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(p.observation)).not.toMatch(/private|cookie|secret account/);
   });
-  it.each([302, 429, 403, 500])("stops on HTTP %s", async (status) => {
-    const f = fixture({}, status);
-    await expect(redeem(f.provider())).rejects.toThrow();
-    expect(f.transport).toHaveBeenCalledTimes(1);
+  describe.each([{}, null])("HTTP failure with body %j", (body) => {
+    it.each([
+      [302, "redirect"],
+      [429, "rate_limit"],
+      [401, "auth_or_challenge"],
+      [403, "auth_or_challenge"],
+      [500, "http_unresolved"],
+    ] as const)("preserves HTTP %s as %s", async (status, reason) => {
+      const f = fixture(body, status);
+      const p = f.provider();
+      await expect(redeem(p)).rejects.toThrow(reason);
+      expect(p.observation).toMatchObject({ httpStatus: status, stopReason: reason });
+      expect(f.transport).toHaveBeenCalledTimes(1);
+    });
   });
   it("unexpected schema stops", async () => {
     const f = fixture(null);
@@ -209,6 +219,27 @@ describe("offline containment", () => {
 });
 
 describe("native transport with synthetic socket", () => {
+  it("preserves a non-JSON 403 without retaining its body or retrying", async () => {
+    https.request.mockReset();
+    const req = new EventEmitter() as EventEmitter & { end: () => void };
+    const res = new EventEmitter() as EventEmitter & { statusCode: number };
+    res.statusCode = 403;
+    https.request.mockImplementation((_url, _options, cb) => {
+      req.end = () => {
+        cb(res);
+        res.emit("data", Buffer.from("<html>private server response</html>"));
+        res.emit("end");
+      };
+      return req;
+    });
+    const f = fixture();
+    f.deps.transport = onePost;
+    const p = f.provider();
+    await expect(redeem(p)).rejects.toThrow("auth_or_challenge");
+    expect(p.observation).toMatchObject({ httpStatus: 403, response: {} });
+    expect(JSON.stringify(p.observation)).not.toContain("private server response");
+    expect(https.request).toHaveBeenCalledTimes(1);
+  });
   it("rejects alternate endpoint/method/redirect policy without a socket", async () => {
     https.request.mockClear();
     const base = {

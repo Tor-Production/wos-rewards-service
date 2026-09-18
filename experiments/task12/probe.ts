@@ -79,19 +79,27 @@ export function classify(response: WireResponse): {
   result: RedeemResult | string;
 } {
   const fields: NonNullable<Observation["response"]> = {};
+  // Preserve the HTTP stop reason even when an edge/server returns non-JSON.
+  // A 403 does not tell us whether authentication, a challenge, or another rule rejected it.
+  const httpFailure =
+    response.status >= 300 && response.status < 400
+      ? "redirect"
+      : response.status === 429
+        ? "rate_limit"
+        : response.status === 401 || response.status === 403
+          ? "auth_or_challenge"
+          : response.status !== 200
+            ? "http_unresolved"
+            : undefined;
   const b = response.body;
   if (typeof b !== "object" || b === null || Array.isArray(b))
-    return { fields, result: "unexpected_schema" };
+    return { fields, result: httpFailure ?? "unexpected_schema" };
   const row = b as Record<string, unknown>;
   if (Number.isSafeInteger(row.code)) fields.code = row.code as number;
   if (Number.isSafeInteger(row.err_code)) fields.err_code = row.err_code as number;
   const msg = typeof row.msg === "string" ? row.msg.replace(/\.+$/, "") : "";
   if (messages.has(msg)) fields.msg = msg;
-  if (response.status >= 300 && response.status < 400) return { fields, result: "redirect" };
-  if (response.status === 429) return { fields, result: "rate_limit" };
-  if (response.status === 401 || response.status === 403)
-    return { fields, result: "auth_or_challenge" };
-  if (response.status !== 200) return { fields, result: "http_unresolved" };
+  if (httpFailure) return { fields, result: httpFailure };
   if (/captcha|challenge/i.test(msg) || Object.keys(row).some((k) => /captcha|challenge/i.test(k)))
     return { fields, result: "challenge" };
   if (fields.code === 0 && msg === "SUCCESS" && fields.err_code === 20000)

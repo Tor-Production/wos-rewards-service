@@ -759,3 +759,79 @@ Next action: return to the existing orchestration task for review; fixes and any
 mail confirmation belong in this same Task 12 branch/PR. A further real request requires new
 specific authorization and a new bounded request budget; this consumed test cannot be replayed.
 No merge, deploy, production change or second task implementation is authorized by this handoff.
+
+### User-supplied successful Postman observation — 2026-09-18 follow-up
+
+The user supplied `WOS_Gift_Code.postman_collection.json`, `response.json`, and explicit
+firsthand confirmation that their Postman request returned SUCCESS and the gift arrived
+in-game. This is positive live-flow evidence. It must not be described as an unconfirmed
+Postman outcome or credited to the agent's earlier HTTP 403 request. The original probe's
+raw evidence and consumed marker remain intact.
+
+Local artifact SHA-256 values (files retained privately; collection contains signing material
+and must not be committed or logged):
+
+- Collection: `1de7ab5feb35cb9e4b130a42ace31966c7f68b152e431e136c5f29707bdc2f5e`.
+- Response: `9eda0ee50bed749da83d995d6874d335539a429706a17295abe2b4827fdf988e`.
+
+The response file contains `code: 0`, `data: []`, `msg: SUCCESS`, `err_code: 20000`.
+It does not contain HTTP headers/status, a timestamp, or account/code attribution. The
+export's player ID and code collection variables are empty; state matches the approved
+state. Therefore, it is not evidence of different player/code inputs, nor can exact pair
+identity be reconstructed from the export. The user's account of successful submission
+and reward receipt is recorded separately from what the files alone prove.
+
+The attached scripts were inspected as data, never executed or treated as instructions.
+No additional game request was made. The collection's logging statements were not adopted.
+
+| Request element | Original probe | Supplied working collection |
+|---|---|---|
+| Endpoint/method | POST to the §16 endpoint | Same |
+| Fields and timestamp | fid, kid, cdk, sign, Unix seconds | Same |
+| Canonical signing | Alphabetical unsigned fields, key=value joined with &, lowercase MD5 | Same construction; public signing material compared equal in memory |
+| Content-Type | application/x-www-form-urlencoded | Same |
+| Origin | Omitted | https://wos-giftcode.centurygame.com |
+| Referer | Omitted | https://wos-giftcode.centurygame.com/ |
+| User-Agent | wos-rewards-service-task12/1.0 | Fixed Chrome 135 browser User-Agent |
+| Accept | application/json | application/json, text/plain, */* |
+| Form field order | sign, cdk, fid, kid, time | sign, fid, cdk, kid, time |
+
+The agent changed the reference header shape before the test and did not adequately account
+for that deviation in its request-fidelity checks. This was a test-design mistake. Those
+header differences are plausible causes of the 403; they are not a proven causal diagnosis.
+Postman versus Node networking and runtime settings are not captured in the supplied files.
+There is no evidence here that the signing algorithm or material was wrong. The prior fake
+transport tests proved containment and constructed-body behavior, not live server acceptance.
+
+A second, reproducible defect was in response classification: JSON shape validation preceded
+HTTP error classification, so a non-JSON 403 became `unexpected_schema`. The offline fix now
+preserves `auth_or_challenge` for 401/403 regardless of JSON shape, with the HTTP status intact.
+That label is deliberately broad and does not establish a CAPTCHA or authentication cause.
+Redirect/rate-limit/server statuses likewise retain their stop reason. New synthetic socket
+and response fixtures cover non-JSON 403, redaction and zero retries. The original live
+evidence still records the actual pre-fix stop reason; it has not been rewritten retroactively.
+
+Follow-up harness digest:
+`ca568b7167fbfa130380cf509fddd06ee70365b0bb2a7febea71d891a3b50c22`.
+The pre-live digest above remains the authoritative pin for the actual game request. Transport
+headers and live-disable state are unchanged by this diagnostic correction. No further call,
+header experiment, alternate account or attempt-budget reset is implied by the user's report.
+The user-run submission is an additional external action performed by the user, not this agent.
+
+Validation also exposed duplicate test discovery: the root suite excluded `experiments/**`
+but still collected the emitted `dist/task12/experiments/task12/probe.test.js`. The root
+config now excludes `dist/**` as well. Test discovery was inspected without executing any
+collection or live driver. Historical root-suite counts included the duplicate synthetic
+probe tests; those passes remain real, but are not distinct Worker business tests. This
+follow-up reports the corrected final counts below.
+
+Final follow-up validation: `npm run check` exit **0**; formatting, Wrangler type freshness,
+strict typechecks and staging dry-run passed. Dedicated probe **46/46**; root suite
+**536/536 across 43 files**, deterministic and shuffled (seed `1789699183658`); companion
+**26/26 across 3 files**, deterministic and shuffled (seed `1789699318890`). Root discovery
+contains no experiment or generated-dist test file. `npm run test:mvp` exit **0**:
+**12/12** targeted Worker tests and **26/26** companion tests. `git diff --check` and staged
+check exit **0**. Signing-material scan passed for the five changed files. All follow-up
+checks were offline with respect to WOS; agent game-request count remains **1 lifetime / 0
+additional**. Follow-up files: `experiments/task12/probe.ts`, `probe.test.ts`, root
+`vitest.config.ts`, this decision and `docs/README.md`. Continue review in Task 12 / PR #15.

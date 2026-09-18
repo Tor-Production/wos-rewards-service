@@ -66,7 +66,7 @@ export default defineConfig(async () => {
     ],
     test: {
       // The local experiment has its own Node-only synthetic suite.
-      exclude: [...configDefaults.exclude, "experiments/**"],
+      exclude: [...configDefaults.exclude, "experiments/**", "dist/**"],
       // A Workers pool is substantially heavier than a normal Vitest worker. Keep high-core
       // developer machines and CI runners from trying to boot every test file at once.
       maxWorkers: 1,

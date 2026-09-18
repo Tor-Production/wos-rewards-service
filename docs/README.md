@@ -16,7 +16,10 @@ Discord footer. It wins over anything written here.
 Task 12 adds an isolated local one-pair experiment under the dated human exception in
 [provider decision §16](whiteout-provider-decision.md#16-task-12--bounded-local-live-experiment-2026-09-18).
 One authorized request ran on 2026-09-18 at 01:42:59 UTC and returned HTTP 403 with no
-recognized response envelope. Game application is unresolved; manual confirmation is pending.
+recognized response envelope. The user subsequently supplied a successful Postman response
+and confirmed the gift arrived in-game after their own request. This confirms that flow's
+success; the agent's earlier 403 remains a separate unsuccessful HTTP observation. The
+export omits player/code values, so it does not establish exact pair attribution by itself.
 The persistent budget is consumed and live invocation is disabled. The harness is outside
 runtime provider selection, D1, Queues and Discord. Service redemption
 and discovery remain disabled. This does not accept the general §13 staged-gate proposal.
