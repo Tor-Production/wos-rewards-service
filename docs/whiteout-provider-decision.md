@@ -15,9 +15,12 @@ gift-code redemption can be enabled. It contains **no tokens, cookies, or secret
 in the public sources examined. [§10–§15](#10-task-10-public-evidence--2026-09-17) record the
 evidence, implementation gaps, isolated-test proposal, and pending decisions. This is
 preparation for blocked roadmap phase 8, not completion of it. The four-part §4 gate
-remains binding for general integration, except for the narrow Task 12 exception in §16; the staged amendment in §13 is
-**proposed, not approved**. Merging this documentation does not authorize provider calls,
-production enablement, or credential provisioning.
+remains binding for general integration, except for the narrow Task 12 exception in §16.
+Task 15 consolidates the sanitized observations and remaining gaps in
+[§17](#17-task-15-consolidated-observed-contract-and-evidence-matrix--2026-09-18), but the
+exact narrow amendment and the earlier broader staged proposal in §13 are both **proposed,
+not approved**. Merging this documentation does not accept either proposal or authorize
+provider calls, implementation, production enablement, or credential provisioning.
 
 ---
 
@@ -58,6 +61,10 @@ production enablement, or credential provisioning.
 ## 1. Current status
 
 Task 12's one-test exception is recorded in §16. It does not enable service redemption.
+
+Task 15 received no separate maintainer acceptance of its proposed narrow amendment. The
+accepted policy is therefore still §§4, 5 and 8; §13 records the pending proposals, and §17
+separates the sanitized historical observations from the external evidence still required.
 
 **No authorized production `WhiteoutProvider` exists.** Production gift-code redemption is
 **disabled** and stays disabled until every item in [§4](#4-required-authorization-and-evidence-before-adding-a-real-provider)
@@ -156,6 +163,11 @@ All of the following must exist **before** a real provider is implemented:
 
 Until items 1–4 are complete, do not add a real provider implementation, do not add a
 provider secret name, and do not enable production redemption.
+
+The exact Task 15 proposal to move items 3 and 4 to a later activation gate is recorded as
+**pending** in §13. Its publication, this documentation work, a pull-request approval or
+merge, and issue progress are not amendment acceptance. Until an explicit accepting decision
+is recorded with authority, date, scope and exclusions, the four items above remain binding.
 
 ---
 
@@ -295,6 +307,7 @@ the supporting contract, before implementation.
 | 2026-08-31 | PR #3 review round 4: split `attempt_id` (retry budget) from a per-invocation `current_invocation_token` (+ lease) so two overlapping deliveries of one `attempt_id` cannot both call the provider (**T3**); `retryable` → `retry_wait` release + `retry_due_at` before `message.retry` (**T9**), redelivery acquires a new invocation via **T2**; DLQ terminal write also requires no live invocation (**T10** / **T11**). New terminal outcome **`state_reevaluation_limit`** (**T8**, `repair_run`-only, alerted) for the state re-evaluation cap. Summary source frozen at `summary_state: none → sealing` with late outcomes in `operation_late_results`. Table now **T1–T16**. No provider-contract change. | (pending review) |
 | 2026-08-31 | PR #3 review round 5: the DLQ "no invocation active" check reads `current_invocation_token`, not the pickup-grace `invocation_expires_at`. A `retry_wait` row always satisfies **T10** (invocation released by **T9**), so a retry exhausting `max_retries` before `retry_due_at` is recorded `retry_exhausted` rather than `dlq_invocation_active`; the lease-expiry comparison is reserved for an `in_progress` row still holding a token; **T12** never re-drives a row **T10** terminalized. No provider-contract change. | (pending review) |
 | 2026-09-17 | Task 10: dated public-source research, code/contract compatibility, mock-result isolation, pending staged-gate amendment, and bounded future-test design (§10–§15). Existing gates and prohibitions unchanged. | Research/documentation task authorized by the requesting human; no provider or amendment approval recorded |
+| 2026-09-18 | Task 15: consolidated the sanitized Task 12 request/response shape, outcome evidence and remaining external gaps; reproduced the exact narrow amendment from issue #20 as pending and kept the broader §13 proposal separately pending. §§4, 5 and 8 remain binding. | Documentation task authorized by the requesting human; no amendment, provider, activation or external-operator approval recorded |
 
 ---
 
@@ -472,14 +485,54 @@ nor this task authorizes migration, provisioning, deletion, or changes to histor
 
 ## 13. Pending staged-gate amendment
 
-Task 12 is separately authorized by the narrower §16 exception; this proposal remains pending.
+Task 12 is separately authorized by the narrower §16 exception. The exact Task 15 narrow
+proposal and the earlier broader staged proposal below both remain pending.
 
 **Current binding rule:** §4 requires all four items before any real-provider implementation:
 human-recorded authorization, documented API contract, explicit production-enablement
 approval, and production credentials provisioned as secrets. They are not complete. Its
 wording does not permit an offline or staging adapter merely because production stays off.
 
-**Proposed amendment text — NOT ACCEPTED:** replace §4's all-stages prerequisite with the
+### Task 15 exact narrow amendment — NOT ACCEPTED
+
+Repository maintainer `Yurii-Tor` published the following proposal on 2026-09-18 in
+[issue #20](https://github.com/Tor-Production/wos-rewards-service/issues/20#issuecomment-5727504963)
+and explicitly requested a separate acceptance decision. No accepting response was supplied
+to Task 15. Decision authority, acceptance date and approved scope are therefore **pending**;
+the proposal is reproduced exactly rather than applied by implication:
+
+> Before implementing a real provider, items 1 and 2 remain mandatory: recorded human
+> authorization for the exact scope and a documented, authorized API contract. For a
+> separately approved offline implementation slice, record authorization from the upstream
+> game/API operator for the intended integration and explicit maintainer approval of that
+> slice. Use injected fake transport, deny external network access, and use sanitized
+> synthetic fixtures only. No real provider may be selected by the runtime under this offline
+> approval.
+>
+> Item 3 (explicit production-enablement approval) and item 4 (production credential
+> provisioning) are prerequisites to production activation rather than prerequisites to
+> offline implementation. Item 4 applies only to credentials required by the authorized
+> contract. If that contract requires no service credentials, record the supporting evidence
+> and an explicit maintainer determination that provisioning is not applicable. The observed
+> absence of a login step does not itself settle that determination. Do not invent a provider
+> secret name or put protocol signing material in the repository.
+>
+> All §5 production acceptance criteria and §8 prohibitions remain binding. Offline approval
+> grants no staging or production activation, game request, lookup, discovery, resource
+> operation, migration, deployment, secret operation, or new experiment budget. Any live
+> stage requires its own recorded scope and approvals. Acceptance of this narrow amendment
+> does not accept the broader §13 proposal.
+
+Even if this narrow text is later accepted, upstream game/API operator authorization and a
+versioned authorized contract would remain separate evidence; repository-maintainer authority
+cannot supply them. Production-enablement approval and any contract-required credential
+provisioning would move to activation, not disappear. The final determination that the
+authorized contract needs no service credentials remains pending: the observed direct flow's
+lack of a login step is not sufficient evidence.
+
+### Earlier broader staged proposal — NOT ACCEPTED
+
+**Proposed amendment text:** replace §4's all-stages prerequisite with the
 stage-specific prerequisites below **only after an explicit human maintainer acceptance is
 recorded here**. Publisher authorization establishes external rights; maintainer approval
 establishes repository/operational scope. Neither substitutes for the other. Preserve §5's
@@ -927,3 +980,80 @@ Additional external actions: pinned public-source read in memory, the single exp
 authorized game POST, and same-branch push/existing draft-PR update. No third game request,
 merge, deployment, resource/secret change or runtime integration occurred. Continue review
 in this same Task 12 branch/PR; no additional live action remains within these spent budgets.
+
+---
+
+## 17. Task 15 consolidated observed contract and evidence matrix — 2026-09-18
+
+This section is a sanitized index of evidence already pinned and dated in §§11 and 16. It is
+not an official or authorized upstream contract, does not rewrite the historical observations,
+and was prepared without reopening the private Task 12 records or making a new game request.
+
+| Category | Status in this document | Canonical source / consequence |
+|---|---|---|
+| Accepted repository policy | §§4, 5 and 8 remain binding; runtime stays mock-only | A real provider, production redemption and automatic discovery remain disabled. |
+| Task 15 narrow gate text | **Pending**, reproduced exactly in §13 | No separate maintainer acceptance was supplied; implementation and activation remain unauthorized. |
+| Earlier broader stage A–D proposal | **Pending**, separately retained in §13 | Acceptance of the narrow text, if later recorded, would not accept the broader proposal. |
+| Task 12 observations | Historical, bounded evidence only | §16 owns the dated authorizations, source pins, observations and consumed budgets. |
+| External authority and contract | Missing | Upstream game/API operator authorization and an authorized versioned contract remain prerequisites distinct from maintainer scope approval. |
+
+### Sanitized observed request and response shape
+
+The recorded community-source pins are
+[`justncodes/wos-giftcode@4356d493`](https://github.com/justncodes/wos-giftcode/tree/4356d49368ecda16f4a0f0028de75a296da9dc9b)
+and
+[`whiteout-project/bot@3b272514`](https://github.com/whiteout-project/bot/tree/3b2725140f2f723c5326f3aaf93fd006ebdb6996).
+Their shared contributors mean agreement is not independent confirmation. The user-supplied
+Task 12 artifacts and agent observations are dated in §16 and remain private where they
+contain account inputs or signing material.
+
+| Element | Sanitized recorded shape | Evidence boundary |
+|---|---|---|
+| Destination | One HTTPS `POST` to `https://wos-giftcode-api.centurygame.com/api/gift_code` | Observed community/direct flow only; no operator authorization or version guarantee. |
+| Body | `application/x-www-form-urlencoded` | No JSON request body and no additional lookup or login request was used in the bounded flow. |
+| `fid` | String player identifier | Private value omitted; the service must not discover or enrich it. |
+| `kid` | Supplied state | No state/profile lookup occurred; supplied input is not proof of upstream state semantics. |
+| `cdk` | Case-preserved code | Private value omitted; no discovery occurred. |
+| `time` | Unix timestamp in seconds | Accepted window/skew and replay semantics are undocumented. |
+| `sign` | Lowercase MD5 over alphabetically ordered unsigned `key=value` fields joined with `&`, followed by public protocol signing material | Shape was observed; the material is not reproduced or stored here. This is not an authorized authentication contract. |
+| Response envelope | `code`, `msg`, `err_code`, `data`; observed examples use numeric codes, a string message and an array | Required/optional fields, schema versioning, authoritative attribution and side-effect semantics are not documented by the operator. |
+| Preliminary flow | No preliminary login, profile, state, lookup or CAPTCHA request was present in the documented direct flow | This dated absence does not guarantee future challenge-free behavior or prove an authorized credential-free service contract. |
+| Upstream idempotency | No upstream idempotency field was present | The service's stable local key is an audit/ledger identity only and was not sent as an upstream guarantee. |
+
+The working collection and the initial agent probe used different header shapes. The later
+accepted request used the collection shape, but the single comparison cannot establish which
+header, form-order, network-stack or other difference caused the initial 403. No causality,
+required browser impersonation or authentication rule is inferred.
+
+### Outcome and source matrix
+
+| Evidence class and date | Recorded outcome | What it supports | What it does not establish / required handling |
+|---|---|---|---|
+| Maintainer-confirmed user observation, 2026-09-18 | Supplied response artifact: `code: 0`, `msg: SUCCESS`, `err_code: 20000`, `data: []`; the user separately confirmed the approved private pair received the in-game reward. HTTP status was not present in the artifact. | Combined response and firsthand confirmation establish application for that one approved pair. | The artifact alone lacks pair attribution, HTTP metadata and timestamp. It does not establish general success semantics, authorization, quotas, idempotency or reconciliation. |
+| Agent replay observation, 2026-09-18 | HTTP 200; `code: 1`, `msg: RECEIVED`, `err_code: 40008` for the same previously applied private pair. | Corroborates that this one pair was already applied after the user's confirmed success. | One sequential duplicate does not prove concurrent replay safety, retention, stable-key idempotency, crash recovery, rate limits or general pair attribution. |
+| Initial agent observation, 2026-09-18 | HTTP 403 with no allowlisted response fields; historical classifier recorded `unexpected_schema`, later fixed offline to preserve broad `auth_or_challenge` classification for 401/403. | Establishes only that this request received 403. | Cause and side effect are unknown. It is neither proof of application nor non-application and cannot authorize correction or replay. Stop/hold. |
+| Pinned community fixtures, inspected 2026-09-18 | SUCCESS/20000, RECEIVED/40008, TIME ERROR/40007, CDK NOT FOUND/40014, USER INFO ERROR/40020; SAME TYPE EXCHANGE/40011 remains unresolved for the exact code. | Supplies fixture names and envelope examples for synthetic analysis. | Community labels and HTTP/error names do not prove non-application, terminality or safe retry. They are not operator documentation. |
+| Task 13 repository state, merged 2026-09-18 | Additive migration `0005` and runtime guards preserve ambiguous timeout, exception, lost-result and process-loss paths as uncertainty without automatic replay. | Prevents unsafe local replay and reports verification separately. | Supplies no upstream authorization, idempotency, reconciliation or non-application guarantee. Migration/runtime changes are merged, not deployed. |
+
+Only the combined user-confirmed SUCCESS/20000 observation establishes application, and only
+for its one approved pair. No accepted evidence establishes that an invalid, expired,
+ineligible, malformed, authentication/challenge, rate-limit, transport, timeout, crash or
+unknown result means no reward was applied. An HTTP status or error name alone is insufficient.
+Ambiguous outcomes must remain stopped and held for verification; they must not be
+automatically retried under unverified semantics.
+
+### Evidence gaps and later activation requirements
+
+| Required determination | Evidence still missing | Current consequence |
+|---|---|---|
+| Integration authority | Recorded authorization or applicable official permission from the upstream game/API operator for this service acting for consenting players | Maintainer repository approval, a Discord forwarding channel or a Telegram bot cannot substitute. General implementation remains blocked under current §4. |
+| Versioned contract | Operator-authorized methods, fields, schema/version policy, response semantics and proof of non-application for each failure class | Community fixtures remain synthetic evidence only; §6 cannot be treated as observed upstream behavior. |
+| Authentication / credentials | Authorized service-authentication/signing requirements, scope, revocation and environment separation | Absence of a login in the observed flow does not prove that credentials are unnecessary. No secret name is invented. Under the pending narrow proposal, any applicable provisioning and production-enablement approval would occur at activation. |
+| Quotas and concurrency | Operator-documented quotas, windows, burst/concurrency scope, cooldown and request accounting | Task 12's N=1/A=0/L=0/concurrency-one ceilings were local historical controls, not upstream limits. |
+| Idempotency and reconciliation | Contract-backed stable-key behavior or an authorized lookup covering lost responses, concurrent requests, retention and reopen horizons | The sequential RECEIVED/40008 observation and Task 13 local hold do not satisfy §5. Unresolved work stays held. |
+| Activation gate | Exact revision, upstream environment/actions, consenting players, physical-request ceilings, time window, rollback/disable steps, and separate maintainer/operator approval | No staging or production activation, game request, lookup, resource, migration, deployment or secret action is authorized by this record. Production adds every §5 requirement. |
+
+Both Task 12 request budgets remain consumed and disabled. `MockWhiteoutProvider` remains the
+only selectable provider; all service game access remains constrained to the
+`WhiteoutProvider` interface; production redemption and automatic discovery remain disabled.
+No Task 15 documentation, issue action, pull-request action or merge changes those facts.
