@@ -5,10 +5,12 @@ import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import {
   consumeMarker,
+  assertReplayAuthorization,
   DEADLINE_MS,
   ENDPOINT,
   ExperimentalWhiteoutProvider,
   REFERENCE,
+  REPLAY_REFERENCE,
   type Authorization,
   type Dependencies,
   type WireRequest,
@@ -78,8 +80,8 @@ describe("offline containment", () => {
     expect(request).toMatchObject({ url: ENDPOINT, method: "POST", redirect: "error" });
     expect([...new URLSearchParams(request.body).keys()]).toEqual([
       "sign",
-      "cdk",
       "fid",
+      "cdk",
       "kid",
       "time",
     ]);
@@ -218,13 +220,90 @@ describe("offline containment", () => {
   });
 });
 
+describe("separately authorized duplicate check", () => {
+  const replayAuthorization: Authorization = {
+    ...authorization,
+    reference: REPLAY_REFERENCE,
+    unredeemed: false,
+    alreadyAppliedConfirmed: true,
+  };
+  it.each([
+    { playerId: "999" },
+    { state: "999" },
+    { code: "OTHER" },
+    { unredeemed: true },
+    { alreadyAppliedConfirmed: undefined },
+    { reference: REFERENCE },
+  ])("rejects wrong replay scope %j", (change) => {
+    expect(() =>
+      assertReplayAuthorization(
+        { ...replayAuthorization, ...change } as Authorization,
+        authorization,
+        true,
+        true,
+      ),
+    ).toThrow("replay_authorization_rejected");
+  });
+  it.each([
+    [false, true],
+    [true, false],
+  ])("requires preserved original consumption and disablement %j", (consumed, disabled) => {
+    expect(() =>
+      assertReplayAuthorization(replayAuthorization, authorization, consumed, disabled),
+    ).toThrow("replay_authorization_rejected");
+  });
+  it("does not let replay authorization unlock the original provider", async () => {
+    const f = fixture();
+    await expect(redeem(f.provider(replayAuthorization))).rejects.toThrow("guard_rejected");
+    expect(f.transport).not.toHaveBeenCalled();
+  });
+  it("uses one new durable budget and leaves the consumed original unchanged", async () => {
+    const f = fixture({ code: 1, msg: "RECEIVED.", err_code: 40008 });
+    consumeMarker(f.marker, new Date(now).toISOString());
+    const originalBytes = readFileSync(f.marker, "utf8");
+    const replayMarker = f.marker + ".replay";
+    f.deps.consume = (at) => consumeMarker(replayMarker, at, REPLAY_REFERENCE);
+    assertReplayAuthorization(replayAuthorization, authorization, true, true);
+    const make = () =>
+      new ExperimentalWhiteoutProvider(replayAuthorization, digest, f.deps, true, REPLAY_REFERENCE);
+    const invoke = (p: ExperimentalWhiteoutProvider) =>
+      p.redeem(
+        { playerId: authorization.playerId, state: authorization.state },
+        authorization.code,
+        REPLAY_REFERENCE,
+      );
+    const p = make();
+    const results = await Promise.allSettled([invoke(p), invoke(make())]);
+    expect(results.filter((r) => r.status === "fulfilled")).toEqual([
+      { status: "fulfilled", value: { outcome: "already_redeemed" } },
+    ]);
+    await expect(invoke(make())).rejects.toThrow("attempt_unavailable");
+    expect(f.transport).toHaveBeenCalledTimes(1);
+    expect(p.observation.reference).toBe(REPLAY_REFERENCE);
+    expect(JSON.parse(readFileSync(replayMarker, "utf8"))).toMatchObject({
+      reference: REPLAY_REFERENCE,
+      budgetConsumed: true,
+    });
+    expect(readFileSync(f.marker, "utf8")).toBe(originalBytes);
+  });
+});
+
 describe("native transport with synthetic socket", () => {
   it("preserves a non-JSON 403 without retaining its body or retrying", async () => {
     https.request.mockReset();
     const req = new EventEmitter() as EventEmitter & { end: () => void };
     const res = new EventEmitter() as EventEmitter & { statusCode: number };
     res.statusCode = 403;
-    https.request.mockImplementation((_url, _options, cb) => {
+    https.request.mockImplementation((_url, options, cb) => {
+      expect(options.headers).toEqual({
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Length": expect.any(Number),
+        Accept: "application/json, text/plain, */*",
+        Origin: "https://wos-giftcode.centurygame.com",
+        Referer: "https://wos-giftcode.centurygame.com/",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+      });
       req.end = () => {
         cb(res);
         res.emit("data", Buffer.from("<html>private server response</html>"));

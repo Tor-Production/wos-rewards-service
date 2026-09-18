@@ -20,7 +20,9 @@ recognized response envelope. The user subsequently supplied a successful Postma
 and confirmed the gift arrived in-game after their own request. This confirms that flow's
 success; the agent's earlier 403 remains a separate unsuccessful HTTP observation. The
 export omits player/code values, so it does not establish exact pair attribution by itself.
-The persistent budget is consumed and live invocation is disabled. The harness is outside
+The user then explicitly authorized one duplicate check of the same pair. At 02:54:45 UTC,
+the agent's single additional request returned **HTTP 200, RECEIVED / 40008** (already redeemed).
+Both separate budgets are consumed and live invocation is disabled. The harness is outside
 runtime provider selection, D1, Queues and Discord. Service redemption
 and discovery remain disabled. This does not accept the general §13 staged-gate proposal.
 

@@ -835,3 +835,76 @@ check exit **0**. Signing-material scan passed for the five changed files. All f
 checks were offline with respect to WOS; agent game-request count remains **1 lifetime / 0
 additional**. Follow-up files: `experiments/task12/probe.ts`, `probe.test.ts`, root
 `vitest.config.ts`, this decision and `docs/README.md`. Continue review in Task 12 / PR #15.
+
+### Separate replay-check authorization — recorded 2026-09-18T02:50:44Z
+
+The user explicitly instructed: "You can actually send the request again and check if you
+receive the confirmation of the code being already applied". This is a new specific budget
+for ONE further submission of the same previously approved private pair/state, following
+the user's successful Postman request and in-game confirmation. Prior ownership consent
+continues to apply. It does not rearm, clear or replace the consumed original attempt.
+
+Reference: `task12-20260918-already-applied-check`. Operator-imposed short dispatch window:
+2026-09-18T02:50:44Z through 2026-09-18T03:20:44Z; no silent extension. N=1 additional game
+POST, A=0, L=0, concurrency 1, 30-second deadline, no retries/redirects/lookups or other
+accounts. Same §16 endpoint/contract; a response other than RECEIVED/40008 is reported as
+observed, not coerced into already_redeemed. Any challenge/rate limit/auth failure stops.
+
+Use the supplied collection's fixed Origin, Referer, Accept and User-Agent values and form
+field order; canonical signing remains unchanged. No header rotation, challenge solving,
+credential acquisition, endpoint substitution or automatic fallback is authorized. This
+request records one complete request shape and cannot isolate a single cause of the old 403.
+
+A fixed new local directory is authorized solely for this separately approved budget:
+`C:/Users/morta/AppData/Local/wos-rewards-service/task12-20260918-replay-check`.
+Its authorization, attempt, disabled and sanitized evidence records are separate. Require
+both original consumed marker/disable records, exact original pair/state equality, and
+explicit already-applied confirmation. Never assert the code remains unredeemed. No generic
+run-ID/path override exists. Record the new harness digest and focused checks before dispatch.
+The original marker, disable latch and original response evidence remain unchanged. This
+same-Task-12 follow-up remains outside deployed runtime/D1/Queues/Discord and preserves all
+production integration gates. The exception expires on cutoff or budget consumption.
+
+Replay pre-live gate: strict `npm run test:probe` exit 0, **56/56** synthetic tests passed,
+including fixed headers, original/replay scope separation, preserved original consumption,
+exact pair matching, concurrent/restarted replay attempts, and RECEIVED/40008 handling.
+Default driver invocation: offline, exit 0. `git diff --check`: exit 0.
+Pre-live replay harness SHA-256:
+`fcdb771633c44640e4594e03f4287fa6e6192973efb9ac625171215094345032`.
+Parent head: `ad00851f63697dbb775d241f15148e03fe2cf6d9`. Source pins unchanged.
+The exact pair is in the private authorization, copied from the prior human-approved pair;
+the new record explicitly sets unredeemed=false and alreadyAppliedConfirmed=true.
+
+Replay observation: dispatched **2026-09-18T02:54:45.550Z**, completed
+**2026-09-18T02:54:46.252Z**. HTTP **200**; allowlisted response:
+`code: 1`, `msg: RECEIVED`, `err_code: 40008`. Provider result: **already_redeemed**.
+This is confirmation that the same approved pair was already applied, corroborating the
+user's earlier reported successful Postman request and in-game gift. It is not a new reward
+application by this replay. N=1 under the new authorization; A=0, L=0, redirects/retries=0.
+Total agent game requests in Task 12: **2**, under two distinct human authorizations.
+The user's own successful Postman submission is separate and is not counted as an agent call.
+
+Both fixed attempt markers are consumed and both disable latches are set. The original
+marker/disable/evidence hashes are checked against the saved pre-replay digests. New sanitized
+evidence is in the replay directory's `evidence.json`; no signatures, raw bodies or credentials
+are retained. The source digest is unchanged. No background probe remains. No third call is
+authorized. This is one observed sequential duplicate result, not a guarantee about concurrent
+replay, retention horizons, crash reconciliation, rate limits or production readiness.
+
+Matching the collection's request shape yielded an accepted request, but this single
+comparison cannot isolate which header, form ordering or other difference caused the old
+403. The original request/evidence and its historical digests remain unchanged.
+
+Replay final validation: `npm run check` exit **0**. Formatting, Wrangler type freshness,
+strict types and staging dry-run passed. Probe **56/56**; root **536/536 across 43 files**,
+deterministic and shuffled (seed `1789700344593`); companion **26/26 across 3 files**,
+deterministic and shuffled (seed `1789700479227`). `npm run test:mvp` exit **0**:
+**12/12** targeted Worker tests and **26/26** companion tests. Diff/staged checks and the
+signing-material/private-pair scan passed. Replay harness digest is unchanged from the
+pre-live pin. Seven files changed for this replay: `docs/README.md`, this decision, and
+`experiments/task12/{README.md,driver.ts,probe.ts,probe.test.ts,transport.ts}`.
+
+Additional external actions: pinned public-source read in memory, the single explicitly
+authorized game POST, and same-branch push/existing draft-PR update. No third game request,
+merge, deployment, resource/secret change or runtime integration occurred. Continue review
+in this same Task 12 branch/PR; no additional live action remains within these spent budgets.

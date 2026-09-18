@@ -15,8 +15,11 @@ export function onePost(input: WireRequest): Promise<WireResponse> {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
           "Content-Length": Buffer.byteLength(input.body),
-          Accept: "application/json",
-          "User-Agent": "wos-rewards-service-task12/1.0",
+          Accept: "application/json, text/plain, */*",
+          Origin: "https://wos-giftcode.centurygame.com",
+          Referer: "https://wos-giftcode.centurygame.com/",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
         },
       },
       (res) => {

@@ -7,14 +7,17 @@ import type {
 
 export const ENDPOINT = "https://wos-giftcode-api.centurygame.com/api/gift_code";
 export const REFERENCE = "task12-20260918-one-pair";
+export const REPLAY_REFERENCE = "task12-20260918-already-applied-check";
+export type ExperimentReference = typeof REFERENCE | typeof REPLAY_REFERENCE;
 export const DEADLINE_MS = 30_000;
 export interface Authorization {
-  reference: typeof REFERENCE;
+  reference: ExperimentReference;
   playerId: string;
   state: string;
   code: string;
   consent: true;
-  unredeemed: true;
+  unredeemed: boolean;
+  alreadyAppliedConfirmed?: true;
   reserved: true;
   startsAt: string;
   cutoff: string;
@@ -34,7 +37,7 @@ export interface WireResponse {
   body: unknown;
 }
 export interface Observation {
-  reference: typeof REFERENCE;
+  reference: ExperimentReference;
   at: string;
   requests: number;
   markerConsumed: boolean;
@@ -47,15 +50,38 @@ export class ExperimentStop extends Error {
     super(reason);
   }
 }
-export function consumeMarker(path: string, at: string): void {
+export function consumeMarker(
+  path: string,
+  at: string,
+  reference: ExperimentReference = REFERENCE,
+): void {
   // An existing, empty, or partially written file permanently consumes this test's budget.
   const fd = openSync(path, "wx");
   try {
-    writeFileSync(fd, JSON.stringify({ reference: REFERENCE, at, budgetConsumed: true }));
+    writeFileSync(fd, JSON.stringify({ reference, at, budgetConsumed: true }));
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
+}
+export function assertReplayAuthorization(
+  a: Authorization,
+  original: Authorization,
+  originalConsumed: boolean,
+  originalDisabled: boolean,
+): void {
+  if (
+    a.reference !== REPLAY_REFERENCE ||
+    original.reference !== REFERENCE ||
+    a.playerId !== original.playerId ||
+    a.state !== original.state ||
+    a.code !== original.code ||
+    a.unredeemed !== false ||
+    a.alreadyAppliedConfirmed !== true ||
+    !originalConsumed ||
+    !originalDisabled
+  )
+    throw new ExperimentStop("replay_authorization_rejected");
 }
 const messages = new Set([
   "SUCCESS",
@@ -141,8 +167,10 @@ export class ExperimentalWhiteoutProvider implements WhiteoutProvider {
     private readonly digest: string,
     private readonly deps: Dependencies,
     private readonly live = false,
+    private readonly reference: ExperimentReference = REFERENCE,
   ) {
     this.authorization = Object.freeze({ ...authorization });
+    this.observation.reference = reference;
   }
   private guard(player: PlayerRef, code: string, id: string): void {
     const a = this.authorization;
@@ -154,10 +182,14 @@ export class ExperimentalWhiteoutProvider implements WhiteoutProvider {
       !this.live ||
       !this.deps.enabled() ||
       this.used ||
-      a.reference !== REFERENCE ||
-      id !== REFERENCE ||
+      a.reference !== this.reference ||
+      id !== this.reference ||
       a.consent !== true ||
-      a.unredeemed !== true ||
+      (this.reference === REFERENCE
+        ? a.unredeemed !== true
+        : this.reference !== REPLAY_REFERENCE ||
+          a.unredeemed !== false ||
+          a.alreadyAppliedConfirmed !== true) ||
       a.reserved !== true ||
       a.checksPassed !== true ||
       !/^[a-f0-9]{64}$/.test(this.digest) ||
@@ -229,7 +261,13 @@ export class ExperimentalWhiteoutProvider implements WhiteoutProvider {
           url: ENDPOINT,
           method: "POST",
           redirect: "error",
-          body: new URLSearchParams({ sign: signature, ...fields }).toString(),
+          body: new URLSearchParams({
+            sign: signature,
+            fid: fields.fid,
+            cdk: fields.cdk,
+            kid: fields.kid,
+            time: fields.time,
+          }).toString(),
           signal: controller.signal,
         }),
         timeout,
