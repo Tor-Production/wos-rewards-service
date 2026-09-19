@@ -308,6 +308,15 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
 
 ## 20. Observability without leaking secrets
 
+- **Scheduled-lane failures:** every caught failure in the one-minute handler emits one
+  warning-level structured record with this closed JSON schema:
+  `{"event":"scheduled_lane_failed","lane":"expansion|outbox|recovery|summary|delivery","environment":"staging","query_budget":6|8|9|10}`.
+  The record is constructed at the log boundary from those allowlisted primitive values only;
+  it never contains an exception, stack, SQL, payload, request, configuration object,
+  identifier, code, raw message, credential, or session data. A throwing log sink is ignored so
+  it cannot interrupt later scheduled lanes or change recovery. This is a narrow implemented
+  diagnostic for scheduled failure isolation, not completion of the broader metrics, alerts, or
+  observability work below.
 - **Structured logs** with an explicit field allow-list: `environment`, `operation_id`,
   `operation_type`, `item_key`, `player_id`, `code`, `event_id` (correlation id), `status`,
   `reason_code`, `attempts`, `queue`, `delivery_id`, `chunk_index`, timings. The Task 09
