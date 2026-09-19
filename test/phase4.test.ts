@@ -607,7 +607,11 @@ describe("distribution, summaries, durable delivery and repair", () => {
 });
 
 /** Simulates a crash at a D1 transaction boundary without mocking SQL behavior. */
-function failBatchOnce(database: D1Database, afterCommit = false): D1Database {
+function failBatchOnce(
+  database: D1Database,
+  afterCommit = false,
+  failure = new Error("synthetic transaction interruption"),
+): D1Database {
   let failed = false;
   return new Proxy(database, {
     get(target, key) {
@@ -616,13 +620,142 @@ function failBatchOnce(database: D1Database, afterCommit = false): D1Database {
           if (failed) return target.batch(statements);
           failed = true;
           if (afterCommit) await target.batch(statements);
-          throw new Error("synthetic transaction interruption");
+          throw failure;
         };
       const value: unknown = Reflect.get(target, key, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
 }
+
+async function scheduledDistribution(code: string): Promise<string> {
+  await seedPlayer(db, uniqueId(), "0", "Scheduled lane");
+  const operationId = await openDistribution(db, config, code, clock);
+  if (!operationId) throw new Error("scheduled distribution fixture");
+  return operationId;
+}
+
+it("logs a bounded expansion failure and continues after a throwing log sink", async () => {
+  await scheduledDistribution("TASK17-EXPANSION");
+  const queue = new RecordingQueue();
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockRejectedValue(new Error("unmatched external network prohibited"));
+  const canary = "token=synthetic-secret SELECT * FROM credentials raw-message";
+  try {
+    const measured = countD1(db);
+    await scheduledWork(
+      {
+        ...env,
+        STAGING_DB: failBatchOnce(measured.db, false, new Error(canary)),
+        REGISTRATION_JOBS_QUEUE: queue as unknown as Env["REGISTRATION_JOBS_QUEUE"],
+        CODE_FANOUT_JOBS_QUEUE: queue as unknown as Env["CODE_FANOUT_JOBS_QUEUE"],
+      },
+      { now: () => clock },
+    );
+    expect(measured.stats.statements).toBeLessThanOrEqual(39);
+    expect(queue.calls).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledWith({
+      event: "scheduled_lane_failed",
+      lane: "expansion",
+      environment: "staging",
+      query_budget: 6,
+    });
+    const record = warning.mock.calls[0]![0];
+    expect(Object.keys(record as object).sort()).toEqual([
+      "environment",
+      "event",
+      "lane",
+      "query_budget",
+    ]);
+    expect(JSON.stringify(record)).not.toContain(canary);
+    expect(
+      await db.prepare("SELECT turn FROM scheduler_progress WHERE lane='recovery'").first("turn"),
+    ).toBe(0);
+
+    warning.mockImplementation(() => {
+      throw new Error("synthetic log sink failure");
+    });
+    await expect(
+      scheduledWork(
+        {
+          ...env,
+          STAGING_DB: failBatchOnce(db),
+          REGISTRATION_JOBS_QUEUE: queue as unknown as Env["REGISTRATION_JOBS_QUEUE"],
+          CODE_FANOUT_JOBS_QUEUE: queue as unknown as Env["CODE_FANOUT_JOBS_QUEUE"],
+        },
+        { now: () => clock },
+      ),
+    ).resolves.toBeUndefined();
+    expect(
+      await db.prepare("SELECT turn FROM scheduler_progress WHERE lane='recovery'").first("turn"),
+    ).toBe(1);
+  } finally {
+    fetch.mockRestore();
+    warning.mockRestore();
+  }
+});
+
+it("distinguishes the equal-budget summary failure without leaking its error", async () => {
+  const operationId = await scheduledDistribution("TASK17-SUMMARY");
+  await expandPage(db, clock.toISOString());
+  await db
+    .prepare("UPDATE operation_items SET status='success' WHERE operation_id=?1")
+    .bind(operationId)
+    .run();
+  await db.prepare("DELETE FROM outbox_jobs WHERE operation_id=?1").bind(operationId).run();
+  const queue = new RecordingQueue();
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockRejectedValue(new Error("unmatched external network prohibited"));
+  const canary = "Bearer synthetic-secret UPDATE private_table raw-message";
+  try {
+    const measured = countD1(db);
+    await scheduledWork(
+      {
+        ...env,
+        STAGING_DB: failBatchOnce(measured.db, false, new Error(canary)),
+        REGISTRATION_JOBS_QUEUE: queue as unknown as Env["REGISTRATION_JOBS_QUEUE"],
+        CODE_FANOUT_JOBS_QUEUE: queue as unknown as Env["CODE_FANOUT_JOBS_QUEUE"],
+      },
+      { now: () => clock },
+    );
+    expect(measured.stats.statements).toBeLessThanOrEqual(39);
+    expect(queue.calls).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledWith({
+      event: "scheduled_lane_failed",
+      lane: "summary",
+      environment: "staging",
+      query_budget: 6,
+    });
+    expect(JSON.stringify(warning.mock.calls[0]![0])).not.toContain(canary);
+    expect(
+      await db
+        .prepare("SELECT summary_state FROM operations WHERE operation_id=?1")
+        .bind(operationId)
+        .first("summary_state"),
+    ).toBe("none");
+  } finally {
+    fetch.mockRestore();
+    warning.mockRestore();
+  }
+});
+
+it("emits no scheduled-lane failure record when scheduled work succeeds", async () => {
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await scheduledWork(env, { now: () => clock });
+    expect(warning).not.toHaveBeenCalled();
+  } finally {
+    warning.mockRestore();
+  }
+});
 
 it("Unicode summaries resume seal/layout/render atomically and overflow truthfully at 500 characters", async () => {
   const ids = Array.from({ length: 280 }, (_, i) => String(1000 + i));
@@ -800,7 +933,12 @@ it("complete scheduled failure paths retain independent lane reservations", asyn
     );
     expect(measured.stats.statements).toBeLessThanOrEqual(39);
     expect(measured.stats.maxBindings).toBeLessThanOrEqual(100);
-    expect(warning).toHaveBeenCalledWith("scheduled_lane_failed", 10);
+    expect(warning).toHaveBeenCalledWith({
+      event: "scheduled_lane_failed",
+      lane: "outbox",
+      environment: "staging",
+      query_budget: 10,
+    });
     clock = new Date(clock.getTime() + 2000);
     await scheduledWork({ ...env, STAGING_DB: db }, { now: () => clock });
     expect(
