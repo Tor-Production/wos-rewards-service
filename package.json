@@ -25,7 +25,7 @@
     "validate": "wrangler deploy --dry-run --env staging",
     "dev": "wrangler dev --env staging",
     "companion:build": "tsc -p companion/tsconfig.build.json",
-    "companion:start": "npm run companion:build && node dist/companion/index.js",
+    "companion:start": "npm run companion:build && node dist/companion/src/index.js",
     "probe:build": "tsc -p experiments/task12/tsconfig.json",
     "test:probe": "npm run probe:build && vitest run --config experiments/task12/vitest.config.ts",
     "check": "npm run format:check && npm run typecheck && npm run test:probe && npm run test && npm run test:shuffle && npm run validate"

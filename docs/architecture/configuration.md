@@ -40,7 +40,10 @@ through Wrangler vars (non-secret) and Wrangler secrets (secret).
 | `SUMMARY_MAX_CHUNKS` | summary builder | hard cap on chunks per summary; overflow becomes a deterministic `"+N more not listed"` line in the final chunk |
 | `OUTBOX_DISPATCH_MAX_ATTEMPTS` | outbox dispatcher | attempts before an outbox row is marked `dead`; Phase 3 accepts 1–5 to retain the bounded marking/query proof |
 | `OUTPUT_DISPATCH_MAX_ATTEMPTS` | output dispatcher | send attempts before a delivery row is alerted |
-| `CODE_DISCOVERY_ENABLED` | code-discovery scheduler | master switch; `false` until a source is authorized |
+| `CODE_DISCOVERY_ENABLED` | companion and Worker Follow intake, independently | defaults to `false` when absent; accepts exact boolean/boolean string; all checked-in deployment values and examples remain `false`; enabling requires staging/mock and the complete tuple below |
+| `DISCORD_CODE_FEED_CHANNEL_ID` | companion and Worker Follow intake | destination feed in `DISCORD_GUILD_ID`; non-placeholder 17–20 digit snowflake, distinct from registration/admin channels |
+| `DISCORD_CODE_FOLLOWER_WEBHOOK_ID` | companion and Worker Follow intake | one exact follower webhook; its type and relationship must be verified before live activation |
+| `DISCORD_CODE_SOURCE_GUILD_ID`, `DISCORD_CODE_SOURCE_CHANNEL_ID` | companion and Worker Follow intake | exact canonical source guild/channel; non-placeholder 17–20 digit snowflakes; not inferred from names |
 | `PRODUCTION_REDEMPTION_ENABLED` | provider adapter | must be `false` unless an authorized provider is documented and approved |
 | `PROVIDER_MODE` | provider adapter | `mock` (default) or a named authorized provider |
 | `REGISTRATION_JOBS_QUEUE` / `CODE_FANOUT_JOBS_QUEUE` | producers | staging bindings, not scalar vars; the redemption DLQ is configured through consumer queue names and `dead_letter_queue`, with no direct producer binding |
@@ -128,3 +131,26 @@ coverage.
 any authentication mechanism; its secret name(s) are added only when its contract is
 documented and approved. Any `WHITEOUT_PROVIDER_*` name that appears later is a non-binding
 placeholder, not a commitment to API-key authentication.
+
+
+### Disabled Follow configuration
+
+New source IDs are optional while discovery is disabled. Existing disabled deployments and companion
+configuration remain compatible. An enabled companion also requires explicit `ENVIRONMENT=staging`
+and `PROVIDER_MODE=mock`; the Worker already enforces those values. These settings do not authorize
+activation. Both loaders invoke the shared validation independently and fail closed on incomplete
+or malformed enabled tuples. Synthetic local examples only:
+
+```text
+CODE_DISCOVERY_ENABLED=false
+ENVIRONMENT=staging
+PROVIDER_MODE=mock
+DISCORD_CODE_FEED_CHANNEL_ID=100000000000000006
+DISCORD_CODE_FOLLOWER_WEBHOOK_ID=100000000000000007
+DISCORD_CODE_SOURCE_GUILD_ID=100000000000000008
+DISCORD_CODE_SOURCE_CHANNEL_ID=100000000000000009
+```
+
+These IDs are synthetic placeholders, not verified staging configuration. The existing
+`DISCORD_GUILD_ID` is the destination guild. No live IDs are required for disabled implementation.
+See the [source contract and later activation checklist](discord-ingestion-and-registration.md#discord-follow-intake).

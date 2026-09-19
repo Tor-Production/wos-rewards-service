@@ -131,6 +131,7 @@ describe("loadConfig accepts the intended staging configuration", () => {
       providerMode: "mock",
       productionRedemptionEnabled: false,
       codeDiscoveryEnabled: false,
+      followSource: null,
       logLevel: "info",
       discordGuildId: env.DISCORD_GUILD_ID,
       discordRegistrationChannelId: env.DISCORD_REGISTRATION_CHANNEL_ID,
@@ -240,10 +241,10 @@ describe("loadConfig rejects unsafe environments", () => {
     }
   });
 
-  it("rejects enabled code discovery", () => {
+  it("rejects enabled code discovery without its source tuple", () => {
     for (const value of [true, "true"]) {
       expect(issuesFor({ ...SAFE_ENV, CODE_DISCOVERY_ENABLED: value })).toContain(
-        "CODE_DISCOVERY_ENABLED must be false",
+        "DISCORD_CODE_FEED_CHANNEL_ID must be a non-placeholder Discord snowflake",
       );
     }
   });
@@ -268,7 +269,6 @@ describe("loadConfig rejects malformed input", () => {
       "PROVIDER_MODE must be one of: mock",
       "LOG_LEVEL must be one of: debug, info, warn, error",
       "PRODUCTION_REDEMPTION_ENABLED must be false",
-      "CODE_DISCOVERY_ENABLED must be false",
       "DISCORD_GUILD_ID must be a digit string of 1 to 20 digits",
       "DISCORD_REGISTRATION_CHANNEL_ID must be a digit string of 1 to 20 digits",
       "DISCORD_MVP_ADMIN_CHANNEL_ID must be a digit string of 1 to 20 digits",
@@ -296,9 +296,9 @@ describe("loadConfig rejects malformed input", () => {
   });
 
   it("never treats a non-boolean value as disabled", () => {
-    for (const value of ["0", "no", "off", "", 0, null, undefined, "FALSE"]) {
+    for (const value of ["0", "no", "off", "", 0, null, "FALSE"]) {
       expect(issuesFor({ ...SAFE_ENV, CODE_DISCOVERY_ENABLED: value })).toContain(
-        "CODE_DISCOVERY_ENABLED must be false",
+        "CODE_DISCOVERY_ENABLED must be true or false",
       );
     }
   });

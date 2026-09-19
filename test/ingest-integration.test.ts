@@ -152,6 +152,6 @@ describe("full Workers runtime ingestion", () => {
         { ...env, CODE_DISCOVERY_ENABLED: true } as unknown as Env,
         createExecutionContext(),
       ),
-    ).rejects.toThrow("CODE_DISCOVERY_ENABLED must be false");
+    ).rejects.toThrow("DISCORD_CODE_FEED_CHANNEL_ID must be a non-placeholder Discord snowflake");
   });
 });

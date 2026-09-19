@@ -185,6 +185,37 @@ gift code, existing `code_distribution_run`, and immutable player snapshot. Ther
 is never a committed steady state. A repeated `event_id` cannot authorize any batch member;
 a different message for an existing code commits `duplicate_code` without opening work.
 
+### `discovered_code_events` (migration 0006)
+
+One additive table records bounded Follow provenance. `event_id` is the destination message primary
+key. `guild_id`, `channel_id`, `webhook_id` and `source_guild_id`, `source_channel_id`,
+`source_message_id` retain the accepted transport identity. All IDs have bounded digit checks.
+`code` keeps case and the 64-character safe grammar; `expiry_label` is at most 40 characters with
+unknown year by contract, not an expiry timestamp. Raw message bodies are not stored.
+`discord_created_at` retains the original destination timestamp, `accepted_at` the intake time and
+`acceptance_id` a fresh transaction fence. `operation_id` is a nullable FK populated only for accepted
+work; `canonical_event_id` is a nullable self-FK populated only for duplicate source copies.
+
+A partial unique index on `(source_guild_id, source_channel_id, source_message_id)` where
+`canonical_event_id IS NULL` claims each canonical source exactly once. The insert chooses
+`pending` for a new canonical source or `duplicate_source` with its first event reference for a new
+destination copy. Both destination events are durably claimed, including copies with changed content.
+A copy's code/label records its submitted bounded candidate, not new acceptance; its status and
+canonical link identify the unchanged first provenance. A canonical row ends as `accepted` or
+`duplicate_code`; `pending` exists only inside the atomic transaction. Terminal rows are immutable
+under the update trigger. Replay never replaces first metadata or creates work for a changed code.
+
+The shared distribution batch contains ledger insertion, guarded globally unique `gift_codes`
+insertion, operation opening, the at-most-2,000-player snapshot and ledger finalization. D1 batch
+atomicity serializes concurrent event/source/code races, including manual commands. Only the new
+acceptance fence that owns the first code provenance may open work. A final result read reports
+accepted/duplicate-event/duplicate-source/duplicate-code truthfully. Failure rolls back the ledger,
+code, operation and snapshot together. No second redemption engine, provider or HTTP Queue send is
+introduced. Existing manual/synthetic metadata and Task 13 uncertainty holds remain unchanged.
+
+Tests apply 0006 to populated 0005 with manual provenance and an uncertainty hold, verify constraints
+and foreign keys, and prove journal replay is a no-op. Remote migration is not part of this task.
+
 ### `processed_events` (event-acceptance state machine)
 
 | Column | Type | Notes |

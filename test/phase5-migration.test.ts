@@ -97,6 +97,7 @@ describe("Phase 5 migration", () => {
       PHASE5_MIGRATION,
       LIVE_STAGING_MIGRATION,
       "0005_uncertain_redemptions.sql",
+      "0006_discord_follow_intake.sql",
     ]);
 
     const processedColumns = (

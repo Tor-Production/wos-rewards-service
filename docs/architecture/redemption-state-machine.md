@@ -41,19 +41,20 @@ interface WhiteoutProvider {
   redeem(player: PlayerRef, code: string, idempotencyKey: string): Promise<RedeemResult>;
 }
 
-interface DiscoveredCode {
-  code: string;
-  source: string;        // identifier of the authorized source
-  discoveredAt: string;  // ISO-8601
+interface GiftCodeSource {
+  // Push-event validation, separate from redemption; no polling or network calls.
+  candidate(event: unknown, config: FollowSourceConfig | null, now: Date):
+    { event: FollowCodeEvent; candidate: FollowCandidate } | null;
 }
 
-interface GiftCodeSource {
-  // Discover/list candidate gift codes from a SEPARATELY AUTHORIZED source.
-  // Status: NOT AUTHORIZED. No scraping, no undocumented game endpoint.
-  listCandidateCodes(): Promise<DiscoveredCode[]>;
-}
 ```
 
+- The implemented `discordFollowSource` validates the separately authorized offline push-event
+  contract. Checked-in discovery remains disabled; exact live identity/access and activation are
+  unverified. See [Follow intake](discord-ingestion-and-registration.md#discord-follow-intake) and
+  [provider decision §7](../whiteout-provider-decision.md#7-gift-code-discovery-source-status).
+  `FollowCandidate` contains a case-preserved code and expiry label with unknown year; it conveys
+  no code-validity, expiry timestamp or redemption authority.
 - The **registration consumer reads active codes from D1** (`gift_codes` where
   `status='active'`), never from `WhiteoutProvider`.
 - `MockWhiteoutProvider` is the default in development, automated tests, and staging. It

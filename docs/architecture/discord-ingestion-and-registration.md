@@ -166,8 +166,9 @@ measurements for the separately authorized spike.
 
 The `discord.js` companion requests only the Guilds, Guild Messages, and privileged Message
 Content intents. It accepts events only from `DISCORD_GUILD_ID` and the registration/admin
-channels, and drops bot, system, webhook, application-authored, wrong-guild, and wrong-channel
-messages. For the registration channel it **forwards `content` byte-for-byte as represented by
+channels for human input, and drops bot, system, webhook, application-authored, wrong-guild,
+and wrong-channel messages on those routes. The separate disabled Follow route below is the
+only companion exception for a configured follower webhook. For the registration channel it **forwards `content` byte-for-byte as represented by
 the JS string**, even when syntax is invalid, because the Cloudflare business layer generates
 the validation reply **[inference]**. For the admin channel it accepts only an allow-listed
 human and exact `!wos-code CODE` syntax, normalizing surrounding/command whitespace before
@@ -414,7 +415,8 @@ finalisable and produces a **single-chunk** zero-result summary
 
 1. **Supply** a candidate code. In Task 09 an allow-listed staging human uses
    `!wos-code CODE`, which reaches authenticated `POST /manual-code`. Automatic
-   `GiftCodeSource` discovery remains unauthorized and disabled
+   `GiftCodeSource` also accepts the separately authorized offline Follow push contract below;
+   deployment discovery remains disabled
    ([§11](redemption-state-machine.md#11-whiteoutprovider-and-giftcodesource-abstractions)).
 2. **Deduplicate** on `gift_codes.code` (unique). A re-seen code is a no-op.
 3. **Open a `code_distribution_run` operation** through the existing `openDistribution` flow and
@@ -451,3 +453,89 @@ provider-call authority** ([§15.2](redemption-state-machine.md#152-global-redem
 whichever consumer claims it first calls the provider; every other operation item for the
 same pair joins or reuses that terminal outcome and never calls the provider
 independently **[inference]**.
+
+
+### Discord Follow intake
+
+Task 18 implements `MESSAGE_CREATE` intake on the existing companion connection and
+`POST /discovered-code` at the Worker, disabled independently in both processes. The
+[recorded permission](../whiteout-provider-decision.md#7-gift-code-discovery-source-status)
+covers offline staging/mock implementation only. Follow setup and bot permissions are
+maintainer-reported; exact live source identities and content access are unverified.
+
+`shared/discord-follow.ts` defines the bounded contract used independently by both processes.
+The Worker authenticates with the existing ingestion bearer secret before reading the body,
+then validates the original content, schema and configured source again. It accepts only JSON
+(up to 2,048 UTF-8 bytes, enforced on declared and streamed length), exactly twelve fields:
+`event_id`, `guild_id`, `channel_id`, `webhook_id`, `source_guild_id`, `source_channel_id`,
+`source_message_id`, `message_type`, `reference_type`, `flags`, `content`, `created_at`.
+All IDs are non-placeholder 17–20 digit snowflakes. Destination guild/feed, follower webhook,
+and source guild/channel must equal the configured tuple. Source message ID is required.
+
+The destination message must have default message type 0, default reference type 0 and
+IS_CROSSPOST; only flag values 2 and 6 (also SUPPRESS_EMBEDS) are accepted. Other flags, including
+SOURCE_MESSAGE_DELETED and forwarding snapshots, fail closed. This rejects replies, ordinary
+forwards, system events, unrelated webhooks and missing provenance. `discord.js` maps
+`message.reference.{guildId,channelId,messageId,type}`, `message.flags.bitfield`, `message.type`
+and `message.webhookId`; an omitted Discord reference type becomes documented default 0.
+Bot/name/content flags alone do not establish source identity. No webhook enumeration or
+reference/history fetch is added. The [Discord message reference](https://docs.discord.com/developers/resources/message#message-reference-content-attribution)
+and [Channel Follower type](https://docs.discord.com/developers/resources/webhook#webhook-object-webhook-types)
+are the contract basis; installed discord.js 14.27 types/field mapping were inspected offline.
+
+Content is at most 512 UTF-8 bytes and has exactly three LF or CRLF lines:
+
+```text
+📌 Code: TestCode18A
+⏰Valid Until: September 20, 23:59 (UTC+0)
+🥳 Redemption page: https://wos-giftcode.centurygame.com/
+```
+
+Only ASCII spaces/tabs at line edges, between the emoji and label, after colons, between month
+and day, after the comma, and before `(UTC+0)` are harmless. At least one space/tab separates
+month/day and time/timezone. Labels and English month names are case-sensitive. The code keeps
+its original case and uses the existing 1–64 character `[A-Za-z0-9_-]` grammar. The exact HTTPS
+URL is text only and is never fetched. Trailing/extra lines, multiple codes, alternate URLs,
+controls, other timezones, explicit years, impossible dates and invalid 24-hour times are rejected.
+Month/day is validated without guessing a year: February 29 is valid metadata. The normalized
+expiry label has unknown year (`expiryYear: null` in the parser); no expiry timestamp or live/expired
+claim is derived, and existing operation deadlines remain independent.
+
+Creation timestamps must be valid RFC-3339 and within the inclusive five-minute age / one-minute
+future-skew window already used for manual intake. Older events are ignored, including retries
+that arrive after the window; accepted work remains durable. No edits/deletions are subscribed to,
+no history is backfilled, and no links/references are followed. Subsequent source edits/deletions
+do not retract accepted work. Missing Message Content produces an empty payload and is ignored.
+
+Acceptance uses the shared manual/discovery D1 transaction and existing frozen player snapshot,
+fanout/outbox/Queue/mock/summary pipeline. It opens no provider call at HTTP intake. The five batch
+statements plus one result read are constant; the player cap remains 2,000 and downstream query
+and fanout budgets are unchanged. `gift_codes.source` is `discord-follow-staging`; manual and
+synthetic labels are preserved. Discovery summary context freezes the configured MVP **admin**
+channel, never the feed, with existing sanitization, disabled mentions and runtime footer handling.
+The [discovery ledger](data-model-and-outbox.md#discovered_code_events-migration-0006) defines
+canonical-source and destination-copy deduplication. HTTP exposes only accepted/duplicate/ignored/
+unauthorized/unavailable; the companion reuses its bounded timeout/retry client and fixed-category
+logging. No content, code, source IDs, payloads, raw errors or secrets are logged.
+
+### Later Follow activation checklist
+
+This checklist is documentation, not authorization to execute it:
+
+1. Verify and record the exact destination guild/feed, source guild/channel, and follower webhook
+   relationship/type, plus bot access and Message Content intent. Inspect a real create envelope
+   under separate approval; flags alone are insufficient. Keep the feed separate from registration/admin.
+2. Separately approve the exact staging revision, migrations (including unapplied 0005/0006),
+   deployment, companion start and controlled announcement publication. A controlled source needs
+   its own explicitly approved tuple; never weaken the official-source filter to test it.
+3. Keep `ENVIRONMENT=staging`, `PROVIDER_MODE=mock`, production redemption false. Enable discovery
+   only in the approved companion/Worker configuration. Publish a fresh synthetic three-line code;
+   observe durable acceptance, one operation, duplicate suppression and the admin summary. Real
+   WOS code validity is irrelevant to this mock test.
+4. Disable `CODE_DISCOVERY_ENABLED` in both processes and stop the companion after the bounded test.
+   Roll back to the approved prior Worker revision if needed; do not drop the additive ledger or
+   replay/delete accepted work. Disabling intake does not cancel already accepted distributions;
+   any pause of existing processing/output requires its own operational decision.
+
+Offline tests supply synthetic identities and fake Discord delivery. No expanded source permissions
+are needed for implementation; live identity/access/envelope evidence remains a later gate.
