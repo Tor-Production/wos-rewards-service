@@ -187,3 +187,24 @@ source** and checked Discord's Channels Followed UI to confirm it follows into `
 That is maintainer-verified configuration, not an approved deployment configuration or a
 successful exact-webhook API read; the bot received 403. No enabled deployment value was checked
 in, and the original Cloudflare snapshot above was not repeated or changed.
+
+### Task 20 preparation read-only staging snapshot — 2026-09-19
+
+At 2026-09-19T04:15:46Z, named-resource Wrangler 4.127.1 and the documented read-only
+Cloudflare Queue/Cron GETs reconfirmed the existing `7a083c14-a7ac-4875-ad11-04de4b10b139`
+Worker version at 100%, with staging D1, registration/fanout Queue bindings, both required
+secret **names**, `PROVIDER_MODE=mock`, production redemption false, discovery false and delivery
+true. The migration journal still contained exactly `0001`–`0004`; only `0005` and `0006` were
+pending. Hold columns, `uncertain_count` and the Follow ledger were absent. Bounded aggregate
+counts: 1 player, 1 code, 2 prior operations (both summarized/delivered), 0 unfinished items,
+0 outstanding redemptions, 0 legacy hold candidates, 0 uncertain reason rows, 1 previously
+enqueued outbox row (0 pending/dead), and 2 sent outputs. No player or code rows were exported.
+
+Each of the three named Queues had one consumer, 86,400-second retention, and a point-in-time
+backlog count/bytes of 0/0 with no oldest message timestamp. The staging Worker had one
+`* * * * *` Cron trigger. Queue metrics do not prove the absence of in-flight invocations; the
+[Task 20 runbook](../task20-staging-follow-smoke.md) uses pause, consumer detachment and the
+documented Cron propagation/invocation bounds for that safety gate. The known Task 19 local
+preflight/auth files were absent from their exact stated path at this checkout; no values were
+read or searched for elsewhere. Nothing was migrated, deployed, enabled or published by this
+snapshot.
