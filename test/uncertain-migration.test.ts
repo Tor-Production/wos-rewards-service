@@ -72,7 +72,7 @@ it("0005 upgrades the actual 0004 schema without inventing legacy outcomes or ch
   expect((await db.prepare("SELECT * FROM redemptions ORDER BY code").all()).results).toEqual(
     after,
   );
-  expect(await db.prepare("SELECT COUNT(*) n FROM d1_migrations").first("n")).toBe(5);
+  expect(await db.prepare("SELECT COUNT(*) n FROM d1_migrations").first("n")).toBe(6);
   expect((await db.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
   await expect(db.prepare("UPDATE redemptions SET status='uncertain'").run()).rejects.toThrow();
   await expect(

@@ -1,4 +1,7 @@
+import { loadFollowSource, type FollowSourceConfig } from "../../shared/discord-follow.js";
+
 export interface CompanionConfig {
+  readonly followSource: FollowSourceConfig | null;
   readonly discordBotToken: string;
   readonly ingestionSharedSecret: string;
   readonly workerBaseUrl: string;
@@ -23,6 +26,7 @@ export function loadCompanionConfig(
   source: Readonly<Record<string, string | undefined>>,
 ): CompanionConfig {
   const issues: string[] = [];
+  const followSource = loadFollowSource(source, issues);
   const discordBotToken = readSecret(source, "DISCORD_BOT_TOKEN", issues);
   const ingestionSharedSecret = readSecret(source, "INGESTION_SHARED_SECRET", issues);
   const workerBaseUrl = readWorkerUrl(source.COMPANION_WORKER_BASE_URL, issues);
@@ -47,6 +51,7 @@ export function loadCompanionConfig(
     issues.push("DISCORD_MVP_ADMIN_USER_ALLOWLIST must not contain DISCORD_APPLICATION_ID");
   if (issues.length > 0) throw new CompanionConfigurationError(issues);
   return {
+    followSource,
     discordBotToken,
     ingestionSharedSecret,
     workerBaseUrl,

@@ -1,3 +1,7 @@
+import { DISCOVERY_MAX_BODY_BYTES, isFollowCodeEvent } from "../shared/discord-follow";
+import { discordFollowSource } from "./discovery/discord-follow";
+import { readBoundedEvent } from "./manual-code/transport";
+import { openDiscoveredDistribution } from "./operations/distribution";
 import { scheduledWork, queueWork } from "./runtime/handlers";
 import { ConfigurationError, loadConfig } from "./config";
 import { acknowledgement, errorResponse, manualCodeResponse } from "./http/responses";
@@ -27,6 +31,7 @@ export default {
     }
     const path = new URL(request.url).pathname;
     if (request.method !== "POST") return errorResponse("not_found");
+    if (path === "/discovered-code") return handleDiscoveredCode(request, env, config);
     if (path === "/manual-code") return handleManualCode(request, env, config);
     if (path !== "/ingest") return errorResponse("not_found");
     const authenticated = await verifyIngestionAuth(request, config.ingestionSharedSecret);
@@ -107,6 +112,34 @@ async function handleManualCode(
     return manualCodeResponse("unauthorized");
   try {
     const result = await openDistribution(env.STAGING_DB, config, command.code, now, command);
+    return manualCodeResponse(result.kind === "accepted" ? "accepted" : "duplicate");
+  } catch {
+    return manualCodeResponse("unavailable");
+  }
+}
+
+async function handleDiscoveredCode(
+  request: Request,
+  env: Env,
+  config: ReturnType<typeof loadConfig>,
+): Promise<Response> {
+  if (!(await verifyIngestionAuth(request, config.ingestionSharedSecret)))
+    return manualCodeResponse("unauthorized");
+  if (!config.codeDiscoveryEnabled || !config.followSource) return manualCodeResponse("ignored");
+  const now = new Date();
+  const event = await readBoundedEvent(request, DISCOVERY_MAX_BODY_BYTES, (value) =>
+    isFollowCodeEvent(value, config.followSource, now),
+  );
+  const parsed = discordFollowSource.candidate(event, config.followSource, now);
+  if (!parsed) return manualCodeResponse("ignored");
+  try {
+    const result = await openDiscoveredDistribution(
+      env.STAGING_DB,
+      config,
+      parsed.event,
+      parsed.candidate,
+      now,
+    );
     return manualCodeResponse(result.kind === "accepted" ? "accepted" : "duplicate");
   } catch {
     return manualCodeResponse("unavailable");

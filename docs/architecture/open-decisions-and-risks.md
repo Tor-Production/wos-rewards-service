@@ -130,7 +130,9 @@
 - Whether `repair_run` is fully automated later or stays human-triggered; whether
   `REDEMPTION_AUTO_REOPEN_RETRY_EXHAUSTED` is ever enabled in production.
 - Missed-event backfill: bounded REST catch-up vs manual re-send only.
-- The gift-code discovery source and its contract — not authorized.
+- Exact live Discord Follow source/webhook identity, Message Content access and activation evidence
+  remain unverified. The [offline contract](discord-ingestion-and-registration.md#discord-follow-intake)
+  is implemented and disabled; other sources still require separate authorization.
 
 ### Risks
 

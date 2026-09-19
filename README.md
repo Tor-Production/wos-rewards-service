@@ -24,9 +24,13 @@ read [AGENTS.md](AGENTS.md) before changing the repository.
   Its two agent request budgets are consumed and disabled, and its harness is outside the Worker,
   D1, Queues, Discord, and runtime provider selection. It does not establish a general provider or
   production replay guarantee. See [provider decision §16](docs/whiteout-provider-decision.md#16-task-12--bounded-local-live-experiment-2026-09-18).
+- Disabled Discord Follow intake is implemented for offline staging/mock use: exact source
+  validation, durable provenance/deduplication and the existing distribution pipeline. Migration
+  `0006` is local-only. Live source/webhook identities, Message Content access and activation remain
+  unverified; see the [Follow contract and checklist](docs/architecture/discord-ingestion-and-registration.md#discord-follow-intake).
 - Only the `staging` application environment is supported. ADR 0001 remains Proposed; its 72-hour
-  Gateway spike is deferred, not passed or waived. Production redemption and discovery remain
-  blocked by the documented authorization and contract gates.
+  Gateway spike is deferred, not passed or waived. Production redemption and live discovery activation remain
+  blocked by their separate documented gates.
 
 GitHub owns active work and task history. See the [issue tracker](https://github.com/Tor-Production/wos-rewards-service/issues)
 and the pinned [roadmap and working agreement](https://github.com/Tor-Production/wos-rewards-service/issues/25).
@@ -111,6 +115,7 @@ The additive D1 migrations live in `migrations/`:
 - `0003` adds immutable staging-spike evidence.
 - `0004` adds the manual-code command idempotency ledger.
 - `0005` adds Task 13 dispatch-hold evidence and separate uncertainty accounting.
+- `0006` adds immutable Discord Follow event/source provenance and duplicate acceptance outcomes.
 
 Tests apply and verify the full migration sequence locally. To update only the local staging D1
 database used by `npm run dev`:
@@ -120,7 +125,7 @@ npm run d1:migrate:local
 ```
 
 There is deliberately no remote-apply package command. The historical staging record covers only
-`0001`–`0004`; applying `0005` remotely or deploying the merged Task 13 runtime requires separate
+`0001`–`0004`; applying `0005`/`0006` remotely or deploying the merged Task 13 runtime requires separate
 explicit authorization. See the [schema owner](docs/architecture/data-model-and-outbox.md#implemented-additive-task-13-uncertainty-migration-0005)
 and [environment rules](docs/architecture/operations-and-reliability.md#19-staging-and-production-separation).
 
@@ -131,8 +136,10 @@ and [environment rules](docs/architecture/operations-and-reliability.md#19-stagi
 
 - Staging is the default and only implemented environment; production resources do not exist in
   this repository configuration.
-- `PRODUCTION_REDEMPTION_ENABLED` and `CODE_DISCOVERY_ENABLED` remain false and are rejected when
-  enabled. No authorized production `WhiteoutProvider` or `GiftCodeSource` implementation exists.
+- `PRODUCTION_REDEMPTION_ENABLED` remains false and is rejected when enabled. No authorized
+  production `WhiteoutProvider` exists. `CODE_DISCOVERY_ENABLED` defaults false independently in
+  companion and Worker; enabled synthetic tests require a complete staging/mock Follow tuple.
+  Checked-in deployment values remain false; implementation does not authorize live activation.
 - All service redemption access must cross the `WhiteoutProvider` interface. The isolated Task 12
   experiment is historical evidence, not runtime routing or general authorization.
 - Real Discord output is separately gated. Local tests use synthetic events, local D1/Queues, the

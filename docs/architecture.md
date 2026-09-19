@@ -96,7 +96,7 @@ behaviour is [§3](architecture/discord-ingestion-and-registration.md#author-fil
 
 - Production gift-code redemption (blocked — see
   [whiteout-provider-decision.md](whiteout-provider-decision.md)).
-- A finalized gift-code discovery source (represented as an abstraction only).
+- Live gift-code discovery activation (offline Follow intake is implemented but disabled).
 - Discord self-bot behaviour or automation of a normal Discord user account.
 - Slash-command / interactions UX as the primary registration path (evaluated only as ADR
   0001 Option 3 / fallback).
@@ -143,7 +143,7 @@ flowchart LR
     OUTD["Output delivery dispatcher (Cron + inline)"]
     OUT["Discord output builder"]
     PROV["WhiteoutProvider adapter (Mock by default)"]
-    GCS["GiftCodeSource adapter (not authorized)"]
+    GCS["GiftCodeSource Follow adapter (disabled)"]
   end
 
   GW --> SRC
@@ -213,8 +213,8 @@ See [§19](architecture/operations-and-reliability.md#19-staging-and-production-
 | Discord output builder | **Paged, cursor-driven, idempotent**: **seal** `summary_item_snapshot` (once), then a layout pass assigns snapshot `sort_key` ranges to chunks (`summary_chunk_layout`, persisting the open-chunk accumulator with the cursor) and a render pass persists `discord_output_deliveries` rows; every pass reads **only** the immutable snapshot; footer only in the final chunk; capped at `SUMMARY_MAX_CHUNKS` | Cron (shared `scheduled()` handler) + inline best-effort |
 | Output delivery dispatcher | Claim `pending` (or lease-expired) `discord_output_deliveries` chunks in `chunk_index` order; send via API-v10 Create Message with per-chunk nonce + `enforce_nonce`; record `discord_message_id`; resume at the first unsent chunk | Cron; real staging transport only behind explicit delivery flag + bot-token binding, otherwise inert |
 | `WhiteoutProvider` adapter | `redeem(PlayerRef, code, idempotencyKey)` → structured result; provider-side rate limiting; error mapping | `MockWhiteoutProvider` by default |
-| `GiftCodeSource` adapter | Discover/list candidate codes from an **authorized** source | Not authorized; disabled |
-| Code-discovery scheduler | Poll the authorized source when `CODE_DISCOVERY_ENABLED=true` | Cron; no-op until authorized |
+| `GiftCodeSource` adapter | Validate pushed candidates from the exact configured Discord Follow source | Offline staging/mock implemented; deployment disabled |
+| Follow intake | Existing companion MESSAGE_CREATE → authenticated Worker → existing distribution | Disabled; no polling or new Gateway connection |
 | D1 | System of record | See [§12](architecture/data-model-and-outbox.md#12-d1-data-model) |
 | Queues + DLQ | Async fan-out + retry isolation | See [§13](architecture/redemption-state-machine.md#13-cloudflare-queue-and-dead-letter-queue-boundaries) |
 
@@ -258,7 +258,7 @@ automated.
    selecting a production topology remains blocked until phase 5 completes or is explicitly
    waived.
 7. **Observability, sweepers, DLQ consumer, hardening.**
-8. **Blocked** — authorized `WhiteoutProvider` / `GiftCodeSource`; production redemption.
+8. **Blocked** — real `WhiteoutProvider`, live discovery activation and production redemption; offline Follow intake is implemented.
    Requires the authorizations in
    [whiteout-provider-decision.md](whiteout-provider-decision.md). Task 10's
    [feasibility research and pending staged proposal](whiteout-provider-decision.md#10-task-10-public-evidence--2026-09-17)

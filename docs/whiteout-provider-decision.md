@@ -281,18 +281,37 @@ Policy:
 
 ## 7. Gift-code discovery source status
 
-**Not authorized / not finalized.**
+**Offline Discord Follow implementation authorized; live activation unverified and disabled.**
 
-- Discovery is modelled as the `GiftCodeSource` abstraction
-  ([architecture.md §11](architecture/redemption-state-machine.md#11-whiteoutprovider-and-giftcodesource-abstractions)).
-  It is disabled (`CODE_DISCOVERY_ENABLED=false`) and has no implementation.
-- **Allowed-source criteria** — a source may be implemented only if it is:
-  - official, or explicitly authorized in writing and recorded here;
-  - backed by a documented contract committed to this repository;
-  - compliant with the source's rate limits;
-  - free of any Terms-of-Service violation.
-- The architecture never assumes scraping, an undocumented game endpoint, or any
-  browser-automation technique is permitted.
+On 2026-09-19 the maintainer authorized [Task 18 / #31](https://github.com/Tor-Production/wos-rewards-service/issues/31),
+a disabled staging/mock push-event intake through the existing bot companion, authenticated
+Worker and durable distribution pipeline. This permission is separate from game operator
+permission: §§4/5/8 and the unaccepted broader proposal are unchanged; #20/#21 remain blocked.
+
+The maintainer reports creating staging `wos-code-feed`, using the official announcement
+channel's Follow button, and granting View Channel and Read Message History. Exact destination,
+source and follower-webhook identities, a real envelope, and Message Content intent/access have
+not been independently verified. Synthetic identities suffice for offline implementation only.
+
+The narrow source contract requires configured destination guild/channel, one follower webhook,
+source guild/channel and source message ID, default message/reference types and IS_CROSSPOST,
+with no SOURCE_MESSAGE_DELETED flag. Discord documents [crosspost references](https://docs.discord.com/developers/resources/message#message-reference-content-attribution),
+[Channel Follower webhooks](https://docs.discord.com/developers/resources/webhook#webhook-object-webhook-types)
+and [Gateway intents](https://docs.discord.com/developers/events/gateway#message-content-intent).
+Flags alone never establish trusted source identity. Later activation must verify the exact
+follower relationship; there is no automatic enrollment or webhook enumeration.
+
+Only fresh creation events containing the bounded three-line code, year-unknown UTC+0 expiry
+label and exact HTTPS redemption-page text are eligible. No URL fetch, history scan, edit/delete
+subscription, referenced-message lookup or game request is authorized. The expiry label is not
+an authoritative timestamp. The owning [intake contract](architecture/discord-ingestion-and-registration.md#discord-follow-intake)
+describes parsing, provenance, deduplication and the separately approved activation checklist.
+All checked-in discovery deployment values remain `CODE_DISCOVERY_ENABLED=false`.
+
+Other sources still require separate recorded authorization, a documented contract, compliant
+access and rate limits. Scraping, undocumented game endpoints and browser automation remain
+prohibited. A controlled synthetic announcement source requires its own explicit configuration
+and later publication approval; it cannot inherit the official-source identity.
 
 ---
 
@@ -326,6 +345,7 @@ the supporting contract, before implementation.
 | 2026-09-17 | Task 10: dated public-source research, code/contract compatibility, mock-result isolation, pending staged-gate amendment, and bounded future-test design (§10–§15). Existing gates and prohibitions unchanged. | Research/documentation task authorized by the requesting human; no provider or amendment approval recorded |
 | 2026-09-18 | Task 15: consolidated the sanitized Task 12 request/response shape, outcome evidence and remaining external gaps; reproduced the exact narrow amendment from issue #20 as pending and kept the broader §13 proposal separately pending. §§4, 5 and 8 remain binding. | Documentation task authorized by the requesting human; no amendment, provider, activation or external-operator approval recorded |
 | 2026-09-18 | Task 16: recorded the human maintainer's later explicit acceptance of the exact Task 15 narrow amendment and applied it to §4. Items 1–2 plus the stated offline-slice conditions govern implementation; items 3–4 (as applicable) govern production activation. The broader stage A–D proposal remains pending, and no implementation or live activation was approved. | Human repository maintainer; acceptance recorded by the orchestrator at 2026-09-18T10:34:57Z in [issue #20](https://github.com/Tor-Production/wos-rewards-service/issues/20#issuecomment-5728792918) |
+| 2026-09-19 | Task 18: record narrow offline staging/mock Discord Follow implementation permission and source contract in §7. Live identities/access remain unverified and deployment discovery remains disabled; no game-provider authority changes. | Human repository maintainer; [issue #31](https://github.com/Tor-Production/wos-rewards-service/issues/31) and executor instruction |
 
 ---
 

@@ -60,13 +60,24 @@ export async function readManualCodeCommand(
   request: Request,
   now: Date,
 ): Promise<ManualCodeCommandEvent | null> {
+  return readBoundedEvent(
+    request,
+    MANUAL_CODE_MAX_BODY_BYTES,
+    (value): value is ManualCodeCommandEvent => isManualCodeCommandEvent(value, now),
+  );
+}
+
+export async function readBoundedEvent<T>(
+  request: Request,
+  maxBytes: number,
+  validate: (value: unknown) => value is T,
+): Promise<T | null> {
   if (
     request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json"
   )
     return null;
   const length = request.headers.get("content-length");
-  if (length !== null && (!/^\d+$/.test(length) || Number(length) > MANUAL_CODE_MAX_BODY_BYTES))
-    return null;
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > maxBytes)) return null;
   if (!request.body) return null;
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -76,7 +87,7 @@ export async function readManualCodeCommand(
       const next = await reader.read();
       if (next.done) break;
       size += next.value.byteLength;
-      if (size > MANUAL_CODE_MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         void reader.cancel().catch(() => {});
         return null;
       }
@@ -91,7 +102,7 @@ export async function readManualCodeCommand(
     const parsed: unknown = JSON.parse(
       new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
     );
-    return isManualCodeCommandEvent(parsed, now) ? parsed : null;
+    return validate(parsed) ? parsed : null;
   } catch {
     return null;
   } finally {

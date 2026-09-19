@@ -1,3 +1,8 @@
+import {
+  DISCOVERY_SOURCE,
+  type FollowCodeEvent,
+  type FollowCandidate,
+} from "../../shared/discord-follow";
 import type { AppConfig } from "../config";
 import { deterministicUuid } from "../ingest/identity";
 import { renderDisplayLabel } from "../ingest/sanitize";
@@ -27,7 +32,11 @@ export async function openDistribution(
   command?: ManualCodeCommandEvent,
 ): Promise<string | null | ManualCodeResult> {
   if (!code || new TextEncoder().encode(code).length > 128) throw new Error("synthetic_code_size");
-  if (command) return openManualDistribution(db, config, code, now, command);
+  if (command)
+    return openEventDistribution(db, config, code, now, {
+      kind: "manual",
+      event: command,
+    }) as Promise<ManualCodeResult>;
   return openSyntheticDistribution(db, config, code, now);
 }
 
@@ -78,13 +87,40 @@ async function openSyntheticDistribution(
   }
 }
 
-async function openManualDistribution(
+export type DiscoveryResult =
+  | { readonly kind: "accepted"; readonly operationId: string }
+  | { readonly kind: "duplicate_event" | "duplicate_code" | "duplicate_source" };
+
+type DistributionInput =
+  | { kind: "manual"; event: ManualCodeCommandEvent }
+  | { kind: "discovery"; event: FollowCodeEvent; candidate: FollowCandidate };
+
+export function openDiscoveredDistribution(
+  db: D1Database,
+  config: AppConfig,
+  event: FollowCodeEvent,
+  candidate: FollowCandidate,
+  now: Date,
+): Promise<DiscoveryResult> {
+  return openEventDistribution(db, config, candidate.code, now, {
+    kind: "discovery",
+    event,
+    candidate,
+  });
+}
+
+/** Shared atomic acceptance and frozen membership; no provider calls at intake. */
+async function openEventDistribution(
   db: D1Database,
   config: AppConfig,
   code: string,
   now: Date,
-  command: ManualCodeCommandEvent,
-): Promise<ManualCodeResult> {
+  input: DistributionInput,
+): Promise<DiscoveryResult> {
+  const command = input.event;
+  // SQL identifiers/labels are chosen only from these closed internal alternatives.
+  const table = input.kind === "manual" ? "manual_code_commands" : "discovered_code_events";
+  const source = input.kind === "manual" ? "manual-staging" : DISCOVERY_SOURCE;
   const operationId = await deterministicUuid(`distribution:${code}`);
   const stamp = now.toISOString();
   const acceptanceId = crypto.randomUUID();
@@ -92,36 +128,66 @@ async function openManualDistribution(
   const context = JSON.stringify({
     version: 1,
     code,
-    channelId: command.channel_id,
+    channelId: input.kind === "manual" ? command.channel_id : config.discordMvpAdminChannelId,
     maxLength: config.discordMessageMaxLength,
     maxChunks: config.summaryMaxChunks,
   });
-  try {
-    await db.batch([
-      db
-        .prepare(
-          `INSERT INTO manual_code_commands
+  const canonical = `SELECT event_id FROM discovered_code_events
+    WHERE source_guild_id=?5 AND source_channel_id=?6 AND source_message_id=?7 AND canonical_event_id IS NULL`;
+  const marker =
+    input.kind === "manual"
+      ? db
+          .prepare(
+            `INSERT INTO manual_code_commands
           (event_id,guild_id,channel_id,author_id,code,status,operation_id,discord_created_at,
            accepted_at,acceptance_id)
           VALUES (?1,?2,?3,?4,?5,'pending',NULL,?6,?7,?8)
           ON CONFLICT(event_id) DO NOTHING`,
-        )
-        .bind(
-          command.event_id,
-          command.guild_id,
-          command.channel_id,
-          command.author_id,
-          code,
-          command.created_at,
-          stamp,
-          acceptanceId,
-        ),
+          )
+          .bind(
+            command.event_id,
+            command.guild_id,
+            command.channel_id,
+            input.event.author_id,
+            code,
+            command.created_at,
+            stamp,
+            acceptanceId,
+          )
+      : db
+          .prepare(
+            `INSERT INTO discovered_code_events
+      (event_id,guild_id,channel_id,webhook_id,source_guild_id,source_channel_id,source_message_id,
+       code,expiry_label,status,canonical_event_id,operation_id,discord_created_at,accepted_at,acceptance_id)
+     SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,
+       CASE WHEN EXISTS (${canonical}) THEN 'duplicate_source' ELSE 'pending' END,
+       (${canonical}),NULL,?10,?11,?12
+     WHERE NOT EXISTS (SELECT 1 FROM discovered_code_events WHERE event_id=?1)
+     ON CONFLICT(event_id) DO NOTHING`,
+          )
+          .bind(
+            command.event_id,
+            command.guild_id,
+            command.channel_id,
+            input.event.webhook_id,
+            input.event.source_guild_id,
+            input.event.source_channel_id,
+            input.event.source_message_id,
+            code,
+            input.candidate.expiryLabel,
+            command.created_at,
+            stamp,
+            acceptanceId,
+          );
+  try {
+    await db.batch([
+      marker,
       db
         .prepare(
           `INSERT INTO gift_codes(code,status,discovered_at,source,first_seen_event_id)
-          SELECT ?1,'active',?2,'manual-staging',?3
+          SELECT ?1,'active',?2,'${source}',?3
           WHERE EXISTS (
-            SELECT 1 FROM manual_code_commands
+            SELECT 1 FROM ${table}
             WHERE event_id=?3 AND acceptance_id=?4 AND status='pending'
           )
           ON CONFLICT(code) DO NOTHING`,
@@ -136,11 +202,11 @@ async function openManualDistribution(
             CASE WHEN p.n<=2000 THEN p.n ELSE -1 END,?4,?3,?3,?5
           FROM (SELECT COUNT(*) AS n FROM players) p
           WHERE EXISTS (
-            SELECT 1 FROM manual_code_commands
+            SELECT 1 FROM ${table}
             WHERE event_id=?6 AND acceptance_id=?7 AND status='pending'
           ) AND EXISTS (
             SELECT 1 FROM gift_codes
-            WHERE code=?2 AND source='manual-staging' AND first_seen_event_id=?6
+            WHERE code=?2 AND source='${source}' AND first_seen_event_id=?6
           )`,
         )
         .bind(operationId, code, stamp, deadline, context, command.event_id, acceptanceId),
@@ -149,27 +215,27 @@ async function openManualDistribution(
           `INSERT INTO operation_players_snapshot(operation_id,player_id,display_name)
           SELECT ?1,p.player_id,p.display_name FROM players p
           WHERE EXISTS (
-            SELECT 1 FROM manual_code_commands
+            SELECT 1 FROM ${table}
             WHERE event_id=?2 AND acceptance_id=?3 AND status='pending'
           ) AND EXISTS (
             SELECT 1 FROM gift_codes
-            WHERE code=?4 AND source='manual-staging' AND first_seen_event_id=?2
+            WHERE code=?4 AND source='${source}' AND first_seen_event_id=?2
           )
           ORDER BY p.player_id`,
         )
         .bind(operationId, command.event_id, acceptanceId, code),
       db
         .prepare(
-          `UPDATE manual_code_commands
+          `UPDATE ${table}
           SET status=CASE WHEN EXISTS (
                 SELECT 1 FROM operations o JOIN gift_codes g ON g.code=o.trigger_ref
                 WHERE o.operation_id=?1 AND o.trigger_ref=?2 AND o.snapshot_at=?3
-                  AND g.source='manual-staging' AND g.first_seen_event_id=?4
+                  AND g.source='${source}' AND g.first_seen_event_id=?4
               ) THEN 'accepted' ELSE 'duplicate_code' END,
               operation_id=CASE WHEN EXISTS (
                 SELECT 1 FROM operations o JOIN gift_codes g ON g.code=o.trigger_ref
                 WHERE o.operation_id=?1 AND o.trigger_ref=?2 AND o.snapshot_at=?3
-                  AND g.source='manual-staging' AND g.first_seen_event_id=?4
+                  AND g.source='${source}' AND g.first_seen_event_id=?4
               ) THEN ?1 ELSE NULL END
           WHERE event_id=?4 AND acceptance_id=?5 AND status='pending'`,
         )
@@ -177,19 +243,20 @@ async function openManualDistribution(
     ]);
   } catch {
     const duplicate = await db
-      .prepare("SELECT acceptance_id FROM manual_code_commands WHERE event_id=?1")
+      .prepare(`SELECT acceptance_id FROM ${table} WHERE event_id=?1`)
       .bind(command.event_id)
       .first<{ acceptance_id: string }>();
     if (duplicate && duplicate.acceptance_id !== acceptanceId) return { kind: "duplicate_event" };
     throw new Error("distribution_not_accepted");
   }
   const result = await db
-    .prepare("SELECT acceptance_id,status,operation_id FROM manual_code_commands WHERE event_id=?1")
+    .prepare(`SELECT acceptance_id,status,operation_id FROM ${table} WHERE event_id=?1`)
     .bind(command.event_id)
     .first<{ acceptance_id: string; status: string; operation_id: string | null }>();
   if (!result) throw new Error("distribution_not_accepted");
   if (result.acceptance_id !== acceptanceId) return { kind: "duplicate_event" };
-  if (result.status === "duplicate_code") return { kind: "duplicate_code" };
+  if (result.status === "duplicate_code" || result.status === "duplicate_source")
+    return { kind: result.status };
   if (result.status === "accepted" && result.operation_id === operationId)
     return { kind: "accepted", operationId };
   throw new Error("distribution_not_accepted");

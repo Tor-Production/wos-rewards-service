@@ -97,7 +97,9 @@ async function readStatus(response: Response): Promise<ForwardStatus | null> {
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    const parsed: unknown = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes),
+    );
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
     const record = parsed as Record<string, unknown>;
     const candidate = record.status ?? record.error;

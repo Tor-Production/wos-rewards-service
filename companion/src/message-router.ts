@@ -1,3 +1,5 @@
+import { isFollowCodeEvent, type FollowCodeEvent } from "../../shared/discord-follow.js";
+
 import type { CompanionConfig } from "./config.js";
 
 export interface DiscordMessageView {
@@ -12,6 +14,14 @@ export interface DiscordMessageView {
   readonly applicationId: string | null;
   readonly content: string;
   readonly createdAt: Date;
+  readonly messageType: number;
+  readonly flags: number;
+  readonly reference: {
+    readonly type: number;
+    readonly guildId?: string | undefined;
+    readonly channelId: string;
+    readonly messageId?: string | undefined;
+  } | null;
 }
 
 interface CommonPayload {
@@ -28,6 +38,11 @@ interface CommonPayload {
 
 export type RoutedMessage =
   | {
+      readonly kind: "discovered_code";
+      readonly path: "/discovered-code";
+      readonly payload: FollowCodeEvent;
+    }
+  | {
       readonly kind: "registration";
       readonly path: "/ingest";
       readonly payload: CommonPayload & { readonly content: string };
@@ -41,7 +56,34 @@ export type RoutedMessage =
 export function routeMessage(
   message: DiscordMessageView,
   config: CompanionConfig,
+  now: Date = new Date(),
 ): RoutedMessage | null {
+  if (config.followSource && message.channelId === config.followSource.channelId) {
+    if (
+      message.messageIsSystem ||
+      message.authorIsSystem ||
+      message.applicationId !== null ||
+      !Number.isFinite(message.createdAt.getTime())
+    )
+      return null;
+    const event = {
+      event_id: message.id,
+      guild_id: message.guildId,
+      channel_id: message.channelId,
+      webhook_id: message.webhookId,
+      source_guild_id: message.reference?.guildId,
+      source_channel_id: message.reference?.channelId,
+      source_message_id: message.reference?.messageId,
+      message_type: message.messageType,
+      reference_type: message.reference?.type,
+      flags: message.flags,
+      content: message.content,
+      created_at: message.createdAt.toISOString(),
+    };
+    return isFollowCodeEvent(event, config.followSource, now)
+      ? { kind: "discovered_code", path: "/discovered-code", payload: event }
+      : null;
+  }
   if (message.guildId !== config.discordGuildId || !isHumanMessage(message)) return null;
   const common = {
     event_id: message.id,

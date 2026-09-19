@@ -9,9 +9,11 @@
  * runtime rather than assumed from a type.
  *
  * The service fails closed. Phase 3 is staging-only, no authorized production provider
- * exists, and no gift-code discovery source is authorized, so anything other than the exact
+ * exists; discovery is restricted to a configured staging/mock Follow source, so anything outside the
  * safe combination is rejected.
  */
+
+import { loadFollowSource, type FollowSourceConfig } from "../shared/discord-follow";
 
 import { STATE_MAX_DIGITS } from "./limits";
 
@@ -25,7 +27,7 @@ const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
  * The validated configuration.
  *
  * The literal types are part of the safety story: there is no representable `AppConfig` in
- * which redemption or discovery is enabled, or in which the environment is not `staging`.
+ * which production redemption is enabled, or the environment is not `staging`.
  * Widening any of them requires an explicitly authorized task that also provisions the
  * corresponding stack and safeguards.
  */
@@ -33,7 +35,8 @@ export interface AppConfig {
   readonly environment: "staging";
   readonly providerMode: "mock";
   readonly productionRedemptionEnabled: false;
-  readonly codeDiscoveryEnabled: false;
+  readonly codeDiscoveryEnabled: boolean;
+  readonly followSource: FollowSourceConfig | null;
   readonly logLevel: LogLevel;
   readonly discordGuildId: string;
   readonly discordRegistrationChannelId: string;
@@ -132,7 +135,7 @@ export function loadConfig(raw: unknown): AppConfig {
   const providerMode = readEnum(source, "PROVIDER_MODE", PROVIDER_MODES, issues);
   const logLevel = readEnum(source, "LOG_LEVEL", LOG_LEVELS, issues);
   requireDisabled(source, "PRODUCTION_REDEMPTION_ENABLED", issues);
-  requireDisabled(source, "CODE_DISCOVERY_ENABLED", issues);
+  const followSource = loadFollowSource(source, issues);
   const discordGuildId = readDigitString(source, "DISCORD_GUILD_ID", 20, issues);
   const discordRegistrationChannelId = readDigitString(
     source,
@@ -263,7 +266,8 @@ export function loadConfig(raw: unknown): AppConfig {
     environment,
     providerMode,
     productionRedemptionEnabled: false,
-    codeDiscoveryEnabled: false,
+    codeDiscoveryEnabled: followSource !== null,
+    followSource,
     logLevel,
     discordGuildId,
     discordRegistrationChannelId,

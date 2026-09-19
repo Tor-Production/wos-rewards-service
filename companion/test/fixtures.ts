@@ -2,6 +2,7 @@ import type { CompanionConfig } from "../src/config.js";
 import type { DiscordMessageView } from "../src/message-router.js";
 
 export const CONFIG: CompanionConfig = {
+  followSource: null,
   discordBotToken: "synthetic-test-token",
   ingestionSharedSecret: "synthetic-test-secret",
   workerBaseUrl: "https://wos-rewards-service-staging.example.workers.dev",
@@ -15,6 +16,9 @@ export const CONFIG: CompanionConfig = {
 export function message(overrides: Partial<DiscordMessageView> = {}): DiscordMessageView {
   return {
     id: "623456789012345678",
+    messageType: 0,
+    flags: 0,
+    reference: null,
     guildId: CONFIG.discordGuildId,
     channelId: CONFIG.discordRegistrationChannelId,
     authorId: "723456789012345678",

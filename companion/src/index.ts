@@ -68,6 +68,11 @@ function toView(message: Message) {
     applicationId: message.applicationId,
     content: message.content,
     createdAt: message.createdAt,
+    messageType: message.type,
+    flags: message.flags.bitfield,
+    reference: message.reference
+      ? { ...message.reference, type: message.reference.type ?? 0 }
+      : null,
   };
 }
 
