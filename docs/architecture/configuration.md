@@ -194,7 +194,10 @@ At 2026-09-19T04:15:46Z, named-resource Wrangler 4.127.1 and the documented read
 Cloudflare Queue/Cron GETs reconfirmed the existing `7a083c14-a7ac-4875-ad11-04de4b10b139`
 Worker version at 100%, with staging D1, registration/fanout Queue bindings, both required
 secret **names**, `PROVIDER_MODE=mock`, production redemption false, discovery false and delivery
-true. The migration journal still contained exactly `0001`–`0004`; only `0005` and `0006` were
+true. A read-only in-memory inspection of the exact active script content confirmed manual and
+registration ingress markers, no Follow endpoint marker, and no `dispatch_hold` guard marker;
+no bundle body was printed or saved. The migration journal still contained exactly `0001`–`0004`;
+only `0005` and `0006` were
 pending. Hold columns, `uncertain_count` and the Follow ledger were absent. Bounded aggregate
 counts: 1 player, 1 code, 2 prior operations (both summarized/delivered), 0 unfinished items,
 0 outstanding redemptions, 0 legacy hold candidates, 0 uncertain reason rows, 1 previously
