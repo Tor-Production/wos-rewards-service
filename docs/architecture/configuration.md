@@ -211,3 +211,28 @@ documented Cron propagation/invocation bounds for that safety gate. The known Ta
 preflight/auth files were absent from their exact stated path at this checkout; no values were
 read or searched for elsewhere. Nothing was migrated, deployed, enabled or published by this
 snapshot.
+
+Later on 2026-09-19, the maintainer supplied an ignored project
+`.wrangler/secrets-staging.md` containing both required private companion names. Its values
+were neither printed nor copied; the launcher accepted its whitespace around `=` and passed
+offline configuration validation using a synthetic controlled tuple. The maintainer supplied
+one exact controlled destination message link and its original source link. A single bot GET
+for that destination message returned 403; a separate current-application identity GET also
+returned 403. Neither was retried after the 403. The maintainer then copied the destination
+message's author ID. Discord's documented author/webhook relation, the supplied exact
+source/destination links, and Task 19's matching historical exact-message read support a
+proposed four-field tuple. Its ignored generated bridge/guarded/enabled configurations passed
+three strict offline Wrangler dry runs, and the companion passed offline validation with the
+new private file. The raw follower `webhook_id` and exact webhook object's type/source fields
+were not re-read in this checkout; the review must accept or resolve that limitation before
+the live gate. These later checks did not change the 04:15:46Z Cloudflare snapshot or any
+staging resource.
+
+At the later 2026-09-19T04:59:22Z read-only refresh, the same older Worker version remained
+the latest 100% deployment. All three Queues still had one consumer each, 86,400-second
+retention, zero point-in-time backlog and no oldest-message timestamp; one minute Cron remained.
+D1 still had four applied migrations, with `0005` and `0006` pending and their schema absent.
+Bounded counts remained one player and zero unfinished items, outstanding redemptions,
+legacy hold candidates, uncertainty reasons, pending/dead outbox jobs and unsent outputs.
+The chosen synthetic code had zero `gift_codes` matches. These observations are a dated
+approval baseline and must be repeated immediately before any approved mutation.

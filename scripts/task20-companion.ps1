@@ -24,7 +24,7 @@ function Read-RequiredValues([string] $Path, [string[]] $Names) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'Named local input file unavailable' }
   $found = @{}
   foreach ($line in Get-Content -LiteralPath $Path) {
-    if ($line -match '^([A-Z][A-Z0-9_]*)=(.*)$' -and $Names -contains $Matches[1]) {
+    if ($line -match '^\s*([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$' -and $Names -contains $Matches[1]) {
       if ($found.ContainsKey($Matches[1])) { throw 'Duplicate required local input name' }
       $found[$Matches[1]] = $Matches[2]
     }
