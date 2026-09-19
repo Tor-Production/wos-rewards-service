@@ -13,6 +13,17 @@ import { MockWhiteoutProvider } from "../providers/mock-whiteout-provider";
 import { consume, consumeDlq, type Delivery } from "../redemption/consumer";
 import type { WhiteoutProvider } from "../domain/whiteout-provider";
 import { budgetDatabase } from "./db";
+import {
+  logScheduledLaneFailure,
+  type ScheduledLane,
+  type ScheduledLaneQueryBudget,
+} from "./scheduled-lane-log";
+
+interface ScheduledLaneDefinition {
+  readonly lane: ScheduledLane;
+  readonly limit: ScheduledLaneQueryBudget;
+  readonly run: (db: D1Database) => Promise<unknown>;
+}
 
 export async function scheduledWork(
   env: Env,
@@ -27,11 +38,12 @@ export async function scheduledWork(
       : undefined);
   const now = clock().toISOString();
   const db = budgetDatabase(env.STAGING_DB, 39);
-  const lanes: [number, (db: D1Database) => Promise<unknown>][] = [
-    [6, (db) => expandPage(db, now)],
-    [
-      10,
-      async (db) => {
+  const lanes: readonly ScheduledLaneDefinition[] = [
+    { lane: "expansion", limit: 6, run: (db) => expandPage(db, now) },
+    {
+      lane: "outbox",
+      limit: 10,
+      run: async (db) => {
         await dispatchOutbox({
           db,
           config,
@@ -43,17 +55,17 @@ export async function scheduledWork(
           source: { kind: "fair", limit: 90 },
         });
       },
-    ],
-    [8, (db) => recover(db, config, now)],
-    [6, (db) => summaryPage(db, now)],
-    [9, (db) => dispatchOutput(db, config, clock, transport)],
+    },
+    { lane: "recovery", limit: 8, run: (db) => recover(db, config, now) },
+    { lane: "summary", limit: 6, run: (db) => summaryPage(db, now) },
+    { lane: "delivery", limit: 9, run: (db) => dispatchOutput(db, config, clock, transport) },
   ];
-  for (const [limit, run] of lanes)
+  for (const { lane, limit, run } of lanes)
     try {
       await run(budgetDatabase(db, limit));
     } catch {
       // Durable claims/cursors recover next tick. Never log raw SQL, payloads, or exceptions.
-      console.warn("scheduled_lane_failed", limit);
+      logScheduledLaneFailure(lane, limit, config.environment);
     }
 }
 
