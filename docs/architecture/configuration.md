@@ -177,8 +177,13 @@ or proof that 0005/0006 can be applied without a fresh gate. No player/code rows
 contents, credential values, or queues were read. Re-read schema/journal and aggregates just
 before any separately approved migration or activation.
 
-The maintainer supplied destination feed ID `1550653633014661220` and an invite link, but no
-selected destination message, official source channel link, exact follower webhook ID, or
-controlled-source link. The feed ID is kept in an ignored local Task 19 preflight manifest; it
-has **not** been added to checked-in enabled deployment values. The invite is not an exact
-channel/message identity. See the [dated Follow evidence and proposal](discord-ingestion-and-registration.md#task-19-read-only-preflight-and-proposed-controlled-test--2026-09-19).
+At the first read, the maintainer had supplied destination feed ID `1550653633014661220` and an
+invite link but not a selected message or local bot authentication. Those inputs arrived later.
+The 2026-09-19T02:50Z exact-message read and local-only tuple are recorded in the
+[Follow evidence](discord-ingestion-and-registration.md#task-19-read-only-preflight-and-proposed-controlled-test--2026-09-19).
+The derived webhook/source/message IDs live only in an ignored local Task 19 manifest. The
+maintainer later confirmed that the referenced staging channel is their **controlled test
+source** and checked Discord's Channels Followed UI to confirm it follows into `wos-code-feed`.
+That is maintainer-verified configuration, not an approved deployment configuration or a
+successful exact-webhook API read; the bot received 403. No enabled deployment value was checked
+in, and the original Cloudflare snapshot above was not repeated or changed.
