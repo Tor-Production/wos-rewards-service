@@ -28,7 +28,7 @@ $tuplePath = '<absolute path to restored, ignored non-secret tuple>'
 & .\scripts\task20-config.ps1 -Mode Guarded -TuplePath $tuplePath
 & .\scripts\task20-config.ps1 -Mode Enabled -TuplePath $tuplePath
 foreach ($mode in @('bridge','guarded','enabled')) {
-  & $wrangler deploy --dry-run --env staging --config ".task20-local/wrangler.$mode.jsonc"
+  & $wrangler deploy --dry-run --strict --env staging --config ".task20-local/wrangler.$mode.jsonc"
   if ($LASTEXITCODE -ne 0) { throw "Dry run failed: $mode" }
 }
 git rev-parse HEAD
