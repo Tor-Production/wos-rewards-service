@@ -1,10 +1,11 @@
 param(
-  [ValidateSet(0, 1)] [int] $ExpectedConsumers = -1,
+  [ValidateSet(0, 1)] [Nullable[int]] $ExpectedConsumers,
   [ValidateSet('true', 'false')] [string] $ExpectedPaused,
-  [ValidateSet(0, 1)] [int] $ExpectedCronCount = -1
+  [ValidateSet(0, 1)] [Nullable[int]] $ExpectedCronCount
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'task20-topology.ps1')
 $wrangler = Join-Path (Split-Path $PSScriptRoot -Parent) 'node_modules/.bin/wrangler.cmd'
 $accountId = 'e693626956842865123018153a6dbc31'
 $base = "https://api.cloudflare.com/client/v4/accounts/$accountId"
@@ -31,20 +32,16 @@ try {
     if (-not $q.success -or -not $m.success -or $q.result.queue_id -ne $item.Value) {
       throw 'Staging Queue metadata mismatch'
     }
-    $consumerCount = [int]$q.result.consumers_total_count
-    $paused = $q.result.settings.delivery_paused
-    if ($null -eq $paused -or $consumerCount -lt 0) { throw 'Staging Queue topology unavailable' }
-    if ($ExpectedConsumers -ge 0 -and $consumerCount -ne $ExpectedConsumers) { throw 'Unexpected Queue consumer count' }
-    if ($ExpectedPaused -and ([bool]$paused).ToString().ToLowerInvariant() -ne $ExpectedPaused) {
-      throw 'Unexpected Queue delivery state'
-    }
+    $topology = Assert-Task20QueueTopology -QueueResult $q.result -ExpectedConsumers $ExpectedConsumers -ExpectedPaused $ExpectedPaused
+    $consumerCount = $topology.ConsumerCount
+    $paused = $topology.Paused
     $oldest = $m.result.oldest_message_timestamp_ms
     Write-Output ("queue=$($item.Key) consumers=$consumerCount paused=$paused retention_seconds=$($q.result.settings.message_retention_period) backlog_count=$($m.result.backlog_count) backlog_bytes=$($m.result.backlog_bytes) oldest_ms=$oldest")
   }
   $s = Invoke-RestMethod -Uri "$base/workers/scripts/wos-rewards-service-staging/schedules" -Headers $headers -Method Get
   if (-not $s.success) { throw 'Staging Cron metadata unavailable' }
   $cronCount = @($s.result.schedules).Count
-  if ($ExpectedCronCount -ge 0 -and $cronCount -ne $ExpectedCronCount) { throw 'Unexpected Cron count' }
+  if ($null -ne $ExpectedCronCount -and $cronCount -ne $ExpectedCronCount) { throw 'Unexpected Cron count' }
   if ($ExpectedCronCount -eq 1 -and @($s.result.schedules | Where-Object { $_.cron -ne '* * * * *' }).Count -gt 0) {
     throw 'Unexpected Cron schedule'
   }
