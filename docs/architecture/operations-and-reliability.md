@@ -1,5 +1,8 @@
 # Architecture — Operations, observability, testing, and recovery
 
+The prepared Task 20 controlled-source staging/mock cutover and abort sequence is in the
+[Task 20 runbook](../task20-staging-follow-smoke.md). It is not a live-activation approval.
+
 - **Parent:** [architecture.md](../architecture.md) — overview, component map, cross-cutting
   invariants, phased implementation order, and the [traceability map](../architecture.md#traceability-map).
 - **Status:** Draft. Scheduled work, stack separation, logging and alerting, the test matrix, and the failure/scenario catalogues.

@@ -187,3 +187,52 @@ source** and checked Discord's Channels Followed UI to confirm it follows into `
 That is maintainer-verified configuration, not an approved deployment configuration or a
 successful exact-webhook API read; the bot received 403. No enabled deployment value was checked
 in, and the original Cloudflare snapshot above was not repeated or changed.
+
+### Task 20 preparation read-only staging snapshot — 2026-09-19
+
+At 2026-09-19T04:15:46Z, named-resource Wrangler 4.127.1 and the documented read-only
+Cloudflare Queue/Cron GETs reconfirmed the existing `7a083c14-a7ac-4875-ad11-04de4b10b139`
+Worker version at 100%, with staging D1, registration/fanout Queue bindings, both required
+secret **names**, `PROVIDER_MODE=mock`, production redemption false, discovery false and delivery
+true. A read-only in-memory inspection of the exact active script content confirmed manual and
+registration ingress markers, no Follow endpoint marker, and no `dispatch_hold` guard marker;
+no bundle body was printed or saved. The migration journal still contained exactly `0001`–`0004`;
+only `0005` and `0006` were
+pending. Hold columns, `uncertain_count` and the Follow ledger were absent. Bounded aggregate
+counts: 1 player, 1 code, 2 prior operations (both summarized/delivered), 0 unfinished items,
+0 outstanding redemptions, 0 legacy hold candidates, 0 uncertain reason rows, 1 previously
+enqueued outbox row (0 pending/dead), and 2 sent outputs. No player or code rows were exported.
+
+Each of the three named Queues had one consumer, 86,400-second retention, and a point-in-time
+backlog count/bytes of 0/0 with no oldest message timestamp. The staging Worker had one
+`* * * * *` Cron trigger. Queue metrics do not prove the absence of in-flight invocations; the
+[Task 20 runbook](../task20-staging-follow-smoke.md) uses pause, consumer detachment and the
+documented Cron propagation/invocation bounds for that safety gate. The known Task 19 local
+preflight/auth files were absent from their exact stated path at this checkout; no values were
+read or searched for elsewhere. Nothing was migrated, deployed, enabled or published by this
+snapshot.
+
+Later on 2026-09-19, the maintainer supplied an ignored project
+`.wrangler/secrets-staging.md` containing both required private companion names. Its values
+were neither printed nor copied; the launcher accepted its whitespace around `=` and passed
+offline configuration validation using a synthetic controlled tuple. The maintainer supplied
+one exact controlled destination message link and its original source link. A single bot GET
+for that destination message returned 403; a separate current-application identity GET also
+returned 403. Neither was retried after the 403. The maintainer then copied the destination
+message's author ID. Discord's documented author/webhook relation, the supplied exact
+source/destination links, and Task 19's matching historical exact-message read support a
+proposed four-field tuple. Its ignored generated bridge/guarded/enabled configurations passed
+three strict offline Wrangler dry runs, and the companion passed offline validation with the
+new private file. The raw follower `webhook_id` and exact webhook object's type/source fields
+were not re-read in this checkout; the review must accept or resolve that limitation before
+the live gate. These later checks did not change the 04:15:46Z Cloudflare snapshot or any
+staging resource.
+
+At the later 2026-09-19T04:59:22Z read-only refresh, the same older Worker version remained
+the latest 100% deployment. All three Queues still had one consumer each, 86,400-second
+retention, zero point-in-time backlog and no oldest-message timestamp; one minute Cron remained.
+D1 still had four applied migrations, with `0005` and `0006` pending and their schema absent.
+Bounded counts remained one player and zero unfinished items, outstanding redemptions,
+legacy hold candidates, uncertainty reasons, pending/dead outbox jobs and unsent outputs.
+The chosen synthetic code had zero `gift_codes` matches. These observations are a dated
+approval baseline and must be repeated immediately before any approved mutation.
