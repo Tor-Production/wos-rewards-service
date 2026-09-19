@@ -18,14 +18,14 @@ authorization records, and dated technical evidence.
 | Deployed evidence | The latest committed record is historical Task 09 evidence: staging provisioning on 2026-09-14, deployment and migrations `0001`–`0004` on 2026-09-15, and the mock-only Discord smoke on 2026-09-17. Task 13 and migration `0005` are **merged, not deployed**. No live-resource state was reverified by the later documentation/provider tasks. |
 | Task 12 experiment | A narrow, dated local exception exercised one private pair and one separate already-applied check against the live game. Both agent request budgets are consumed and disabled. The harness remains outside the Worker, D1, Queues, Discord, and provider selection; it does not authorize a general provider, replay after an unknown outcome, or production activation. |
 | Environments and Discord topology | The application accepts `staging` only. The Task 09 Option 2 companion is provisional and was stopped after its dated smoke. ADR 0001 remains **Proposed**; the 72-hour Option 1 spike is deferred, not passed or waived, and the Task 08C Durable Object remains local-test-only. |
-| Follow intake | Disabled offline staging/mock push intake, authenticated Worker revalidation, immutable source/event provenance (migration `0006`) and existing distribution pipeline are implemented. No deployment or live verification: source tuple, follower relationship, Message Content access and separately approved activation remain pending. Maintainer-reported Follow setup is not verified evidence. |
+| Follow intake | Disabled offline staging/mock push intake, authenticated Worker revalidation, immutable source/event provenance (migration `0006`) and existing distribution pipeline are implemented. [Task 19 read-only staging preflight](architecture/discord-ingestion-and-registration.md#task-19-read-only-preflight-and-proposed-controlled-test--2026-09-19) confirms the old mock/discovery-disabled Worker and journal `0001`–`0004`; source tuple, follower relationship, Message Content access and separately approved activation remain pending. Maintainer-reported Follow setup is not verified evidence. |
 | Active gates | Production redemption and automatic discovery are disabled. No authorized production `WhiteoutProvider` exists. The exact narrow provider-gate amendment is accepted, but upstream operator authorization, a verified authorized contract, separate offline-slice approval, §5 evidence, and the documented activation approvals remain unsatisfied. The broader stage A–D proposal remains pending. |
 
 For the exact historical non-secret staging inventory, use the
 [Task 09 deployment record](architecture/configuration.md#task-09-staging-deployment-record-non-secret).
 For the dated activation sequence and limitations, use the
 [staging MVP gate](architecture/operations-and-reliability.md#task-09-staging-mvp-activation-gate).
-Neither link is a claim of fresh live verification.
+The Task 09 link is historical; the separate [Task 19 staging read](architecture/configuration.md#task-19-read-only-staging-preflight--2026-09-19) is a dated, bounded observation, not activation evidence.
 
 Active work and dependencies are maintained in the
 [GitHub issue tracker](https://github.com/Tor-Production/wos-rewards-service/issues) and the pinned

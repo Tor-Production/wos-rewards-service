@@ -539,3 +539,90 @@ This checklist is documentation, not authorization to execute it:
 
 Offline tests supply synthetic identities and fake Discord delivery. No expanded source permissions
 are needed for implementation; live identity/access/envelope evidence remains a later gate.
+
+### Task 19 read-only preflight and proposed controlled test — 2026-09-19
+
+The authorized preflight was limited to one selected destination message/channel and exact
+follower webhook, if supplied and accessible via documented bot GETs (at most 12 requests, no
+history scan, source traversal, webhook enumeration, retry after access/rate-limit errors, or
+normal-user session), plus named staging Cloudflare deployment/schema/migration metadata and
+bounded aggregates. **No Discord request was made (0/12)**: the selected message link, official
+source channel link and exact webhook ID were not supplied, and no existing bot authentication
+was available in the task environment or expected local configuration files. No fresh event was
+captured and no message was replayed into the Worker. The maintainer's invite link identifies a
+server entry point, not the exact source channel or destination message.
+
+| Claim | Evidence class and result |
+|---|---|
+| Destination feed | Maintainer-supplied ID, held in an ignored local manifest; `wos-code-feed` name, Follow setup and View Channel/Read Message History remain maintainer-reported, not bot-verified. The feed ID differs from the checked-in staging registration and admin IDs. |
+| Official source guild/channel, follower webhook/type 2 relationship, selected message and original create envelope | Unknown. No exact message/source/webhook links or bot credentials; no webhook permission test was attempted. If Manage Webhooks is unavailable later, request only sanitized exact-webhook type/source/destination evidence from the maintainer, without changing permission or enumerating webhooks. |
+| Application identity, Message Content availability and strict static shape | The checked-in application ID and companion's `GuildMessages`/`MessageContent` intent request are implementation facts, not live application identity, privileged-intent entitlement, or readable message content. No original body or timestamp was available to validate in memory. Historical REST content, if later supplied, can establish only static shape/access, never fresh `MESSAGE_CREATE` delivery or eligibility at a modified time. |
+| Staging runtime, schema and work | Independently observed through named-resource authenticated Wrangler reads. Active Worker is the older mock-only, discovery-disabled Task 09 version; journal `0001`–`0004`, pending `0005`/`0006`, and bounded counts are recorded in [configuration](configuration.md#task-19-read-only-staging-preflight--2026-09-19). No database/queue mutation or deploy occurred. |
+| Controlled announcement source | Maintainer previously offered to create one; existence and its separate exact guild/channel/follower tuple remain unknown. Do not substitute the official tuple or accept arbitrary webhook messages. |
+
+This evidence does **not** establish compatibility of the real Follow envelope with the strict
+`message_type=0`, `reference_type=0`, flags 2/6, exact webhook and source reference, or the
+three-line parser. A message read must filter fields in memory without emitting the real code,
+body, headers, raw API object/error or credential. Preserve its actual creation time. A mismatch
+is a concrete finding to review, not permission to broaden the source filter. The two missing
+source links, exact webhook and usable existing bot access are gates to finish Task 19's source
+verification; keep issue #33 blocked until they are available.
+
+**Later proposal, not approval or an executable runbook:**
+
+1. Supply one selected official destination message link (or exact destination **and** official
+   source channel links if none has arrived), the exact follower webhook ID and a separate
+   controlled-source channel/follower tuple if created. Verify the original message's static
+   metadata and three-line shape against `shared/discord-follow.ts` in memory, the current bot
+   application and Message Content entitlement, exact follower type 2/source relationship, and
+   then a separately approved fresh Gateway create envelope. A historical REST message cannot
+   be replayed or retimestamped to pass the five-minute freshness gate.
+2. Seek specific human approval for a bounded staging-only test of runtime commit
+   `f6101f54d04f93e8491f7c26069205b93afa5fc1` (Task 18 merged tree
+   `502b9c09fe77b9a8bbc4d8a2a4766bbd7013db11`, subject to a new build/review if main
+   changes). Target only the known `wos-rewards-service-staging` Worker, its staging D1,
+   registration/code-fanout Queues and redemption DLQ, the staging Discord application, the
+   dedicated feed and existing admin-output channel; the exact non-secret resource inventory
+   is in [configuration](configuration.md#task-09-staging-deployment-record-non-secret).
+   Recheck deployment/bindings, D1 journal/schema, player count, outstanding/held work and
+   queue health immediately before approval. A separate cutover approval must specify how to
+   quiesce old-runtime ingress/consumers/Cron safely while retaining queued and accepted work;
+   no zero-downtime old/new schema overlap has been proven. Apply **only** missing additive
+   `0005` then `0006` under separate migration approval, then start the new Worker with discovery
+   disabled before enabling either discovery gate. Never resume old runtime against 0005 holds.
+   If safe quiescence/cutover cannot be approved, stop without migrating. No production resources
+   or provider/game requests.
+3. Use `ENVIRONMENT=staging`, `PROVIDER_MODE=mock`,
+   `PRODUCTION_REDEMPTION_ENABLED=false`, and the fully verified *controlled* destination
+   guild/feed + exact follower webhook + source guild/channel tuple in both Worker and
+   companion. `CODE_DISCOVERY_ENABLED=true` is a **separate, explicit deployment/runtime gate
+   in each**, not a checked-in default; leave the official tuple disabled while testing a
+   separate controlled tuple, or test it in a separately approved isolated configuration.
+   Preserve registration/admin routing and delivery. Confirm the selected bot can read the
+   feed and the staging admin output remains bounded/sanitized with no unintended mentions.
+4. With a fresh baseline snapshot (currently 1 player; maximum 2,000), authorize the maintainer
+   to publish **one** synthetic three-line announcement from the controlled channel, never a
+   real code. Within the five-minute create-age window, observe one accepted canonical event,
+   one code/distribution operation, the frozen `N`-player snapshot, at most `N` mock pairs, and
+   a bounded final admin summary with the runtime footer once. Only with separate explicit
+   approval, publish/replay at most one duplicate of the same source event within that window;
+   verify duplicate-event/source/code classification and zero additional work. Do not edit the
+   original, backfill history or retimestamp old events.
+5. Bound observation to 15 minutes from publication (the 3,600-second operation deadline is an
+   outer failure guard, not an invitation to extend this test). Success requires matching live
+   tuple/envelope/content access, one immutable acceptance, expected mock-only fanout and one
+   delivered bounded admin summary, with no new Task 13 holds. Abort on source mismatch,
+   missing content, unexpected player count, schema/binding mismatch, non-mock mode, backlog,
+   access/rate-limit failure, uncertain work, duplicate opening a second operation, or missing
+   output by the window. Disable discovery in **both** processes and stop the companion at
+   completion or abort; do not cancel accepted work or delete/replay rows.
+6. Schema-compatible fallback after 0005/0006 is the **same verified new runtime** with both
+   discovery gates off, continuing its guarded consumers/output to completion. Do not roll back
+   to the currently deployed old version after 0005: it lacks Task 13 hold guards and is not a
+   verified schema-compatible fallback. Any alternate revision, pause of existing processing,
+   restore, migration, deployment, companion login, publication or duplicate replay needs its
+   own exact approval. Preserve existing accepted work and uncertainty holds.
+
+No part of this proposal activates discovery. Checked-in Worker discovery values remain false;
+the provider authorization gates in §§4/5/8 remain unchanged and #20/#21 blocked. #22 remains
+open beyond this preflight, and ADR 0001's production topology spike stays deferred.

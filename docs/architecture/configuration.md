@@ -154,3 +154,31 @@ DISCORD_CODE_SOURCE_CHANNEL_ID=100000000000000009
 These IDs are synthetic placeholders, not verified staging configuration. The existing
 `DISCORD_GUILD_ID` is the destination guild. No live IDs are required for disabled implementation.
 See the [source contract and later activation checklist](discord-ingestion-and-registration.md#discord-follow-intake).
+
+### Task 19 read-only staging preflight — 2026-09-19
+
+This is a new observation, not a revision of the dated Task 09 table above. At
+2026-09-19T02:07Z, authenticated read-only Wrangler calls against the **named staging** Worker
+and D1 binding found active version `7a083c14-a7ac-4875-ad11-04de4b10b139` at 100%. Its version
+metadata has the registration and code-fanout Queue bindings, staging D1 binding, the two secret
+**names** (no values read), `ENVIRONMENT=staging`, `PROVIDER_MODE=mock`,
+`PRODUCTION_REDEMPTION_ENABLED=false`, `CODE_DISCOVERY_ENABLED=false`, and
+`DISCORD_DELIVERY_ENABLED=true`. This is still the 2026-09-17 version, not Task 18's Follow code.
+The D1 migration journal contains exactly `0001`–`0004`; Wrangler reports only additive `0005`
+and `0006` pending. Schema inspection found no `dispatch_hold_*`, `uncertain_count`, or
+`discovered_code_events`, as expected before those migrations.
+
+Bounded D1 aggregates at that read: 1 player, 1 gift code, 2 operations (both `summarized` with
+`summary_state=delivered`), 0 unfinished operation items, 0 outstanding redemptions, 0
+legacy-0005 hold candidates, 0 `outcome_uncertain` reason rows under the old schema, 1 outbox
+row already `enqueued` (0 `pending`/`sending`/`dead`), and 2 output deliveries both `sent`.
+These counts are a snapshot, not a queue-depth inspection, a guarantee of a later player count,
+or proof that 0005/0006 can be applied without a fresh gate. No player/code rows, code values, message
+contents, credential values, or queues were read. Re-read schema/journal and aggregates just
+before any separately approved migration or activation.
+
+The maintainer supplied destination feed ID `1550653633014661220` and an invite link, but no
+selected destination message, official source channel link, exact follower webhook ID, or
+controlled-source link. The feed ID is kept in an ignored local Task 19 preflight manifest; it
+has **not** been added to checked-in enabled deployment values. The invite is not an exact
+channel/message identity. See the [dated Follow evidence and proposal](discord-ingestion-and-registration.md#task-19-read-only-preflight-and-proposed-controlled-test--2026-09-19).
