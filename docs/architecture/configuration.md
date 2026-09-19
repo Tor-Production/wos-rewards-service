@@ -154,3 +154,36 @@ DISCORD_CODE_SOURCE_CHANNEL_ID=100000000000000009
 These IDs are synthetic placeholders, not verified staging configuration. The existing
 `DISCORD_GUILD_ID` is the destination guild. No live IDs are required for disabled implementation.
 See the [source contract and later activation checklist](discord-ingestion-and-registration.md#discord-follow-intake).
+
+### Task 19 read-only staging preflight — 2026-09-19
+
+This is a new observation, not a revision of the dated Task 09 table above. At
+2026-09-19T02:07Z, authenticated read-only Wrangler calls against the **named staging** Worker
+and D1 binding found active version `7a083c14-a7ac-4875-ad11-04de4b10b139` at 100%. Its version
+metadata has the registration and code-fanout Queue bindings, staging D1 binding, the two secret
+**names** (no values read), `ENVIRONMENT=staging`, `PROVIDER_MODE=mock`,
+`PRODUCTION_REDEMPTION_ENABLED=false`, `CODE_DISCOVERY_ENABLED=false`, and
+`DISCORD_DELIVERY_ENABLED=true`. This is still the 2026-09-17 version, not Task 18's Follow code.
+The D1 migration journal contains exactly `0001`–`0004`; Wrangler reports only additive `0005`
+and `0006` pending. Schema inspection found no `dispatch_hold_*`, `uncertain_count`, or
+`discovered_code_events`, as expected before those migrations.
+
+Bounded D1 aggregates at that read: 1 player, 1 gift code, 2 operations (both `summarized` with
+`summary_state=delivered`), 0 unfinished operation items, 0 outstanding redemptions, 0
+legacy-0005 hold candidates, 0 `outcome_uncertain` reason rows under the old schema, 1 outbox
+row already `enqueued` (0 `pending`/`sending`/`dead`), and 2 output deliveries both `sent`.
+These counts are a snapshot, not a queue-depth inspection, a guarantee of a later player count,
+or proof that 0005/0006 can be applied without a fresh gate. No player/code rows, code values, message
+contents, credential values, or queues were read. Re-read schema/journal and aggregates just
+before any separately approved migration or activation.
+
+At the first read, the maintainer had supplied destination feed ID `1550653633014661220` and an
+invite link but not a selected message or local bot authentication. Those inputs arrived later.
+The 2026-09-19T02:50Z exact-message read and local-only tuple are recorded in the
+[Follow evidence](discord-ingestion-and-registration.md#task-19-read-only-preflight-and-proposed-controlled-test--2026-09-19).
+The derived webhook/source/message IDs live only in an ignored local Task 19 manifest. The
+maintainer later confirmed that the referenced staging channel is their **controlled test
+source** and checked Discord's Channels Followed UI to confirm it follows into `wos-code-feed`.
+That is maintainer-verified configuration, not an approved deployment configuration or a
+successful exact-webhook API read; the bot received 403. No enabled deployment value was checked
+in, and the original Cloudflare snapshot above was not repeated or changed.

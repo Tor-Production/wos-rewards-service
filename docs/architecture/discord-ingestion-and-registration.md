@@ -533,9 +533,114 @@ This checklist is documentation, not authorization to execute it:
    observe durable acceptance, one operation, duplicate suppression and the admin summary. Real
    WOS code validity is irrelevant to this mock test.
 4. Disable `CODE_DISCOVERY_ENABLED` in both processes and stop the companion after the bounded test.
-   Roll back to the approved prior Worker revision if needed; do not drop the additive ledger or
-   replay/delete accepted work. Disabling intake does not cancel already accepted distributions;
+   Use only a schema-compatible approved Worker revision as fallback after migrations; the old
+   pre-0005 runtime is not suitable for held work. Do not drop the additive ledger or replay/delete
+   accepted work. Disabling intake does not cancel already accepted distributions;
    any pause of existing processing/output requires its own operational decision.
 
 Offline tests supply synthetic identities and fake Discord delivery. No expanded source permissions
 are needed for implementation; live identity/access/envelope evidence remains a later gate.
+
+### Task 19 read-only preflight and proposed controlled test — 2026-09-19
+
+The authorized preflight was limited to one selected destination message/channel and exact
+follower webhook, if supplied and accessible via documented bot GETs (at most 12 requests, no
+history scan, source traversal, webhook enumeration, retry after access/rate-limit errors, or
+normal-user session), plus named staging Cloudflare deployment/schema/migration metadata and
+bounded aggregates. On the first pass, **0/12 Discord requests** were made because the selected
+message and local bot authentication were unavailable. The maintainer later supplied one exact
+destination message link and configured an ignored local bot-auth file. At
+2026-09-19T02:50:51Z, **four** documented bot GETs were attempted (cumulative **4/12**): exact
+message, destination channel and current application succeeded; lookup of only the message's
+exact webhook returned HTTP 403. No access/rate-limit retry followed. No history, source
+message, webhook list, raw response/error/header, credential, code or body was emitted or stored.
+No Gateway event was captured and no message was replayed into the Worker.
+
+| Claim | Evidence class and result |
+|---|---|
+| Destination feed and bot read | Exact channel metadata matched the supplied feed ID, staging guild and `wos-code-feed` name; the exact message GET succeeded. This independently verifies REST View Channel/Read Message History access for that message, not Gateway delivery. The feed differs from checked-in registration/admin channels. |
+| Selected message provenance | The destination copy has type 0, reference type 0, flags 2 (`IS_CROSSPOST`), a webhook ID, complete source reference, no `application_id`, and no edit timestamp. Its referenced **source guild equals the staging destination guild**, pointing to another staging channel. The maintainer confirmed that channel is their **controlled test source**; this classification is human-reported and the copy does not establish direct official WOS provenance. Derived IDs stay in the ignored local manifest, not GitHub/docs. The REST message did not provide a matching destination `guild_id`; the independently read channel did. Do not equate that REST-only gap with a failed Gateway `guildId` field. |
+| Original text and time | Content was nonempty (124 UTF-8 bytes) and passed `parseFollowContent` in memory: exact three-line labels/layout, safe case-preserved code grammar, valid year-unknown UTC+0 expiry label and exact URL. No real code, body or expiry value was output. Original destination timestamp was `2026-09-19T01:54:38.314Z`, approximately 56 minutes before this read, outside the five-minute intake window. A REST read validates static shape/content access only; no fresh `MESSAGE_CREATE` pass can be inferred or manufactured by retimestamping/replay. |
+| Bot application and Message Content | `GET /oauth2/applications/@me` matched the checked-in staging application ID. The application has the `GATEWAY_MESSAGE_CONTENT_LIMITED` flag, not the large-bot `GATEWAY_MESSAGE_CONTENT` flag; the bot's exact-message REST response contained text. Together with the companion's intent request, these support configured limited Message Content access, but do not prove a fresh Gateway payload. |
+| Follower webhook relationship | Exact ID came from the selected message, but `GET /webhooks/{id}` returned HTTP 403. Discord documents that this bot GET needs `MANAGE_WEBHOOKS` unless the application owns the webhook. The maintainer then checked Server Settings → Integrations → Channels Followed and confirmed this controlled source follows into the destination feed. That is **maintainer-verified Follow configuration**, consistent with Discord's documented type-2 Channel Follower webhook, not an independent read of the exact webhook object's type/source/destination fields. No permission change, webhook enumeration or retry occurred. |
+| Staging runtime, schema and work | Independently observed through named-resource authenticated Wrangler reads. Active Worker is the older mock-only, discovery-disabled Task 09 version; journal `0001`–`0004`, pending `0005`/`0006`, and bounded counts are recorded in [configuration](configuration.md#task-19-read-only-staging-preflight--2026-09-19). No database/queue mutation or deploy occurred. |
+| Controlled announcement source | The observed referenced staging-guild/channel tuple is exact in the selected REST message, and the maintainer confirms it is the offered controlled source with a configured Follow into the feed. The exact webhook object's fields remain unobserved after 403. Do not relabel it official, substitute it for the official tuple, or accept arbitrary webhook messages. |
+
+The selected historical message is compatible with the observed type/reference/flag and strict
+text portions of the Follow contract for the maintainer-confirmed controlled source. It is
+**not** an official-source verification; the configured Follow relationship is maintainer-verified,
+while the exact webhook object's fields and live create envelope remain unobserved. Discord's
+[message reference](https://docs.discord.com/developers/resources/message#message-reference-content-attribution)
+attributes a crosspost to its referenced guild/channel/message; its
+[exact-webhook API](https://docs.discord.com/developers/resources/webhook#get-webhook) has the
+permission boundary noted above. A different actual envelope must be reported as a finding,
+not patched by widening the filter. The controlled-source read-only preflight is prepared for
+review with the exact-webhook API limitation explicitly retained. Official-source identity belongs
+to the remaining #22 work and is not a prerequisite to this controlled-source proposal.
+
+**Later proposal, not approval or an executable runbook:**
+
+1. Use the observed local-only destination/webhook/source tuple solely for the
+   maintainer-confirmed controlled source. The maintainer's Channels Followed check supports the
+   configured relationship, while the exact webhook object's type/source fields could not be
+   independently read. The future approval bundle must explicitly accept this bounded evidence
+   limitation or include sanitized exact-webhook metadata obtained through existing authorized
+   maintainer access; do not broaden bot permissions. The original three-line static text and
+   current application were checked, but a fresh Gateway create envelope still needs the future
+   approved test. This historical REST message cannot be replayed or retimestamped to pass the
+   five-minute freshness gate. Verify the official WOS source under #22 separately before ever
+   configuring it; its absence does not block this controlled-source proposal.
+2. Prepare one exact human approval bundle for a bounded staging-only test of runtime commit
+   `f6101f54d04f93e8491f7c26069205b93afa5fc1` (Task 18 merged tree
+   `502b9c09fe77b9a8bbc4d8a2a4766bbd7013db11`, subject to a new build/review if main
+   changes). Target only the known `wos-rewards-service-staging` Worker, its staging D1,
+   registration/code-fanout Queues and redemption DLQ, the staging Discord application, the
+   dedicated feed and existing admin-output channel; the exact non-secret resource inventory
+   is in [configuration](configuration.md#task-09-staging-deployment-record-non-secret).
+   Recheck deployment/bindings, D1 journal/schema, player count, outstanding/held work and
+   queue health immediately before approval. The bundle must explicitly include the exact
+   additive migrations, deployment, safe quiescence/cutover, temporary companion run, one
+   maintainer publication, an optional single duplicate within the freshness window, observation,
+   disable and shutdown. It must specify how old-runtime ingress/consumers/Cron are quiesced while
+   retaining queued and accepted work; no zero-downtime old/new schema overlap has been proven.
+   Apply **only** missing additive `0005` then `0006`, then start the new Worker with discovery
+   disabled before enabling either discovery gate. Never resume old runtime against 0005 holds.
+   If safe quiescence/cutover is not covered, stop without migrating. No production resources or
+   provider/game requests.
+3. Use `ENVIRONMENT=staging`, `PROVIDER_MODE=mock`,
+   `PRODUCTION_REDEMPTION_ENABLED=false`, and the specifically reviewed *controlled* destination
+   guild/feed + exact follower webhook + source guild/channel tuple in both Worker and
+   companion. `CODE_DISCOVERY_ENABLED=true` is a **separate, explicit deployment/runtime gate
+   in each**, not a checked-in default; configure only the controlled tuple for this bounded
+   test, leaving the official tuple disabled.
+   Preserve registration/admin routing and delivery. Confirm the selected bot can read the
+   feed and the staging admin output remains bounded/sanitized with no unintended mentions.
+4. With a fresh baseline snapshot (currently 1 player; maximum 2,000), have the maintainer
+   publish **one** synthetic three-line announcement from the controlled channel under the
+   future approval bundle, never a
+   real code. Within the five-minute create-age window, observe one accepted canonical event,
+   one code/distribution operation, the frozen `N`-player snapshot, at most `N` mock pairs, and
+   a bounded final admin summary with the runtime footer once. Only if explicitly included in
+   that same future approval bundle, publish/replay at most one duplicate of the same source
+   event within that window;
+   verify duplicate-event/source/code classification and zero additional work. Do not edit the
+   original, backfill history or retimestamp old events.
+5. Bound observation to 15 minutes from publication (the 3,600-second operation deadline is an
+   outer failure guard, not an invitation to extend this test). Success requires matching live
+   tuple/envelope/content access, one immutable acceptance, expected mock-only fanout and one
+   delivered bounded admin summary, with no new Task 13 holds. Abort on source mismatch,
+   missing content, unexpected player count, schema/binding mismatch, non-mock mode, backlog,
+   access/rate-limit failure, uncertain work, duplicate opening a second operation, or missing
+   output by the window. Disable discovery in **both** processes and stop the companion at
+   completion or abort; do not cancel accepted work or delete/replay rows.
+6. Schema-compatible fallback after 0005/0006 is the **same verified new runtime** with both
+   discovery gates off, continuing its guarded consumers/output to completion. Do not roll back
+   to the currently deployed old version after 0005: it lacks Task 13 hold guards and is not a
+   verified schema-compatible fallback. Any alternate revision, pause of existing processing,
+   restore, migration, deployment, companion login, publication or duplicate replay must be
+   named in the future exact approval bundle; unlisted actions need further approval. Preserve
+   existing accepted work and uncertainty holds.
+
+No part of this proposal activates discovery. Checked-in Worker discovery values remain false;
+the provider authorization gates in §§4/5/8 remain unchanged and #20/#21 blocked. #22 remains
+open beyond this preflight, and ADR 0001's production topology spike stays deferred.
