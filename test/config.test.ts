@@ -132,6 +132,7 @@ describe("loadConfig accepts the intended staging configuration", () => {
       productionRedemptionEnabled: false,
       codeDiscoveryEnabled: false,
       followSource: null,
+      communityJsonSource: null,
       logLevel: "info",
       discordGuildId: env.DISCORD_GUILD_ID,
       discordRegistrationChannelId: env.DISCORD_REGISTRATION_CHANNEL_ID,
@@ -247,6 +248,23 @@ describe("loadConfig rejects unsafe environments", () => {
         "DISCORD_CODE_FEED_CHANNEL_ID must be a non-placeholder Discord snowflake",
       );
     }
+  });
+
+  it("keeps the community JSON adapter behind discovery and staging/mock gates", () => {
+    expect(issuesFor({ ...SAFE_ENV, COMMUNITY_JSON_SOURCE_ENABLED: true })).toContain(
+      "community JSON source requires CODE_DISCOVERY_ENABLED=true",
+    );
+    expect(
+      loadConfig({
+        ...SAFE_ENV,
+        CODE_DISCOVERY_ENABLED: true,
+        COMMUNITY_JSON_SOURCE_ENABLED: true,
+        DISCORD_CODE_FEED_CHANNEL_ID: "100000000000000006",
+        DISCORD_CODE_FOLLOWER_WEBHOOK_ID: "100000000000000007",
+        DISCORD_CODE_SOURCE_GUILD_ID: "100000000000000008",
+        DISCORD_CODE_SOURCE_CHANNEL_ID: "100000000000000009",
+      }).communityJsonSource,
+    ).not.toBeNull();
   });
 
   it("rejects an unknown LOG_LEVEL", () => {

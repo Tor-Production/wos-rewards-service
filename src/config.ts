@@ -14,6 +14,10 @@
  */
 
 import { loadFollowSource, type FollowSourceConfig } from "../shared/discord-follow";
+import {
+  loadCommunityJsonSource,
+  type CommunityJsonSourceConfig,
+} from "./discovery/community-json";
 
 import { STATE_MAX_DIGITS } from "./limits";
 
@@ -37,6 +41,7 @@ export interface AppConfig {
   readonly productionRedemptionEnabled: false;
   readonly codeDiscoveryEnabled: boolean;
   readonly followSource: FollowSourceConfig | null;
+  readonly communityJsonSource: CommunityJsonSourceConfig | null;
   readonly logLevel: LogLevel;
   readonly discordGuildId: string;
   readonly discordRegistrationChannelId: string;
@@ -136,6 +141,7 @@ export function loadConfig(raw: unknown): AppConfig {
   const logLevel = readEnum(source, "LOG_LEVEL", LOG_LEVELS, issues);
   requireDisabled(source, "PRODUCTION_REDEMPTION_ENABLED", issues);
   const followSource = loadFollowSource(source, issues);
+  const communityJsonSource = loadCommunityJsonSource(source, issues);
   const discordGuildId = readDigitString(source, "DISCORD_GUILD_ID", 20, issues);
   const discordRegistrationChannelId = readDigitString(
     source,
@@ -268,6 +274,7 @@ export function loadConfig(raw: unknown): AppConfig {
     productionRedemptionEnabled: false,
     codeDiscoveryEnabled: followSource !== null,
     followSource,
+    communityJsonSource,
     logLevel,
     discordGuildId,
     discordRegistrationChannelId,

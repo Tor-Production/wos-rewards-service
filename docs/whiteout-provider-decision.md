@@ -320,6 +320,32 @@ access and rate limits. Scraping, undocumented game endpoints and browser automa
 prohibited. A controlled synthetic announcement source requires its own explicit configuration
 and later publication approval; it cannot inherit the official-source identity.
 
+### Task 23 — selected community JSON source (disabled)
+
+On 2026-09-21 the maintainer selected the exact HTTPS endpoint
+`https://www.whiteoutsurvival-community.com/tools/data/gift-codes-wosc.json` as an unofficial
+second source. It is not a Whiteout Survival operator authorization, does not establish code
+validity, freshness, publication or expiry, and changes nothing in #20/#21. The adapter is
+staging/mock-only, disabled by default, never follows payload links, and has no schedule or
+runtime hook in this change.
+
+The observed contract is a JSON object with `maintainedBy`, `source`, `updatedAt`, and `codes`;
+each code entry has `code`, `status`, and `firstSeenAt`. Only `active` entries with bounded
+ASCII codes and strict UTC timestamps are accepted. `updatedAt` and `firstSeenAt` are immutable
+source claims, not proven dates. Unknown/missing fields, malformed JSON, duplicate codes,
+non-active status, access denial, or a schema change fail closed. Synthetic fixtures only are
+checked in; no live code body is retained.
+
+Later activation must make the first successful fetch a durable baseline only: it records
+immutable provenance without automatically distributing historical entries. A later poll may
+consider only newly observed active entries, subject to a separately approved stale-data window;
+expired, removed, edited, and reappearing entries must not reopen or replace provenance. The
+adapter bounds itself to this one endpoint, 8 KiB body, 10-second timeout and at least 15 minutes
+between polls, sends `If-None-Match` when an ETag is known, treats 304 as no change, honours
+429/Retry-After without a tight loop, and stops on 401/403. Activation must add durable
+baseline/provenance storage and use the existing `gift_codes` uniqueness and redemption keys so
+Discord and feed discoveries deduplicate without erasing the first source.
+
 ---
 
 ## 8. Explicit prohibition statement
