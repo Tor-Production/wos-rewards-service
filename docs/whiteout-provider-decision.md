@@ -69,6 +69,13 @@ The accepted policy is §§4, 5 and 8 as now amended. The broader stage A–D pr
 pending, and §17 separates the sanitized historical observations from the external evidence
 still required.
 
+**Operator-support update, recorded 2026-09-21:** the maintainer supplied Whiteout Survival
+CS's response dated 2026-09-19: **official support unable to provide the requested
+API/integration information**. This is neither authorization nor an explicit prohibition
+or denial. Upstream authorization and an authorized/versioned API contract are still
+missing; real-provider implementation remains blocked. See
+[§18](#18-operator-support-evidence--2026-09-19) for the evidence and next options.
+
 **No authorized production `WhiteoutProvider` exists.** Production gift-code redemption is
 **disabled** and stays disabled until the production-activation prerequisites in
 [§4](#4-required-authorization-and-evidence-before-adding-a-real-provider) and every item in
@@ -346,6 +353,7 @@ the supporting contract, before implementation.
 | 2026-09-18 | Task 15: consolidated the sanitized Task 12 request/response shape, outcome evidence and remaining external gaps; reproduced the exact narrow amendment from issue #20 as pending and kept the broader §13 proposal separately pending. §§4, 5 and 8 remain binding. | Documentation task authorized by the requesting human; no amendment, provider, activation or external-operator approval recorded |
 | 2026-09-18 | Task 16: recorded the human maintainer's later explicit acceptance of the exact Task 15 narrow amendment and applied it to §4. Items 1–2 plus the stated offline-slice conditions govern implementation; items 3–4 (as applicable) govern production activation. The broader stage A–D proposal remains pending, and no implementation or live activation was approved. | Human repository maintainer; acceptance recorded by the orchestrator at 2026-09-18T10:34:57Z in [issue #20](https://github.com/Tor-Production/wos-rewards-service/issues/20#issuecomment-5728792918) |
 | 2026-09-19 | Task 18: record narrow offline staging/mock Discord Follow implementation permission and source contract in §7. Live identities/access remain unverified and deployment discovery remains disabled; no game-provider authority changes. | Human repository maintainer; [issue #31](https://github.com/Tor-Production/wos-rewards-service/issues/31) and executor instruction |
+| 2026-09-21 | Recorded the maintainer-supplied CS response dated 2026-09-19 (§18): official support unable to provide API/integration information; neither approval nor rejection. Missing authorization/contract still block implementation. Corrected §15's obsolete repeat-amendment decision wording; policy and Task 12 observations unchanged. | Maintainer requested evidence/status update; no policy, provider or activation approval |
 
 ---
 
@@ -721,9 +729,11 @@ Exact blockers, in order:
 > CAPTCHA bypass or undocumented calls. No access is requested to discover codes or enrich
 > player profiles. If this integration is unsupported, please confirm that limitation.
 
-**Maintainer decision requested later:** record the publisher response/contract and explicitly
-accept or reject §13; if accepted and evidence is complete, authorize B's smallest slice.
-No secret values are requested. PR merge is a separate documentation review decision.
+**Maintainer decision requested later:** supply the missing upstream authorization and
+authorized/versioned contract, then separately approve the smallest implementation slice
+under accepted §4. The narrow §13 amendment is already accepted; no repeat acceptance is
+needed. Any reconsideration of its authorization requirement is a separate explicit policy
+decision (see §18). PR merge remains a separate documentation review decision.
 
 **Smallest subsequent implementation slice, conditional on those prerequisites:** an offline,
 unwired `WhiteoutProvider` adapter contract slice using injected fake transport: validate one
@@ -1126,3 +1136,44 @@ only selectable provider; all service game access remains constrained to the
 `WhiteoutProvider` interface; production redemption and automatic discovery remain disabled.
 Neither Task 15's documentation/merge nor Task 16's narrow policy acceptance changes those
 runtime and operational facts.
+
+---
+
+## 18. Operator-support evidence — 2026-09-19
+
+Recorded 2026-09-21 from the maintainer-supplied summary of an official Whiteout Survival
+CS response dated 2026-09-19. This is a paraphrase, not a verbatim transcript.
+
+CS states that its available reference materials cover only Daily Mission rewards, Hero
+Ascension Training rewards, and rally functions. It has no available information about
+API interfaces, automated service-to-service redemption, technical documentation, sandbox
+environments, developer integrations, or permissions, and cannot provide a definitive
+answer about technical integration or interface access.
+
+**Classification: official support unable to provide the requested API/integration
+information.** This establishes the current information limit of the contacted official
+support channel. It is neither authorization for automated redemption nor an explicit
+prohibition or denial, and supplies no authorized API contract. It does not establish that
+such information or an appropriate operator contact cannot exist elsewhere.
+
+| Evidence category | Current determination |
+|---|---|
+| Technically observed behavior | Task 12's user-confirmed success and sequential RECEIVED/40008 observation remain in §§16–17, with their original limits. They supply no general authorization or replay guarantee. |
+| Official-support response | The contacted CS channel cannot supply the requested integration/API information or a definitive access answer. |
+| Operator authorization | Still missing. An inconclusive support response does not grant permission. |
+| Authorized/versioned API contract | Still missing. No official or explicitly authorized request/response, rate-limit, authentication, idempotency or reconciliation contract was supplied. |
+
+**Policy reassessment:** issues #20 and #21 remain blocked under accepted §§4 and 13.
+Upstream operator authorization, an authorized contract, and separately scoped maintainer
+implementation approval are still required before a real provider is implemented. §§4, 5,
+8 and 13 are unchanged; this evidence record authorizes no implementation or external action.
+
+Smallest maintainer options:
+
+1. Keep real-provider work blocked and continue independent product work.
+2. Seek a referral to an appropriate official developer, business or operator contact, if
+   one exists, for the missing authorization and versioned contract. No such contact is
+   established by this response.
+3. If the maintainer wants to reconsider the authorization requirement, request a separate
+   explicit policy decision. This record neither proposes replacement wording nor adopts
+   a policy change; implementation remains blocked until any decision is explicitly recorded.
