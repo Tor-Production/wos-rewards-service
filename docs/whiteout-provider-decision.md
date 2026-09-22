@@ -326,8 +326,8 @@ On 2026-09-21 the maintainer selected the exact HTTPS endpoint
 `https://www.whiteoutsurvival-community.com/tools/data/gift-codes-wosc.json` as an unofficial
 second source. It is not a Whiteout Survival operator authorization, does not establish code
 validity, freshness, publication or expiry, and changes nothing in #20/#21. The adapter is
-staging/mock-only, disabled by default, never follows payload links, and has no schedule or
-runtime hook in this change.
+staging/mock-only and disabled by default. Its durable scheduled path is unreachable with
+checked-in configuration, never follows payload links, and is not an activation authorization.
 
 The observed contract is a JSON object with `maintainedBy`, `source`, `updatedAt`, and `codes`;
 each code entry has `code`, `status`, and `firstSeenAt`. Only `active` entries with bounded
@@ -340,7 +340,7 @@ Later activation must make the first successful fetch a durable baseline only: i
 immutable provenance without automatically distributing historical entries. A later poll may
 consider only newly observed active entries, subject to a separately approved stale-data window;
 expired, removed, edited, and reappearing entries must not reopen or replace provenance. The
-adapter bounds itself to this one endpoint, 8 KiB body, 10-second timeout and at least 15 minutes
+adapter bounds itself to this one endpoint, 8 KiB body, 10-second timeout and at least 30 minutes
 between polls, sends `If-None-Match` when an ETag is known, treats 304 as no change, honours
 429/Retry-After without a tight loop, and stops on 401/403. Activation must add durable
 baseline/provenance storage and use the existing `gift_codes` uniqueness and redemption keys so

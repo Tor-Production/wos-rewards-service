@@ -1,5 +1,5 @@
 import type { AppConfig } from "../config";
-import { openDistribution } from "../operations/distribution";
+import { openCommunityDistribution } from "../operations/distribution";
 import {
   COMMUNITY_JSON_MIN_POLL_SECONDS,
   COMMUNITY_JSON_SOURCE,
@@ -82,7 +82,9 @@ export async function runCommunityJsonSource(
   ).results;
   for (const row of known.filter((row) => !active.has(row.code)))
     await withdraw(db, row.code, stamp);
-  for (const candidate of result.candidates)
+  for (const candidate of result.candidates.filter(
+    (candidate) => candidate.sourceStatus === "active",
+  ))
     await acceptCandidate(db, config, candidate, now, stamp);
   await db
     .prepare(
@@ -120,9 +122,15 @@ async function acceptCandidate(
   now: Date,
   stamp: string,
 ): Promise<void> {
-  const insert = await observation(db, candidate, stamp, 0).run();
-  if ((insert.meta.changes ?? 0) === 0) return; // baseline, withdrawal reappearance, and repeat poll never fan out again.
-  const operationId = await openDistribution(db, config, candidate.code, now);
+  const existing = await db
+    .prepare("SELECT 1 FROM community_json_code_observations WHERE source_id=?1 AND code=?2")
+    .bind(COMMUNITY_JSON_SOURCE, candidate.code)
+    .first();
+  if (existing) return;
+  // If the process stops after the operation transaction, the retry sees gift-code uniqueness;
+  // it can then still persist provenance without creating a second operation.
+  const operationId = await openCommunityDistribution(db, config, candidate.code, now);
+  await observation(db, candidate, stamp, 0).run();
   if (operationId)
     await db
       .prepare(

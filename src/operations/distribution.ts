@@ -40,11 +40,21 @@ export async function openDistribution(
   return openSyntheticDistribution(db, config, code, now);
 }
 
+export function openCommunityDistribution(
+  db: D1Database,
+  config: AppConfig,
+  code: string,
+  now: Date,
+): Promise<string | null> {
+  return openSyntheticDistribution(db, config, code, now, "community-json-wosc-staging");
+}
+
 async function openSyntheticDistribution(
   db: D1Database,
   config: AppConfig,
   code: string,
   now: Date,
+  source = "synthetic-local",
 ): Promise<string | null> {
   const id = await deterministicUuid(`distribution:${code}`);
   const stamp = now.toISOString();
@@ -52,9 +62,9 @@ async function openSyntheticDistribution(
     await db.batch([
       db
         .prepare(
-          "INSERT INTO gift_codes(code,status,discovered_at,source) VALUES (?1,'active',?2,'synthetic-local')",
+          "INSERT INTO gift_codes(code,status,discovered_at,source) VALUES (?1,'active',?2,?3)",
         )
-        .bind(code, stamp),
+        .bind(code, stamp, source),
       db
         .prepare(
           `INSERT INTO operations(operation_id,type,trigger_kind,trigger_ref,snapshot_at,expected_count,deadline_at,created_at,updated_at,summary_context)

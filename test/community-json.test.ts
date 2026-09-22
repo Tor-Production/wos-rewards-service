@@ -36,7 +36,7 @@ describe("community JSON source", () => {
       parseCommunityJson(
         feed([{ code: "Synthetic_23", status: "expired", firstSeenAt: "2026-09-20T00:00:00Z" }]),
       ),
-    ).toBeNull();
+    ).toMatchObject([{ sourceStatus: "expired" }]);
     expect(parseCommunityJson({ ...feed(), extra: true })).toBeNull();
   });
 

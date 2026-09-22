@@ -44,7 +44,6 @@ export async function scheduledWork(
       : undefined);
   const now = clock().toISOString();
   const db = budgetDatabase(env.STAGING_DB, 39);
-  await runCommunityJsonSource(db, config, clock(), options.communityFetcher);
   const lanes: readonly ScheduledLaneDefinition[] = [
     { lane: "expansion", limit: 6, run: (db) => expandPage(db, now) },
     {
@@ -74,6 +73,17 @@ export async function scheduledWork(
       // Durable claims/cursors recover next tick. Never log raw SQL, payloads, or exceptions.
       logScheduledLaneFailure(lane, limit, config.environment);
     }
+  try {
+    // This source has a separate bounded budget and cannot prevent the established lanes.
+    await runCommunityJsonSource(
+      budgetDatabase(env.STAGING_DB, 12),
+      config,
+      clock(),
+      options.communityFetcher,
+    );
+  } catch {
+    logScheduledLaneFailure("recovery", 8, config.environment);
+  }
 }
 
 export async function queueWork(

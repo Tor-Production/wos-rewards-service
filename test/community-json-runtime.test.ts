@@ -39,7 +39,7 @@ describe("disabled community JSON scheduled path", () => {
       await env.STAGING_DB.prepare("SELECT source FROM gift_codes WHERE code='New23'").first(
         "source",
       ),
-    ).toBe("synthetic-local");
+    ).toBe("community-json-wosc-staging");
     await runCommunityJsonSource(
       env.STAGING_DB,
       config(),

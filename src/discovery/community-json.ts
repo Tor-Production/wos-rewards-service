@@ -6,7 +6,7 @@ export const COMMUNITY_JSON_ENDPOINT =
 export const COMMUNITY_JSON_SOURCE = "community-json-wosc-staging";
 export const COMMUNITY_JSON_MAX_BODY_BYTES = 8 * 1024;
 export const COMMUNITY_JSON_TIMEOUT_MS = 10_000;
-export const COMMUNITY_JSON_MIN_POLL_SECONDS = 15 * 60;
+export const COMMUNITY_JSON_MIN_POLL_SECONDS = 30 * 60;
 
 export interface CommunityJsonSourceConfig {
   readonly endpoint: typeof COMMUNITY_JSON_ENDPOINT;
@@ -16,7 +16,7 @@ export interface CommunityJsonSourceConfig {
 
 export interface CommunityCodeCandidate {
   readonly code: string;
-  readonly sourceStatus: "active";
+  readonly sourceStatus: "active" | "inactive" | "expired";
   /** Source claims, not independently established publication or expiry times. */
   readonly sourceUpdatedAt: string;
   readonly sourceFirstSeenAt: string;
@@ -94,7 +94,7 @@ export function parseCommunityJson(value: unknown): readonly CommunityCodeCandid
       typeof row.code !== "string" ||
       !/^[A-Za-z0-9_-]+$/.test(row.code) ||
       row.code.length > GIFT_CODE_MAX_LENGTH ||
-      row.status !== "active" ||
+      (row.status !== "active" && row.status !== "inactive" && row.status !== "expired") ||
       !isUtcTimestamp(row.firstSeenAt) ||
       seen.has(row.code)
     )
@@ -102,7 +102,7 @@ export function parseCommunityJson(value: unknown): readonly CommunityCodeCandid
     seen.add(row.code);
     codes.push({
       code: row.code,
-      sourceStatus: "active",
+      sourceStatus: row.status,
       sourceUpdatedAt: root.updatedAt,
       sourceFirstSeenAt: row.firstSeenAt,
     });
