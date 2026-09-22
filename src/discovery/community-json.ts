@@ -44,8 +44,6 @@ export function loadCommunityJsonSource(
     issues.push("COMMUNITY_JSON_SOURCE_ENABLED must be true or false");
     return null;
   }
-  if (source.CODE_DISCOVERY_ENABLED !== true && source.CODE_DISCOVERY_ENABLED !== "true")
-    issues.push("community JSON source requires CODE_DISCOVERY_ENABLED=true");
   if (source.ENVIRONMENT !== "staging" || source.PROVIDER_MODE !== "mock")
     issues.push("community JSON source requires staging and mock mode");
   return {
@@ -140,8 +138,8 @@ export async function fetchCommunityJson(
       (!/^\d+$/.test(length) || Number(length) > COMMUNITY_JSON_MAX_BODY_BYTES)
     )
       return { kind: "invalid_payload" };
-    const body = await response.arrayBuffer();
-    if (body.byteLength > COMMUNITY_JSON_MAX_BODY_BYTES) return { kind: "invalid_payload" };
+    const body = await readBoundedBody(response, COMMUNITY_JSON_MAX_BODY_BYTES);
+    if (body === null) return { kind: "invalid_payload" };
     let parsed: unknown;
     try {
       parsed = JSON.parse(new TextDecoder().decode(body));
@@ -159,6 +157,37 @@ export async function fetchCommunityJson(
   }
 }
 
-function retryAfter(value: string | null): number | null {
-  return value !== null && /^\d+$/.test(value) ? Math.min(Number(value), 86_400) : null;
+async function readBoundedBody(response: Response, max: number): Promise<ArrayBuffer | null> {
+  if (!response.body) return new ArrayBuffer(0);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const part = await reader.read();
+      if (part.done) break;
+      size += part.value.byteLength;
+      if (size > max) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(part.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body.buffer;
+}
+
+function retryAfter(value: string | null, now = Date.now()): number | null {
+  if (value === null) return null;
+  if (/^\d+$/.test(value)) return Number(value);
+  const at = Date.parse(value);
+  return Number.isFinite(at) && at > now ? Math.ceil((at - now) / 1000) : null;
 }

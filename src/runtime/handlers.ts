@@ -6,6 +6,7 @@ import {
   type DiscordTransport,
 } from "../discord/delivery";
 import { expandPage } from "../operations/distribution";
+import { runCommunityJsonSource } from "../discovery/community-json-runtime";
 import { recover } from "../operations/recovery";
 import { summaryPage } from "../operations/summary";
 import { dispatchOutbox } from "../outbox/dispatcher";
@@ -27,7 +28,12 @@ interface ScheduledLaneDefinition {
 
 export async function scheduledWork(
   env: Env,
-  options: { now?: () => Date; transport?: DiscordTransport; fetcher?: DiscordFetch } = {},
+  options: {
+    now?: () => Date;
+    transport?: DiscordTransport;
+    fetcher?: DiscordFetch;
+    communityFetcher?: typeof fetch;
+  } = {},
 ): Promise<void> {
   const config = loadConfig(env);
   const clock = options.now ?? (() => new Date());
@@ -38,6 +44,7 @@ export async function scheduledWork(
       : undefined);
   const now = clock().toISOString();
   const db = budgetDatabase(env.STAGING_DB, 39);
+  await runCommunityJsonSource(db, config, clock(), options.communityFetcher);
   const lanes: readonly ScheduledLaneDefinition[] = [
     { lane: "expansion", limit: 6, run: (db) => expandPage(db, now) },
     {

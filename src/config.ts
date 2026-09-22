@@ -272,7 +272,7 @@ export function loadConfig(raw: unknown): AppConfig {
     environment,
     providerMode,
     productionRedemptionEnabled: false,
-    codeDiscoveryEnabled: followSource !== null,
+    codeDiscoveryEnabled: followSource !== null || communityJsonSource !== null,
     followSource,
     communityJsonSource,
     logLevel,

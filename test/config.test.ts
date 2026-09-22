@@ -251,9 +251,9 @@ describe("loadConfig rejects unsafe environments", () => {
   });
 
   it("keeps the community JSON adapter behind discovery and staging/mock gates", () => {
-    expect(issuesFor({ ...SAFE_ENV, COMMUNITY_JSON_SOURCE_ENABLED: true })).toContain(
-      "community JSON source requires CODE_DISCOVERY_ENABLED=true",
-    );
+    expect(
+      loadConfig({ ...SAFE_ENV, COMMUNITY_JSON_SOURCE_ENABLED: true }).communityJsonSource,
+    ).not.toBeNull();
     expect(
       loadConfig({
         ...SAFE_ENV,
