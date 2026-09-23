@@ -73,6 +73,21 @@ function message(body: RedemptionJobBody): Delivery & {
   };
 }
 
+it("a code withdrawn after enqueue cannot acquire a provider invocation", async () => {
+  await seedCodes(db, ["CODE"], clock);
+  const fixture = await register();
+  await db.prepare("UPDATE gift_codes SET status='disabled' WHERE code='CODE'").run();
+  const provider = new MockWhiteoutProvider();
+  const calls = vi.spyOn(provider, "redeem");
+  const delivery = message(fixture.jobs[0]!);
+
+  await consume(delivery, "registration", { db, config, provider, now: () => clock });
+
+  expect(calls).not.toHaveBeenCalled();
+  expect(delivery.ack).toHaveBeenCalledOnce();
+  expect(await db.prepare("SELECT COUNT(*) n FROM redemptions").first("n")).toBe(0);
+});
+
 it("F1: an outbox attempt superseded after validation cannot acquire a grant or mutate its item", async () => {
   await seedCodes(db, ["CODE"], clock);
   const fixture = await register();

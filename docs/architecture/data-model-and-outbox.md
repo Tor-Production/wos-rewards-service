@@ -216,6 +216,32 @@ introduced. Existing manual/synthetic metadata and Task 13 uncertainty holds rem
 Tests apply 0006 to populated 0005 with manual provenance and an uncertainty hold, verify constraints
 and foreign keys, and prove journal replay is a no-op. Remote migration is not part of this task.
 
+### Community JSON state and observations (migration 0007; disabled)
+
+`community_json_source_state` holds the one exact source ID, the durable next-request time,
+60-second claim token/lease, permanent access-denial stop, conditional ETag, last source-claimed
+`updatedAt`, and at most one validated pending snapshot. Claim acquisition advances the
+1,800-second request gate before HTTP. A changed snapshot is persisted once and reconciled one
+code per scheduled invocation; a failed batch leaves it pending for a fenced retry without an
+early repeat request. The first successful snapshot inserts baseline observations in one D1
+transaction and opens no distribution.
+
+`community_json_code_observations` is keyed by source and normalized code. It preserves first
+source timestamps, first local observation, baseline flag, and the original operation reference;
+its trigger rejects changes to first provenance. `source_active` and `withdrawn_at` track
+this source's current eligibility without deleting the row. New-code observation, global
+`gift_codes` claim, distribution operation and frozen player membership commit atomically.
+Existing `gift_codes` uniqueness deduplicates Follow/manual/community orderings without
+rewriting the first source. Accepted Follow/manual duplicate rows also retain independent
+eligibility, including a later sighting of a withdrawn community-first code.
+
+Source withdrawal does not delete code, redemption, item, operation or summary ledgers.
+When no other accepted source remains, it disables the community-first global code, ends
+unexpanded community fanout, and terminalizes only mutable pending items for that code and
+their exact jobs. In-flight, held, terminal and frozen state is untouched. Reappearance
+restores source eligibility but does not create a second distribution operation.
+`0007` remains local to Task 23 PR #43; it has not been applied remotely.
+
 ### `processed_events` (event-acceptance state machine)
 
 | Column | Type | Notes |

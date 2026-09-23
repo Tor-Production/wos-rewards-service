@@ -80,9 +80,10 @@ export async function scheduledWork(
       config,
       clock(),
       options.communityFetcher,
+      clock,
     );
   } catch {
-    logScheduledLaneFailure("recovery", 8, config.environment);
+    logScheduledLaneFailure("community", 12, config.environment);
   }
 }
 

@@ -61,7 +61,7 @@ it("upgrades populated 0005 without changing manual provenance or uncertainty; m
   expect((await db.prepare("SELECT * FROM discovered_code_events").all()).results).toEqual(
     provenance,
   );
-  expect(await db.prepare("SELECT COUNT(*) n FROM d1_migrations").first("n")).toBe(6);
+  expect(await db.prepare("SELECT COUNT(*) n FROM d1_migrations").first("n")).toBe(7);
   expect((await db.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
   const base = `INSERT INTO discovered_code_events(event_id,guild_id,channel_id,webhook_id,source_guild_id,source_channel_id,source_message_id,code,expiry_label,status,discord_created_at,accepted_at,acceptance_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'February 29, 23:59 (UTC+0)','duplicate_code',?9,?9,'synthetic')`;
   for (const [id, source, code] of [

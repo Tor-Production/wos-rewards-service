@@ -2,10 +2,17 @@
  * Bounded failure record for the scheduled handler. Keep this schema closed: it is an
  * operational classifier, not a carrier for errors, requests, configuration, or payloads.
  */
-export const SCHEDULED_LANES = ["expansion", "outbox", "recovery", "summary", "delivery"] as const;
+export const SCHEDULED_LANES = [
+  "expansion",
+  "outbox",
+  "recovery",
+  "summary",
+  "delivery",
+  "community",
+] as const;
 
 export type ScheduledLane = (typeof SCHEDULED_LANES)[number];
-export type ScheduledLaneQueryBudget = 6 | 8 | 9 | 10;
+export type ScheduledLaneQueryBudget = 6 | 8 | 9 | 10 | 12;
 
 export interface ScheduledLaneFailureLog {
   readonly event: "scheduled_lane_failed";

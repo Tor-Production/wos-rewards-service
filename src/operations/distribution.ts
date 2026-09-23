@@ -40,21 +40,11 @@ export async function openDistribution(
   return openSyntheticDistribution(db, config, code, now);
 }
 
-export function openCommunityDistribution(
-  db: D1Database,
-  config: AppConfig,
-  code: string,
-  now: Date,
-): Promise<string | null> {
-  return openSyntheticDistribution(db, config, code, now, "community-json-wosc-staging");
-}
-
 async function openSyntheticDistribution(
   db: D1Database,
   config: AppConfig,
   code: string,
   now: Date,
-  source = "synthetic-local",
 ): Promise<string | null> {
   const id = await deterministicUuid(`distribution:${code}`);
   const stamp = now.toISOString();
@@ -64,7 +54,7 @@ async function openSyntheticDistribution(
         .prepare(
           "INSERT INTO gift_codes(code,status,discovered_at,source) VALUES (?1,'active',?2,?3)",
         )
-        .bind(code, stamp, source),
+        .bind(code, stamp, "synthetic-local"),
       db
         .prepare(
           `INSERT INTO operations(operation_id,type,trigger_kind,trigger_ref,snapshot_at,expected_count,deadline_at,created_at,updated_at,summary_context)
@@ -301,7 +291,9 @@ export async function expandPage(db: D1Database, now: string): Promise<void> {
     attempt: crypto.randomUUID(),
   }));
   const cursor = rows.at(-1)?.player_id ?? op.expansion_cursor;
-  const guard = `EXISTS(SELECT 1 FROM operations o WHERE o.operation_id=?1 AND o.expansion_cursor IS ?4 AND ${mutableOperation} AND o.deadline_at>?3)`;
+  const guard = `EXISTS(SELECT 1 FROM operations o JOIN gift_codes g ON g.code=o.trigger_ref
+    WHERE o.operation_id=?1 AND o.expansion_cursor IS ?4 AND o.expansion_state<>'expanded'
+    AND g.status='active' AND ${mutableOperation} AND o.deadline_at>?3)`;
   await db.batch([
     db
       .prepare(
@@ -326,7 +318,7 @@ export async function expandPage(db: D1Database, now: string): Promise<void> {
         (SELECT COUNT(*) FROM operation_items i WHERE i.operation_id=o.operation_id)=expected_count THEN 'expanded' ELSE 'expanding' END,
         summary_state=CASE WHEN expected_count=0 THEN 'sealing' ELSE 'none' END,
         frozen_at=CASE WHEN expected_count=0 THEN ?3 ELSE NULL END,updated_at=?3
-      WHERE operation_id=?1 AND expansion_cursor IS ?4 AND ${mutableOperation} AND deadline_at>?3`,
+      WHERE operation_id=?1 AND expansion_cursor IS ?4 AND ${guard}`,
       )
       .bind(op.operation_id, cursor, now, op.expansion_cursor),
     progress(db, "expansion", op.operation_id),

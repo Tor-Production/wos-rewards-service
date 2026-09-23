@@ -34,6 +34,13 @@ round-robin operation ordering, so expansion and summary do not share one slot.
 | Output | 9 | one ordered chunk, including claim, cooldown, result and completion recovery; zero requests by default, or one through an injected/explicitly enabled staging transport |
 | **Complete scheduled handler** | **39** | at most eight Queue sends and one enabled output request; no provider calls |
 
+The disabled community JSON source runs after these lanes with its own 12-statement
+reservation. Its first valid fetch records a baseline; later valid snapshots reconcile one
+code action per tick. The request slot is committed before HTTP and cannot occur more than
+once per 1,800 seconds, or before a longer server `Retry-After` delay. A community failure
+cannot spend the 39-statement reservation or interrupt the established lanes. This path is
+unreachable in checked-in configuration and has not been deployed.
+
 Queue consumers process at most two messages per invocation, reserving 16 D1 statements
 per message (**32 total**), with at most two mock provider invocations. The DLQ reserves
 eight per message (**16 total**) and makes no provider call. Excess messages are retried
@@ -69,7 +76,7 @@ Observation mirroring, stuck-pair redrive and dead-outbox handling each run ever
 minute in the intervening slots. Their cursors remain independent, so none can consume the
 reuse reservation or another recovery class's turn.
 
-Retention, discovery, adaptive provider rate limiting and operational dashboards remain
+Retention, discovery activation, adaptive provider rate limiting and operational dashboards remain
 later work. Required correctness recovery above is implemented now. Operator repairs are
 parked and never auto-authorized or selected by a consumer before explicit authorization.
 

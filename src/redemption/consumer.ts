@@ -141,6 +141,7 @@ export async function consume(
     const currentOutbox = `EXISTS(SELECT 1 FROM outbox_jobs b WHERE b.job_id=?8 AND b.attempt_id=?1
       AND b.operation_id=?5 AND b.item_key=?6 AND b.type=?9)`;
     const eligibleItem = `EXISTS(SELECT 1 FROM operation_items i JOIN operations o ON o.operation_id=i.operation_id
+      JOIN gift_codes g ON g.code=i.code AND g.status='active'
       WHERE i.operation_id=?5 AND i.item_key=?6 AND ${mutableOperation} AND o.deadline_at>?2
       AND i.job_id=?8 AND ${currentOutbox}
       AND (i.status='pending' OR (i.status='in_progress' AND (i.claim_token=?1 OR i.claim_expires_at<?2))))`;

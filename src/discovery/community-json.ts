@@ -31,6 +31,7 @@ export type CommunityFetchResult =
   | {
       readonly kind: "ok";
       readonly etag: string | null;
+      readonly sourceUpdatedAt: string;
       readonly candidates: readonly CommunityCodeCandidate[];
     };
 
@@ -114,6 +115,7 @@ export async function fetchCommunityJson(
   config: CommunityJsonSourceConfig,
   previousEtag: string | null,
   fetcher: typeof fetch = fetch,
+  now: Date = new Date(),
 ): Promise<CommunityFetchResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.timeoutMs);
@@ -129,7 +131,7 @@ export async function fetchCommunityJson(
     if (response.status === 429)
       return {
         kind: "rate_limited",
-        retryAfterSeconds: retryAfter(response.headers.get("retry-after")),
+        retryAfterSeconds: retryAfter(response.headers.get("retry-after"), now.getTime()),
       };
     if (!response.ok) return { kind: "transient_failure" };
     const length = response.headers.get("content-length");
@@ -149,7 +151,12 @@ export async function fetchCommunityJson(
     const candidates = parseCommunityJson(parsed);
     return candidates === null
       ? { kind: "invalid_payload" }
-      : { kind: "ok", etag: response.headers.get("etag"), candidates };
+      : {
+          kind: "ok",
+          etag: response.headers.get("etag"),
+          sourceUpdatedAt: (parsed as { updatedAt: string }).updatedAt,
+          candidates,
+        };
   } catch {
     return { kind: "transient_failure" };
   } finally {
@@ -185,9 +192,12 @@ async function readBoundedBody(response: Response, max: number): Promise<ArrayBu
   return body.buffer;
 }
 
-function retryAfter(value: string | null, now = Date.now()): number | null {
+function retryAfter(value: string | null, now: number): number | null {
   if (value === null) return null;
-  if (/^\d+$/.test(value)) return Number(value);
+  if (/^\d+$/.test(value)) {
+    const seconds = Number(value);
+    return Number.isSafeInteger(seconds) ? seconds : null;
+  }
   const at = Date.parse(value);
   return Number.isFinite(at) && at > now ? Math.ceil((at - now) / 1000) : null;
 }

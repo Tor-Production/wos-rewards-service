@@ -116,6 +116,7 @@ The additive D1 migrations live in `migrations/`:
 - `0004` adds the manual-code command idempotency ledger.
 - `0005` adds Task 13 dispatch-hold evidence and separate uncertainty accounting.
 - `0006` adds immutable Discord Follow event/source provenance and duplicate acceptance outcomes.
+- `0007` adds disabled community JSON poll state, snapshot reconciliation, and source observations.
 
 Tests apply and verify the full migration sequence locally. To update only the local staging D1
 database used by `npm run dev`:
@@ -124,9 +125,9 @@ database used by `npm run dev`:
 npm run d1:migrate:local
 ```
 
-There is deliberately no remote-apply package command. The historical staging record covers only
-`0001`–`0004`; applying `0005`/`0006` remotely or deploying the merged Task 13 runtime requires separate
-explicit authorization. See the [schema owner](docs/architecture/data-model-and-outbox.md#implemented-additive-task-13-uncertainty-migration-0005)
+There is deliberately no remote-apply package command. Task 21 applied `0005`/`0006` to
+staging D1; `0007` is local to Task 23 and has not been deployed. See the
+[schema owner](docs/architecture/data-model-and-outbox.md#implemented-additive-task-13-uncertainty-migration-0005)
 and [environment rules](docs/architecture/operations-and-reliability.md#19-staging-and-production-separation).
 
 <a id="generated-worker-types"></a>
@@ -138,8 +139,9 @@ and [environment rules](docs/architecture/operations-and-reliability.md#19-stagi
   this repository configuration.
 - `PRODUCTION_REDEMPTION_ENABLED` remains false and is rejected when enabled. No authorized
   production `WhiteoutProvider` exists. `CODE_DISCOVERY_ENABLED` defaults false independently in
-  companion and Worker; enabled synthetic tests require a complete staging/mock Follow tuple.
-  Checked-in deployment values remain false; implementation does not authorize live activation.
+  companion and Worker; enabling Follow requires its complete staging/mock tuple.
+  `COMMUNITY_JSON_SOURCE_ENABLED` defaults false and has an independent staging/mock gate.
+  Checked-in deployment values remain disabled; implementation does not authorize live activation.
 - All service redemption access must cross the `WhiteoutProvider` interface. The isolated Task 12
   experiment is historical evidence, not runtime routing or general authorization.
 - Real Discord output is separately gated. Local tests use synthetic events, local D1/Queues, the

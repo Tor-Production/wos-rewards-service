@@ -44,7 +44,7 @@ describe("community JSON source", () => {
     let url = "";
     let etag: string | null = null;
     const result = await fetchCommunityJson(
-      { endpoint: COMMUNITY_JSON_ENDPOINT, timeoutMs: 1_000, minPollSeconds: 900 },
+      { endpoint: COMMUNITY_JSON_ENDPOINT, timeoutMs: 1_000, minPollSeconds: 1800 },
       '"old"',
       async (input, init) => {
         url = input.toString();
@@ -57,17 +57,40 @@ describe("community JSON source", () => {
     expect(etag).toBe('"old"');
     expect(
       await fetchCommunityJson(
-        { endpoint: COMMUNITY_JSON_ENDPOINT, timeoutMs: 10, minPollSeconds: 900 },
+        { endpoint: COMMUNITY_JSON_ENDPOINT, timeoutMs: 10, minPollSeconds: 1800 },
         null,
         async () => new Response(null, { status: 429, headers: { "retry-after": "30" } }),
       ),
     ).toEqual({ kind: "rate_limited", retryAfterSeconds: 30 });
     expect(
       await fetchCommunityJson(
-        { endpoint: COMMUNITY_JSON_ENDPOINT, timeoutMs: 10, minPollSeconds: 900 },
+        { endpoint: COMMUNITY_JSON_ENDPOINT, timeoutMs: 10, minPollSeconds: 1800 },
         null,
         async () => new Response("x".repeat(COMMUNITY_JSON_MAX_BODY_BYTES + 1)),
       ),
     ).toEqual({ kind: "invalid_payload" });
+  });
+
+  it("cancels a lengthless oversized stream before consuming the whole response", async () => {
+    let pulls = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        controller.enqueue(new Uint8Array(4_096));
+        if (pulls === 8) controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const result = await fetchCommunityJson(
+      { endpoint: COMMUNITY_JSON_ENDPOINT, timeoutMs: 1_000, minPollSeconds: 1800 },
+      null,
+      async () => new Response(stream),
+    );
+    expect(result).toEqual({ kind: "invalid_payload" });
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(8);
   });
 });

@@ -330,21 +330,33 @@ staging/mock-only and disabled by default. Its durable scheduled path is unreach
 checked-in configuration, never follows payload links, and is not an activation authorization.
 
 The observed contract is a JSON object with `maintainedBy`, `source`, `updatedAt`, and `codes`;
-each code entry has `code`, `status`, and `firstSeenAt`. Only `active` entries with bounded
-ASCII codes and strict UTC timestamps are accepted. `updatedAt` and `firstSeenAt` are immutable
-source claims, not proven dates. Unknown/missing fields, malformed JSON, duplicate codes,
-non-active status, access denial, or a schema change fail closed. Synthetic fixtures only are
-checked in; no live code body is retained.
+each entry has `code`, `status`, and `firstSeenAt`. Codes use the existing case-preserved
+ASCII grammar and 64-character bound. Status is exactly `active`, `inactive`, or `expired`;
+the latter two withdraw source eligibility. Both timestamps must be valid UTC `Z` strings.
+`updatedAt` and `firstSeenAt` are retained as source claims, not proven publication or expiry
+dates. Missing/unknown fields, malformed JSON, duplicate codes, and schema changes fail closed.
+Synthetic fixtures only are checked in; no live code body is retained. No published automated-use
+terms or quota have been independently established in this record; they must be checked before
+activation rather than inferred from cache headers.
 
-Later activation must make the first successful fetch a durable baseline only: it records
-immutable provenance without automatically distributing historical entries. A later poll may
-consider only newly observed active entries, subject to a separately approved stale-data window;
-expired, removed, edited, and reappearing entries must not reopen or replace provenance. The
-adapter bounds itself to this one endpoint, 8 KiB body, 10-second timeout and at least 30 minutes
-between polls, sends `If-None-Match` when an ETag is known, treats 304 as no change, honours
-429/Retry-After without a tight loop, and stops on 401/403. Activation must add durable
-baseline/provenance storage and use the existing `gift_codes` uniqueness and redemption keys so
-Discord and feed discoveries deduplicate without erasing the first source.
+The first valid snapshot is a durable baseline without historical distribution. Each later valid
+snapshot is stored before bounded, claim-fenced reconciliation: newly seen active codes open the
+existing mock distribution once, while source removal or `inactive`/`expired` withdraws only
+community eligibility. The global code remains active if an independently accepted Follow/manual
+source still supports it. Withdrawal stops unexpanded community fanout and cancels only matching
+pending items/jobs; held, in-flight, terminal and frozen history remains. Reappearance restores
+source eligibility but does not reopen the old distribution or replay completed redemptions.
+First-observation claims remain immutable across edits and reappearance. A backwards `updatedAt`
+claim is ignored without retiring codes; no expiry time is inferred from the feed.
+
+The scheduled lane reserves a durable 1,800-second minimum request gap before HTTP, including
+across claim loss or restart. It uses only the exact endpoint, an 8 KiB streaming body limit,
+a 10-second timeout, conditional ETags, and one bounded reconciliation action per invocation.
+304 and failed/invalid responses never mean an empty snapshot. Valid longer numeric or HTTP-date
+`Retry-After` delays extend the gate; 401/403 permanently stop this source pending a separate
+reviewed operator decision. The community lane has a separate 12-statement budget after the
+existing scheduled lanes. These offline implementation details do not authorize deployment,
+polling, discovery activation, or a game-provider call.
 
 ---
 
