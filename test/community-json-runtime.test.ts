@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config";
 import { runCommunityJsonSource } from "../src/discovery/community-json-runtime";
 import type { ManualCodeCommandEvent } from "../src/manual-code/types";
@@ -66,6 +66,35 @@ beforeEach(async () => {
 });
 
 describe("disabled community source, real D1 and scheduler budget", () => {
+  it("logs one closed failure category and preserves the request gate if logging throws", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+      throw new Error("synthetic log sink failure");
+    });
+    try {
+      await runCommunityJsonSource(
+        db,
+        config(),
+        at(0),
+        async () => new Response(JSON.stringify({ ...feed([]), extra: "private-canary" })),
+      );
+      expect(warn).toHaveBeenCalledExactlyOnceWith({
+        event: "community_fetch_outcome",
+        environment: "staging",
+        outcome: "schema_invalid",
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("private-canary");
+      expect(await state()).toMatchObject({
+        initialized: 0,
+        stopped: 0,
+        claim_token: null,
+        next_fetch_at: at(30).toISOString(),
+      });
+      expect(await count("community_json_code_observations")).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("does no D1 or HTTP work while disabled", async () => {
     let requests = 0;
     await runCommunityJsonSource(db, loadConfig(env), at(0), async () => {

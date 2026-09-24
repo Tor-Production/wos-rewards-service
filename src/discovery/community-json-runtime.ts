@@ -1,6 +1,7 @@
 import type { AppConfig } from "../config";
 import { deterministicUuid } from "../ingest/identity";
 import { COMMUNITY_JSON_SOURCE, fetchCommunityJson } from "./community-json";
+import { logCommunityFetchOutcome } from "../runtime/scheduled-lane-log";
 
 const CLAIM_SECONDS = 60;
 const POLL_SECONDS = 1_800;
@@ -82,6 +83,14 @@ export async function runCommunityJsonSource(
     result.kind === "ok" &&
     state.last_source_updated_at !== null &&
     Date.parse(result.sourceUpdatedAt) < Date.parse(state.last_source_updated_at);
+  logCommunityFetchOutcome(
+    stale
+      ? "stale_snapshot"
+      : result.kind === "transient_failure" || result.kind === "invalid_payload"
+        ? result.reason
+        : result.kind,
+    config.environment,
+  );
   if (result.kind === "ok" && !stale) {
     if (state.initialized === 0) {
       // One SQL statement handles any baseline permitted by the response byte bound.

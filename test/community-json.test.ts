@@ -66,9 +66,12 @@ describe("community JSON source", () => {
       await fetchCommunityJson(
         { endpoint: COMMUNITY_JSON_ENDPOINT, timeoutMs: 10, minPollSeconds: 1800 },
         null,
-        async () => new Response("x".repeat(COMMUNITY_JSON_MAX_BODY_BYTES + 1)),
+        async () =>
+          new Response("x".repeat(COMMUNITY_JSON_MAX_BODY_BYTES + 1), {
+            headers: { "content-length": String(COMMUNITY_JSON_MAX_BODY_BYTES + 1) },
+          }),
       ),
-    ).toEqual({ kind: "invalid_payload" });
+    ).toEqual({ kind: "invalid_payload", reason: "content_length_oversize" });
   });
 
   it("cancels a lengthless oversized stream before consuming the whole response", async () => {
@@ -89,8 +92,63 @@ describe("community JSON source", () => {
       null,
       async () => new Response(stream),
     );
-    expect(result).toEqual({ kind: "invalid_payload" });
+    expect(result).toEqual({ kind: "invalid_payload", reason: "body_oversize" });
     expect(cancelled).toBe(true);
     expect(pulls).toBeLessThan(8);
+  });
+
+  it("classifies response, validation, and transport failures without carrying raw data", async () => {
+    const config = {
+      endpoint: COMMUNITY_JSON_ENDPOINT,
+      timeoutMs: 1_000,
+      minPollSeconds: 1800,
+    } as const;
+    const cases = [
+      [new Response(null, { status: 503 }), "transient_failure", "http_5xx"],
+      [new Response(null, { status: 418 }), "transient_failure", "http_other"],
+      [
+        new Response("{}", { headers: { "content-length": "invalid" } }),
+        "invalid_payload",
+        "content_length_invalid",
+      ],
+      [new Response("not JSON"), "invalid_payload", "json_invalid"],
+      [
+        new Response(JSON.stringify({ ...feed(), extra: "private-canary" })),
+        "invalid_payload",
+        "schema_invalid",
+      ],
+    ] as const;
+    for (const [response, kind, reason] of cases)
+      expect(await fetchCommunityJson(config, null, async () => response)).toEqual({
+        kind,
+        reason,
+      });
+
+    expect(
+      await fetchCommunityJson(config, null, async () => {
+        throw new Error("private-canary");
+      }),
+    ).toEqual({ kind: "transient_failure", reason: "transport_error" });
+    expect(
+      await fetchCommunityJson(
+        { ...config, timeoutMs: 5 },
+        null,
+        async (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("private-canary")), {
+              once: true,
+            });
+          }),
+      ),
+    ).toEqual({ kind: "transient_failure", reason: "timeout" });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("private-canary"));
+      },
+    });
+    expect(await fetchCommunityJson(config, null, async () => new Response(stream))).toEqual({
+      kind: "transient_failure",
+      reason: "body_read_error",
+    });
   });
 });
