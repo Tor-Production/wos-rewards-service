@@ -240,7 +240,8 @@ When no other accepted source remains, it disables the community-first global co
 unexpanded community fanout, and terminalizes only mutable pending items for that code and
 their exact jobs. In-flight, held, terminal and frozen state is untouched. Reappearance
 restores source eligibility but does not create a second distribution operation.
-`0007` remains local to Task 23 PR #43; it has not been applied remotely.
+`0007` was applied to staging during Task 24's bounded smoke. The source is disabled again;
+there are no community observations or operations from that attempt.
 
 ### `processed_events` (event-acceptance state machine)
 

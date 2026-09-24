@@ -39,7 +39,8 @@ reservation. Its first valid fetch records a baseline; later valid snapshots rec
 code action per tick. The request slot is committed before HTTP and cannot occur more than
 once per 1,800 seconds, or before a longer server `Retry-After` delay. A community failure
 cannot spend the 39-statement reservation or interrupt the established lanes. This path is
-unreachable in checked-in configuration and has not been deployed.
+unreachable in checked-in configuration; Task 24's bounded staging smoke failed to initialize a
+baseline and restored the source-disabled Worker.
 
 Queue consumers process at most two messages per invocation, reserving 16 D1 statements
 per message (**32 total**), with at most two mock provider invocations. The DLQ reserves
@@ -320,13 +321,21 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
 
 - **Scheduled-lane failures:** every caught failure in the one-minute handler emits one
   warning-level structured record with this closed JSON schema:
-  `{"event":"scheduled_lane_failed","lane":"expansion|outbox|recovery|summary|delivery","environment":"staging","query_budget":6|8|9|10}`.
+  `{"event":"scheduled_lane_failed","lane":"expansion|outbox|recovery|summary|delivery|community","environment":"staging","query_budget":6|8|9|10|12}`.
   The record is constructed at the log boundary from those allowlisted primitive values only;
   it never contains an exception, stack, SQL, payload, request, configuration object,
   identifier, code, raw message, credential, or session data. A throwing log sink is ignored so
   it cannot interrupt later scheduled lanes or change recovery. This is a narrow implemented
   diagnostic for scheduled failure isolation, not completion of the broader metrics, alerts, or
   observability work below.
+- **Community fetch outcomes:** each attempted source fetch emits one record with only
+  `event="community_fetch_outcome"`, `environment="staging"`, and an allowlisted `outcome`.
+  Outcomes distinguish valid/unchanged responses, access denial, rate limiting, 5xx/other HTTP
+  failure, timeout/transport/body-read failure, declared-length/body limits, malformed JSON,
+  schema rejection, and stale source timestamps. No status code, URL, header, body, code,
+  exception, or response object is logged. Logging is best effort and never changes the durable
+  request gate or retry/stop behavior. These future diagnostics cannot identify Task 24's prior
+  failed fetch; that attempt predated the signal.
 - **Structured logs** with an explicit field allow-list: `environment`, `operation_id`,
   `operation_type`, `item_key`, `player_id`, `code`, `event_id` (correlation id), `status`,
   `reason_code`, `attempts`, `queue`, `delivery_id`, `chunk_index`, timings. The Task 09

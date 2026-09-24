@@ -42,3 +42,34 @@ export function logScheduledLaneFailure(
     // Logging is intentionally best effort; never let its sink affect scheduled work.
   }
 }
+
+/** One closed outcome per attempted community fetch; never accept response or error objects. */
+export type CommunityFetchOutcome =
+  | "ok"
+  | "not_modified"
+  | "access_denied"
+  | "rate_limited"
+  | "http_5xx"
+  | "http_other"
+  | "timeout"
+  | "transport_error"
+  | "body_read_error"
+  | "content_length_invalid"
+  | "content_length_oversize"
+  | "body_oversize"
+  | "json_invalid"
+  | "schema_invalid"
+  | "stale_snapshot";
+
+export function logCommunityFetchOutcome(
+  outcome: CommunityFetchOutcome,
+  environment: "staging",
+): void {
+  const record = { event: "community_fetch_outcome" as const, environment, outcome };
+  try {
+    if (outcome === "ok" || outcome === "not_modified") console.info(record);
+    else console.warn(record);
+  } catch {
+    // Diagnostics must not alter the request gate, retry classification, or scheduled lanes.
+  }
+}

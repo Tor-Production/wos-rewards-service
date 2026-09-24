@@ -26,8 +26,20 @@ export type CommunityFetchResult =
   | { readonly kind: "not_modified" }
   | { readonly kind: "access_denied" }
   | { readonly kind: "rate_limited"; readonly retryAfterSeconds: number | null }
-  | { readonly kind: "transient_failure" }
-  | { readonly kind: "invalid_payload" }
+  | {
+      readonly kind: "transient_failure";
+      readonly reason:
+        "http_5xx" | "http_other" | "timeout" | "transport_error" | "body_read_error";
+    }
+  | {
+      readonly kind: "invalid_payload";
+      readonly reason:
+        | "content_length_invalid"
+        | "content_length_oversize"
+        | "body_oversize"
+        | "json_invalid"
+        | "schema_invalid";
+    }
   | {
       readonly kind: "ok";
       readonly etag: string | null;
@@ -119,6 +131,7 @@ export async function fetchCommunityJson(
 ): Promise<CommunityFetchResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+  let readingBody = false;
   try {
     const response = await fetcher(config.endpoint, {
       method: "GET",
@@ -133,24 +146,28 @@ export async function fetchCommunityJson(
         kind: "rate_limited",
         retryAfterSeconds: retryAfter(response.headers.get("retry-after"), now.getTime()),
       };
-    if (!response.ok) return { kind: "transient_failure" };
+    if (!response.ok)
+      return {
+        kind: "transient_failure",
+        reason: response.status >= 500 ? "http_5xx" : "http_other",
+      };
     const length = response.headers.get("content-length");
-    if (
-      length !== null &&
-      (!/^\d+$/.test(length) || Number(length) > COMMUNITY_JSON_MAX_BODY_BYTES)
-    )
-      return { kind: "invalid_payload" };
+    if (length !== null && !/^\d+$/.test(length))
+      return { kind: "invalid_payload", reason: "content_length_invalid" };
+    if (length !== null && Number(length) > COMMUNITY_JSON_MAX_BODY_BYTES)
+      return { kind: "invalid_payload", reason: "content_length_oversize" };
+    readingBody = true;
     const body = await readBoundedBody(response, COMMUNITY_JSON_MAX_BODY_BYTES);
-    if (body === null) return { kind: "invalid_payload" };
+    if (body === null) return { kind: "invalid_payload", reason: "body_oversize" };
     let parsed: unknown;
     try {
       parsed = JSON.parse(new TextDecoder().decode(body));
     } catch {
-      return { kind: "invalid_payload" };
+      return { kind: "invalid_payload", reason: "json_invalid" };
     }
     const candidates = parseCommunityJson(parsed);
     return candidates === null
-      ? { kind: "invalid_payload" }
+      ? { kind: "invalid_payload", reason: "schema_invalid" }
       : {
           kind: "ok",
           etag: response.headers.get("etag"),
@@ -158,7 +175,14 @@ export async function fetchCommunityJson(
           candidates,
         };
   } catch {
-    return { kind: "transient_failure" };
+    return {
+      kind: "transient_failure",
+      reason: controller.signal.aborted
+        ? "timeout"
+        : readingBody
+          ? "body_read_error"
+          : "transport_error",
+    };
   } finally {
     clearTimeout(timer);
   }
