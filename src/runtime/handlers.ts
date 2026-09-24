@@ -6,6 +6,7 @@ import {
   type DiscordTransport,
 } from "../discord/delivery";
 import { expandPage } from "../operations/distribution";
+import { runCommunityJsonSource } from "../discovery/community-json-runtime";
 import { recover } from "../operations/recovery";
 import { summaryPage } from "../operations/summary";
 import { dispatchOutbox } from "../outbox/dispatcher";
@@ -27,7 +28,12 @@ interface ScheduledLaneDefinition {
 
 export async function scheduledWork(
   env: Env,
-  options: { now?: () => Date; transport?: DiscordTransport; fetcher?: DiscordFetch } = {},
+  options: {
+    now?: () => Date;
+    transport?: DiscordTransport;
+    fetcher?: DiscordFetch;
+    communityFetcher?: typeof fetch;
+  } = {},
 ): Promise<void> {
   const config = loadConfig(env);
   const clock = options.now ?? (() => new Date());
@@ -67,6 +73,18 @@ export async function scheduledWork(
       // Durable claims/cursors recover next tick. Never log raw SQL, payloads, or exceptions.
       logScheduledLaneFailure(lane, limit, config.environment);
     }
+  try {
+    // This source has a separate bounded budget and cannot prevent the established lanes.
+    await runCommunityJsonSource(
+      budgetDatabase(env.STAGING_DB, 12),
+      config,
+      clock(),
+      options.communityFetcher,
+      clock,
+    );
+  } catch {
+    logScheduledLaneFailure("community", 12, config.environment);
+  }
 }
 
 export async function queueWork(

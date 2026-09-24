@@ -41,6 +41,7 @@ through Wrangler vars (non-secret) and Wrangler secrets (secret).
 | `OUTBOX_DISPATCH_MAX_ATTEMPTS` | outbox dispatcher | attempts before an outbox row is marked `dead`; Phase 3 accepts 1–5 to retain the bounded marking/query proof |
 | `OUTPUT_DISPATCH_MAX_ATTEMPTS` | output dispatcher | send attempts before a delivery row is alerted |
 | `CODE_DISCOVERY_ENABLED` | companion and Worker Follow intake, independently | defaults to `false` when absent; accepts exact boolean/boolean string; all checked-in deployment values and examples remain `false`; enabling requires staging/mock and the complete tuple below |
+| `COMMUNITY_JSON_SOURCE_ENABLED` | Worker community JSON scheduled lane | defaults to `false`; independent of the Follow tuple, accepts exact boolean/boolean string, and may be true only in staging/mock. Checked-in deployment leaves it disabled; Task 23 adds no activation |
 | `DISCORD_CODE_FEED_CHANNEL_ID` | companion and Worker Follow intake | destination feed in `DISCORD_GUILD_ID`; non-placeholder 17–20 digit snowflake, distinct from registration/admin channels |
 | `DISCORD_CODE_FOLLOWER_WEBHOOK_ID` | companion and Worker Follow intake | one exact follower webhook; its type and relationship must be verified before live activation |
 | `DISCORD_CODE_SOURCE_GUILD_ID`, `DISCORD_CODE_SOURCE_CHANNEL_ID` | companion and Worker Follow intake | exact canonical source guild/channel; non-placeholder 17–20 digit snowflakes; not inferred from names |
