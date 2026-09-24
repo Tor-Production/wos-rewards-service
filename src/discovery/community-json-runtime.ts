@@ -259,6 +259,14 @@ async function acceptNew(
     maxLength: config.discordMessageMaxLength,
     maxChunks: config.summaryMaxChunks,
   });
+  // A deterministic operation ID may already belong to Follow or manual intake.
+  // Only this acceptance's community-owned operation may receive a player snapshot/reference.
+  const acceptedOperation = `EXISTS(SELECT 1 FROM operations o
+    JOIN gift_codes g ON g.code=o.trigger_ref
+    WHERE o.operation_id=?4 AND o.trigger_ref=?3 AND o.snapshot_at=?2
+      AND g.source='${COMMUNITY_JSON_SOURCE}' AND g.first_seen_event_id=?5
+      AND EXISTS(SELECT 1 FROM community_json_code_observations c
+        WHERE c.source_id='${COMMUNITY_JSON_SOURCE}' AND c.code=?3 AND c.acceptance_id=?1))`;
   const statements: D1PreparedStatement[] = [
     db
       .prepare(
@@ -307,17 +315,17 @@ async function acceptNew(
         .prepare(
           `INSERT INTO operation_players_snapshot(operation_id,player_id,display_name)
       SELECT ?4,p.player_id,p.display_name FROM players p WHERE ${owned}
-      AND EXISTS(SELECT 1 FROM operations WHERE operation_id=?4)
+      AND ${acceptedOperation}
       ORDER BY p.player_id`,
         )
-        .bind(token, stamp, change.code, operationId),
+        .bind(token, stamp, change.code, operationId, marker),
       db
         .prepare(
           `UPDATE community_json_code_observations SET operation_id=?4
       WHERE source_id='${COMMUNITY_JSON_SOURCE}' AND code=?3 AND acceptance_id=?1
-      AND ${owned} AND EXISTS(SELECT 1 FROM operations WHERE operation_id=?4)`,
+      AND ${owned} AND ${acceptedOperation}`,
         )
-        .bind(token, stamp, change.code, operationId),
+        .bind(token, stamp, change.code, operationId, marker),
     );
   statements.push(release(db, token, stamp));
   await db.batch(statements);

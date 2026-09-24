@@ -2,9 +2,11 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config";
 import { runCommunityJsonSource } from "../src/discovery/community-json-runtime";
-import { expandPage } from "../src/operations/distribution";
+import type { ManualCodeCommandEvent } from "../src/manual-code/types";
+import { expandPage, openDistribution } from "../src/operations/distribution";
 import { scheduledWork } from "../src/runtime/handlers";
-import { content, discoveryEnv, followEvent, sendDiscovery } from "./support/discovery";
+import { content, discoveryEnv, followEvent, followId, sendDiscovery } from "./support/discovery";
+import { seedPlayer } from "./support/fixtures";
 
 const db = env.STAGING_DB;
 const origin = Date.parse("2026-09-22T00:00:00.000Z");
@@ -39,6 +41,12 @@ beforeEach(async () => {
   await db.prepare("DROP TRIGGER IF EXISTS synthetic_community_operation_failure").run();
   await db.prepare("DELETE FROM discovered_code_events WHERE canonical_event_id IS NOT NULL").run();
   for (const table of [
+    "terminal_receipts",
+    "terminal_observations",
+    "operation_late_results",
+    "summary_item_snapshot",
+    "summary_chunk_layout",
+    "discord_output_deliveries",
     "outbox_jobs",
     "operation_items",
     "operation_players_snapshot",
@@ -46,10 +54,13 @@ beforeEach(async () => {
     "discovered_code_events",
     "manual_code_commands",
     "redemptions",
+    "processed_events",
     "operations",
     "gift_codes",
     "players",
     "community_json_source_state",
+    "scheduler_progress",
+    "dispatch_control",
   ])
     await db.prepare(`DELETE FROM ${table}`).run();
 });
@@ -145,6 +156,116 @@ describe("disabled community source, real D1 and scheduler budget", () => {
     expect((await code("FollowFirst23"))?.source).toBe("discord-follow-staging");
     expect((await observation("FollowFirst23"))?.source_active).toBe(0);
   });
+
+  for (const source of ["follow", "manual"] as const)
+    for (const populated of [true, false])
+      it(`${source}-first ${populated ? "populated" : "empty"} membership stays frozen after a late join and duplicate feed sighting`, async () => {
+        const duplicate = `A${source}${populated ? "Pop" : "Empty"}23`;
+        const later = `Z${source}${populated ? "Pop" : "Empty"}23`;
+        const firstPlayer = "9100000000000000001";
+        const latePlayer = "9100000000000000002";
+        const runtime = {
+          ...env,
+          COMMUNITY_JSON_SOURCE_ENABLED: true,
+          DISCORD_DELIVERY_ENABLED: false,
+        } as unknown as Env;
+        let requests = 0;
+        const fetcher = async () =>
+          new Response(JSON.stringify(feed(++requests === 1 ? [] : [duplicate, later])));
+        await scheduledWork(runtime, { now: () => at(0), communityFetcher: fetcher });
+        if (populated) await seedPlayer(db, firstPlayer, "1", "Original", at(1));
+
+        if (source === "follow") {
+          const event = followEvent({ content: content(duplicate) });
+          expect(await (await sendDiscovery(event)).json()).toEqual({ status: "accepted" });
+        } else {
+          const command: ManualCodeCommandEvent = {
+            event_id: followId(),
+            guild_id: env.DISCORD_GUILD_ID,
+            channel_id: env.DISCORD_MVP_ADMIN_CHANNEL_ID,
+            author_id: "1000000000000000011",
+            author_is_bot: false,
+            author_is_system: false,
+            webhook_id: null,
+            application_id: null,
+            code: duplicate,
+            created_at: at(1).toISOString(),
+          };
+          expect(await openDistribution(db, config(), duplicate, at(1), command)).toEqual({
+            kind: "accepted",
+            operationId: expect.any(String),
+          });
+        }
+
+        const original = await db
+          .prepare(
+            `SELECT operation_id,trigger_kind,trigger_ref,snapshot_at,expected_count,
+              deadline_at,created_at,summary_context FROM operations WHERE trigger_ref=?1`,
+          )
+          .bind(duplicate)
+          .first<Record<string, unknown>>();
+        expect(original?.expected_count).toBe(populated ? 1 : 0);
+        const originalMembers = (
+          await db
+            .prepare(
+              "SELECT player_id,display_name FROM operation_players_snapshot WHERE operation_id=?1 ORDER BY player_id",
+            )
+            .bind(original?.operation_id)
+            .all()
+        ).results;
+        expect(originalMembers).toHaveLength(populated ? 1 : 0);
+        await seedPlayer(db, latePlayer, "1", "Late", at(2));
+
+        // The real scheduled wrapper enforces the 12-statement source budget on each tick.
+        for (let i = 0; i < 4; i++)
+          await scheduledWork(runtime, { now: () => at(30), communityFetcher: fetcher });
+
+        expect(requests).toBe(2);
+        expect((await state())?.pending_snapshot_json).toBeNull();
+        expect(await observation(duplicate)).toMatchObject({
+          baseline: 0,
+          source_active: 1,
+          operation_id: null,
+        });
+        expect((await code(duplicate))?.source).toBe(
+          source === "follow" ? "discord-follow-staging" : "manual-staging",
+        );
+        expect(
+          await db
+            .prepare(
+              `SELECT operation_id,trigger_kind,trigger_ref,snapshot_at,expected_count,
+                deadline_at,created_at,summary_context FROM operations WHERE trigger_ref=?1`,
+            )
+            .bind(duplicate)
+            .first(),
+        ).toEqual(original);
+        expect(
+          (
+            await db
+              .prepare(
+                "SELECT player_id,display_name FROM operation_players_snapshot WHERE operation_id=?1 ORDER BY player_id",
+              )
+              .bind(original?.operation_id)
+              .all()
+          ).results,
+        ).toEqual(originalMembers);
+        expect((await observation(later))?.operation_id).toEqual(expect.any(String));
+        const newOperation = await db
+          .prepare("SELECT operation_id,expected_count FROM operations WHERE trigger_ref=?1")
+          .bind(later)
+          .first<{ operation_id: string; expected_count: number }>();
+        expect(newOperation?.expected_count).toBe(populated ? 2 : 1);
+        expect(
+          (
+            await db
+              .prepare(
+                "SELECT player_id FROM operation_players_snapshot WHERE operation_id=?1 ORDER BY player_id",
+              )
+              .bind(newOperation?.operation_id)
+              .all<{ player_id: string }>()
+          ).results.map((row) => row.player_id),
+        ).toEqual(populated ? [firstPlayer, latePlayer] : [latePlayer]);
+      });
 
   it("reactivates a withdrawn community-first code when Follow later accepts the same code", async () => {
     await tick(0, []);
