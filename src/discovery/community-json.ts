@@ -135,10 +135,13 @@ export async function fetchCommunityJson(
   try {
     const response = await fetcher(config.endpoint, {
       method: "GET",
-      redirect: "error",
+      // Workerd supports manual redirects; reject the response below without following Location.
+      redirect: "manual",
       headers: previousEtag ? { "if-none-match": previousEtag } : {},
       signal: controller.signal,
     });
+    if (response.status >= 300 && response.status < 400 && response.status !== 304)
+      return { kind: "transient_failure", reason: "http_other" };
     if (response.status === 304) return { kind: "not_modified" };
     if (response.status === 401 || response.status === 403) return { kind: "access_denied" };
     if (response.status === 429)

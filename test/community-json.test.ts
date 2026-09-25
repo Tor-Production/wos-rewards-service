@@ -74,6 +74,28 @@ describe("community JSON source", () => {
     ).toEqual({ kind: "invalid_payload", reason: "content_length_oversize" });
   });
 
+  it("uses native Worker fetch and never follows a redirect", async () => {
+    const config = {
+      endpoint: COMMUNITY_JSON_ENDPOINT,
+      timeoutMs: 1_000,
+      minPollSeconds: 1800,
+    } as const;
+    await fetch("https://task24-fixture.invalid/reset");
+
+    const result = await fetchCommunityJson(config, '"native-ok"');
+    expect(result).toMatchObject({
+      kind: "ok",
+      candidates: [{ code: "Synthetic_23", sourceStatus: "active" }],
+    });
+
+    expect(await fetchCommunityJson(config, '"native-redirect"')).toEqual({
+      kind: "transient_failure",
+      reason: "http_other",
+    });
+    const metrics = await fetch("https://task24-fixture.invalid/metrics");
+    expect(await metrics.text()).toBe("0");
+  });
+
   it("cancels a lengthless oversized stream before consuming the whole response", async () => {
     let pulls = 0;
     let cancelled = false;
