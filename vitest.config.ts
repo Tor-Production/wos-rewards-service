@@ -9,6 +9,13 @@ export default defineConfig(async () => {
   // The path is relative to the working directory, which is the repository root when
   // `npm test` runs — the same assumption `wrangler.configPath` below already makes.
   const migrations = await readD1Migrations("./migrations");
+  let redirectTargetCalls = 0;
+  const nativeFeed = JSON.stringify({
+    maintainedBy: "synthetic fixture",
+    source: "synthetic fixture",
+    updatedAt: "2026-09-21T00:00:00Z",
+    codes: [{ code: "Synthetic_23", status: "active", firstSeenAt: "2026-09-20T00:00:00Z" }],
+  });
 
   return {
     plugins: [
@@ -40,7 +47,29 @@ export default defineConfig(async () => {
             "PHASE5_DISPATCH_DB",
             "MVP_UPGRADE_DB",
           ],
-          outboundService: () => {
+          outboundService: (request) => {
+            if (request.url === "https://task24-fixture.invalid/reset") {
+              redirectTargetCalls = 0;
+              return new Response(null, { status: 204 });
+            }
+            if (request.url === "https://task24-fixture.invalid/metrics")
+              return new Response(String(redirectTargetCalls));
+            if (request.url === "https://task24-redirect.invalid/second") {
+              redirectTargetCalls++;
+              return new Response(nativeFeed);
+            }
+            if (
+              request.url ===
+              "https://www.whiteoutsurvival-community.com/tools/data/gift-codes-wosc.json"
+            ) {
+              const fixture = request.headers.get("if-none-match");
+              if (fixture === '"native-ok"') return new Response(nativeFeed);
+              if (fixture === '"native-redirect"')
+                return new Response(null, {
+                  status: 302,
+                  headers: { location: "https://task24-redirect.invalid/second" },
+                });
+            }
             throw new Error("unmatched outbound network request prohibited");
           },
           // Test-only binding, declared here and never in `wrangler.jsonc`, so no deployed
