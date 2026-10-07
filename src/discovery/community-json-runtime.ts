@@ -11,7 +11,9 @@ const owned = `EXISTS(SELECT 1 FROM community_json_source_state s
 const independentlyEligible = `EXISTS(SELECT 1 FROM discovered_code_events d
     WHERE d.code=?3 AND d.status IN ('accepted','duplicate_code'))
   OR EXISTS(SELECT 1 FROM manual_code_commands m
-    WHERE m.code=?3 AND m.status IN ('accepted','duplicate_code'))`;
+    WHERE m.code=?3 AND m.status IN ('accepted','duplicate_code'))
+  OR EXISTS(SELECT 1 FROM rss_code_observations r
+    WHERE r.code=?3 AND r.source_active=1)`;
 
 interface SourceState {
   initialized: number;

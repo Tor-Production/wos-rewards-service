@@ -133,6 +133,7 @@ describe("loadConfig accepts the intended staging configuration", () => {
       codeDiscoveryEnabled: false,
       followSource: null,
       communityJsonSource: null,
+      rssSource: null,
       logLevel: "info",
       discordGuildId: env.DISCORD_GUILD_ID,
       discordRegistrationChannelId: env.DISCORD_REGISTRATION_CHANNEL_ID,
@@ -265,6 +266,24 @@ describe("loadConfig rejects unsafe environments", () => {
         DISCORD_CODE_SOURCE_CHANNEL_ID: "100000000000000009",
       }).communityJsonSource,
     ).not.toBeNull();
+  });
+
+  it("keeps RSS discovery independently disabled and staging/mock only", () => {
+    expect(loadConfig(SAFE_ENV).rssSource).toBeNull();
+    expect(loadConfig({ ...SAFE_ENV, RSS_SOURCE_ENABLED: false }).rssSource).toBeNull();
+    expect(loadConfig({ ...SAFE_ENV, RSS_SOURCE_ENABLED: true }).rssSource).toMatchObject({
+      endpoint: "https://www.wosgiftcodes.com/rss.php",
+      minPollSeconds: 1800,
+    });
+    expect(() => loadConfig({ ...SAFE_ENV, RSS_SOURCE_ENABLED: "on" })).toThrow(
+      "RSS_SOURCE_ENABLED must be true or false",
+    );
+    expect(() =>
+      loadConfig({ ...SAFE_ENV, ENVIRONMENT: "production", RSS_SOURCE_ENABLED: true }),
+    ).toThrow("RSS source requires staging and mock mode");
+    expect(() =>
+      loadConfig({ ...SAFE_ENV, PROVIDER_MODE: "real", RSS_SOURCE_ENABLED: true }),
+    ).toThrow("RSS source requires staging and mock mode");
   });
 
   it("rejects an unknown LOG_LEVEL", () => {
