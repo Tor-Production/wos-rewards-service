@@ -358,6 +358,35 @@ reviewed operator decision. The community lane has a separate 12-statement budge
 existing scheduled lanes. These offline implementation details do not authorize deployment,
 polling, discovery activation, or a game-provider call.
 
+### Task 25 — selected RSS source (disabled)
+
+For Task 25 / [issue #45](https://github.com/Tor-Production/wos-rewards-service/issues/45), the
+maintainer selected the exact HTTPS endpoint `https://wosgiftcodes.com/rss.php` for an offline
+staging/mock adapter. A later bounded no-redirect metadata request to that selected URL failed
+DNS resolution, so no canonical mapping to the `www` host was observed. The implementation uses
+the selected no-`www` URL; the earlier inspection of the `www` host does not establish that the
+selected URL redirects there. This source is not an official Whiteout Survival operator
+authorization and does not establish code validity, freshness, publication or expiry. It does
+not change #20/#21 or authorize a staging poll. `RSS_SOURCE_ENABLED` remains false in checked-in
+configuration.
+
+The previously inspected `www` endpoint returned RSS 2.0 with channel metadata and items containing `title`,
+`link`, opaque `guid`, and `pubDate`. Only a single bounded alphanumeric/underscore/hyphen title
+is treated as a code candidate. The adapter stores a stable hash-derived item ID rather than the
+raw GUID; links are validated as data and never fetched. The first valid snapshot is a baseline
+without historical distribution. Later new items use the existing mock distribution path once
+per code. Missing items are not treated as withdrawals, and no expiry is inferred from `pubDate`.
+
+The implementation accepts only the observed RSS content type and strict field shape, permits no
+redirects or DTD/entity expansion, caps the body at 64 KiB and the feed at 100 items, uses a
+10-second timeout, and reserves a durable 1,800-second minimum request gap before each GET. A
+longer valid `Retry-After` extends the gate. Access denial or invalid retry metadata stops the
+source pending a reviewed reset. Bounded endpoint inspection did not establish readable
+`robots.txt` rules, automated-use terms, a quota, or an expiry contract; those remain unresolved
+before any future activation. The RSS lane has its own 12-statement scheduled budget. These
+implementation details do not authorize deployment, polling, discovery activation, or a
+game-provider call.
+
 ---
 
 ## 8. Explicit prohibition statement
@@ -392,6 +421,7 @@ the supporting contract, before implementation.
 | 2026-09-18 | Task 16: recorded the human maintainer's later explicit acceptance of the exact Task 15 narrow amendment and applied it to §4. Items 1–2 plus the stated offline-slice conditions govern implementation; items 3–4 (as applicable) govern production activation. The broader stage A–D proposal remains pending, and no implementation or live activation was approved. | Human repository maintainer; acceptance recorded by the orchestrator at 2026-09-18T10:34:57Z in [issue #20](https://github.com/Tor-Production/wos-rewards-service/issues/20#issuecomment-5728792918) |
 | 2026-09-19 | Task 18: record narrow offline staging/mock Discord Follow implementation permission and source contract in §7. Live identities/access remain unverified and deployment discovery remains disabled; no game-provider authority changes. | Human repository maintainer; [issue #31](https://github.com/Tor-Production/wos-rewards-service/issues/31) and executor instruction |
 | 2026-09-21 | Recorded the maintainer-supplied CS response dated 2026-09-19 (§18): official support unable to provide API/integration information; neither approval nor rejection. Missing authorization/contract still block implementation. Corrected §15's obsolete repeat-amendment decision wording; policy and Task 12 observations unchanged. | Maintainer requested evidence/status update; no policy, provider or activation approval |
+| 2026-10-08 | Task 25 / #45: recorded the maintainer-selected RSS endpoint and its observed, fail-closed source contract in §7; implementation remains staging/mock-only and disabled. No activation or game-provider permission changes. | Human repository maintainer; executor instruction and [issue #45](https://github.com/Tor-Production/wos-rewards-service/issues/45) |
 
 ---
 

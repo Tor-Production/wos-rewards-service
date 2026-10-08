@@ -240,8 +240,38 @@ When no other accepted source remains, it disables the community-first global co
 unexpanded community fanout, and terminalizes only mutable pending items for that code and
 their exact jobs. In-flight, held, terminal and frozen state is untouched. Reappearance
 restores source eligibility but does not create a second distribution operation.
-`0007` was applied to staging during Task 24's bounded smoke. The source is disabled again;
-there are no community observations or operations from that attempt.
+`0007` was applied to staging during Task 24. The first fetch did not initialize a baseline; the
+Task 24 bounded JSON-source smoke evidence is documented in [issue #44's follow-up](https://github.com/Tor-Production/wos-rewards-service/issues/44#issuecomment-6018614307).
+PR #49 records an offline fix and states that no deployment or live request occurred.
+
+### RSS source state and observations (migration 0008; disabled)
+
+`rss_source_state` stores the selected RSS source's initialization and stop state, durable
+minimum request time, pending validated snapshot, claim lease, last success and update times.
+The checked-in `RSS_SOURCE_ENABLED` flag remains false. Migration `0008` has not been applied to
+staging or production.
+
+`rss_item_observations` records each feed item using a stable UUID derived from the opaque RSS
+GUID, the strict code token parsed from its title, source `pubDate`, first local observation and
+whether the item came from the baseline. `rss_code_observations` stores one immutable first
+observation per source/code, its first item and source timestamp, baseline flag, active-source
+eligibility, and optional distribution-operation/acceptance references. Triggers protect the
+original item and code provenance. The raw feed and raw GUID are not persisted; test fixtures are
+synthetic.
+
+The first valid snapshot records baseline observations without creating operations. Later new
+items are claim-fenced and reconciled one per scheduled tick through the existing `gift_codes`,
+operation and player-snapshot path. Existing codes deduplicate across sources and do not create a
+second operation. Feed omission is not treated as withdrawal: this feed has no verified expiry
+signal, so disappearance and reappearance do not erase provenance or replay a distribution.
+RSS observations also count as independent source eligibility when the community JSON source
+withdraws a shared code.
+
+The adapter fetches only the exact RSS endpoint, does not follow redirects or item links, accepts
+at most 64 KiB and 100 items, and enforces a ten-second timeout plus a durable 1,800-second
+minimum request gap. A valid longer `Retry-After` extends that gate; access denial or an invalid
+`Retry-After` stops the durable source pending a reviewed reset. The RSS lane has a separate
+12-statement budget. No feed payload is logged or stored.
 
 ### `processed_events` (event-acceptance state machine)
 
