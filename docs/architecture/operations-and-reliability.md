@@ -40,8 +40,9 @@ valid snapshots reconcile one code action per tick. Each request slot is committ
 and cannot occur more often than once per 1,800 seconds, or before a longer server
 `Retry-After` delay. Either source failure is isolated from the 39-statement reservation and the
 established lanes. Both paths are unreachable in checked-in configuration. Task 24's first
-community fetch failed to initialize a baseline; the later bounded smoke and restoration to the
-source-disabled Worker are recorded in [PR #49](https://github.com/Tor-Production/wos-rewards-service/pull/49).
+community fetch failed to initialize a baseline; its bounded smoke evidence is documented in
+[issue #44's follow-up](https://github.com/Tor-Production/wos-rewards-service/issues/44#issuecomment-6018614307).
+PR #49 records an offline fix and states that no deployment or live request occurred.
 
 Queue consumers process at most two messages per invocation, reserving 16 D1 statements
 per message (**32 total**), with at most two mock provider invocations. The DLQ reserves
@@ -336,7 +337,9 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
   schema rejection, and stale source timestamps. No status code, URL, header, body, code,
   exception, or response object is logged. Logging is best effort and never changes the durable
   request gate or retry/stop behavior. These diagnostics cannot identify Task 24's first failed
-  fetch; that attempt predated the signal. The later bounded smoke is recorded in PR #49.
+  fetch; that attempt predated the signal. The Task 24 bounded smoke evidence is recorded in
+  [issue #44's follow-up](https://github.com/Tor-Production/wos-rewards-service/issues/44#issuecomment-6018614307).
+  PR #49 records an offline fix and states that no deployment or live request occurred.
 - **RSS fetch outcomes:** each attempted RSS request emits `event="rss_fetch_outcome"`,
   `environment="staging"`, and an allowlisted outcome. No URL, response body, code, or exception
   text is logged; diagnostics never change the durable request gate or retry/stop behavior.

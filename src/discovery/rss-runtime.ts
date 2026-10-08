@@ -71,12 +71,12 @@ export async function runRssSource(
     .run();
   if (!claim.meta.changes) return;
 
-  const result = await fetchRss(source, fetcher, now);
+  const result = await fetchRss(source, fetcher, clock);
   logRssFetchOutcome(outcome(result), config.environment);
   const retryMillis =
     result.retryAfterSeconds === null
       ? null
-      : now.getTime() + Math.max(minPollSeconds, result.retryAfterSeconds) * 1_000;
+      : clock().getTime() + Math.max(minPollSeconds, result.retryAfterSeconds) * 1_000;
   let nextFetchAt = deadline;
   let invalidRetryDate = false;
   if (retryMillis !== null) {

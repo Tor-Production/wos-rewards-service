@@ -215,6 +215,60 @@ describe("disabled staging/mock RSS source", () => {
     expect(requests).toBe(2);
   });
 
+  it("keeps Retry-After from a failed body and anchors the gate after response receipt", async () => {
+    let responseAt = at(0);
+    await runRssSource(
+      db,
+      config(),
+      at(0),
+      async () => {
+        responseAt = new Date(at(0).getTime() + 20_000);
+        const body = new ReadableStream<Uint8Array>(
+          {
+            start(controller) {
+              controller.error(new Error("synthetic body failure"));
+            },
+          },
+          { highWaterMark: 0 },
+        );
+        return new Response(body, {
+          headers: {
+            "content-type": "application/rss+xml",
+            "retry-after": "7200",
+          },
+        });
+      },
+      () => responseAt,
+    );
+    expect(await state()).toMatchObject({
+      stopped: 0,
+      next_fetch_at: new Date(responseAt.getTime() + 7_200_000).toISOString(),
+    });
+  });
+
+  it("stops after invalid Retry-After even when the response body then fails", async () => {
+    const body = new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          controller.error(new Error("synthetic body failure"));
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    await rssTick(
+      0,
+      [],
+      async () =>
+        new Response(body, {
+          headers: {
+            "content-type": "application/rss+xml",
+            "retry-after": "invalid",
+          },
+        }),
+    );
+    expect(await state()).toMatchObject({ stopped: 1, next_fetch_at: at(30).toISOString() });
+  });
+
   it("leaves existing codes untouched after malformed network payloads", async () => {
     await rssTick(0, []);
     await rssTick(1, []);

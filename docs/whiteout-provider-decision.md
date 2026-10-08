@@ -361,13 +361,16 @@ polling, discovery activation, or a game-provider call.
 ### Task 25 — selected RSS source (disabled)
 
 For Task 25 / [issue #45](https://github.com/Tor-Production/wos-rewards-service/issues/45), the
-maintainer selected the exact HTTPS endpoint `https://www.wosgiftcodes.com/rss.php` for an
-offline staging/mock adapter. This source is not an official Whiteout Survival operator
+maintainer selected the exact HTTPS endpoint `https://wosgiftcodes.com/rss.php` for an offline
+staging/mock adapter. A later bounded no-redirect metadata request to that selected URL failed
+DNS resolution, so no canonical mapping to the `www` host was observed. The implementation uses
+the selected no-`www` URL; the earlier inspection of the `www` host does not establish that the
+selected URL redirects there. This source is not an official Whiteout Survival operator
 authorization and does not establish code validity, freshness, publication or expiry. It does
 not change #20/#21 or authorize a staging poll. `RSS_SOURCE_ENABLED` remains false in checked-in
 configuration.
 
-The inspected endpoint returned RSS 2.0 with channel metadata and items containing `title`,
+The previously inspected `www` endpoint returned RSS 2.0 with channel metadata and items containing `title`,
 `link`, opaque `guid`, and `pubDate`. Only a single bounded alphanumeric/underscore/hyphen title
 is treated as a code candidate. The adapter stores a stable hash-derived item ID rather than the
 raw GUID; links are validated as data and never fetched. The first valid snapshot is a baseline

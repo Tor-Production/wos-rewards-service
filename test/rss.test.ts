@@ -76,6 +76,30 @@ describe("RSS source contract", () => {
     expect(await parseRssFeed("x".repeat(RSS_MAX_BODY_BYTES + 1))).toBeNull();
   });
 
+  it("rejects inherited-property entity names and accepts predefined and numeric references", async () => {
+    const valid = rssFeed([{ code: "SYNTH23", guid: "synthetic-item-a" }]);
+    for (const name of ["constructor", "toString", "__proto__"]) {
+      expect(await parseRssFeed(valid.replace("synthetic-item-a", `&${name};`))).toBeNull();
+      expect(
+        await parseRssFeed(
+          valid.replace(
+            'href="https://synthetic.invalid/rss.php"',
+            `href="https://synthetic.invalid/rss.php?x=&${name};"`,
+          ),
+        ),
+      ).toBeNull();
+    }
+
+    const predefined = valid
+      .replace("Synthetic fixture only", "A &amp; B &lt; C &gt; D &apos; E &quot; F")
+      .replace(
+        'href="https://synthetic.invalid/rss.php"',
+        'href="https://synthetic.invalid/rss.php?a=1&amp;b=2"',
+      )
+      .replace("synthetic-item-a", "synthetic&#x2D;item&#45;a");
+    expect(await parseRssFeed(predefined)).toHaveLength(1);
+  });
+
   it("uses one exact unauthenticated GET and does not follow redirects", async () => {
     let calledUrl = "";
     let calledInit: RequestInit | undefined;
@@ -129,7 +153,7 @@ describe("RSS source contract", () => {
       await fetchRss(
         config,
         async () => new Response(null, { status: 503, headers: { "retry-after": "7200" } }),
-        new Date("2026-10-08T00:00:00Z"),
+        () => new Date("2026-10-08T00:00:00Z"),
       ),
     ).toMatchObject({ kind: "transient_failure", reason: "http_5xx", retryAfterSeconds: 7_200 });
     expect(
@@ -150,6 +174,104 @@ describe("RSS source contract", () => {
         async () => new Response("not xml", { headers: { "content-type": "application/rss+xml" } }),
       ),
     ).toMatchObject({ kind: "invalid_payload", reason: "schema_invalid" });
+  });
+
+  it("retains Retry-After metadata when the body stream fails or times out", async () => {
+    const receivedAt = new Date("2026-10-08T00:00:00Z");
+    const config = { endpoint: RSS_ENDPOINT, timeoutMs: 1_000, minPollSeconds: 1_800 } as const;
+    const failedBody = () =>
+      new ReadableStream<Uint8Array>(
+        {
+          start(controller) {
+            controller.error(new Error("synthetic body failure"));
+          },
+        },
+        { highWaterMark: 0 },
+      );
+    const validRetry = await fetchRss(
+      config,
+      async () =>
+        new Response(failedBody(), {
+          headers: {
+            "content-type": "application/rss+xml",
+            "retry-after": "7200",
+          },
+        }),
+      () => receivedAt,
+    );
+    expect(validRetry).toMatchObject({
+      kind: "transient_failure",
+      reason: "body_read_error",
+      retryAfterSeconds: 7_200,
+      retryAfterInvalid: false,
+    });
+
+    const invalidRetry = await fetchRss(
+      config,
+      async () =>
+        new Response(failedBody(), {
+          headers: {
+            "content-type": "application/rss+xml",
+            "retry-after": "not-a-date",
+          },
+        }),
+      () => receivedAt,
+    );
+    expect(invalidRetry).toMatchObject({
+      kind: "transient_failure",
+      reason: "body_read_error",
+      retryAfterSeconds: null,
+      retryAfterInvalid: true,
+    });
+
+    const timeoutConfig = { ...config, timeoutMs: 25 };
+    const timedOut = await fetchRss(
+      timeoutConfig,
+      async (_input, init) => {
+        const body = new ReadableStream<Uint8Array>(
+          {
+            start(controller) {
+              init?.signal?.addEventListener(
+                "abort",
+                () => controller.error(new DOMException("Synthetic timeout", "AbortError")),
+                { once: true },
+              );
+            },
+          },
+          { highWaterMark: 0 },
+        );
+        return new Response(body, {
+          headers: {
+            "content-type": "application/rss+xml",
+            "retry-after": "7200",
+          },
+        });
+      },
+      () => receivedAt,
+    );
+    expect(timedOut).toMatchObject({
+      kind: "transient_failure",
+      reason: "timeout",
+      retryAfterSeconds: 7_200,
+      retryAfterInvalid: false,
+    });
+  });
+
+  it("measures HTTP-date Retry-After from response receipt", async () => {
+    const config = { endpoint: RSS_ENDPOINT, timeoutMs: 1_000, minPollSeconds: 1_800 } as const;
+    let responseAt = new Date("2026-10-08T00:00:00Z");
+    const result = await fetchRss(
+      config,
+      async () => {
+        responseAt = new Date("2026-10-08T00:01:00Z");
+        return new Response(null, {
+          status: 503,
+          headers: { "retry-after": "Thu, 08 Oct 2026 02:00:00 GMT" },
+        });
+      },
+      () => responseAt,
+    );
+    expect(result).toMatchObject({ kind: "transient_failure", retryAfterSeconds: 7_140 });
   });
 
   it("rejects oversized streams before consuming the whole response", async () => {

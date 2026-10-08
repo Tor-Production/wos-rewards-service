@@ -272,7 +272,7 @@ describe("loadConfig rejects unsafe environments", () => {
     expect(loadConfig(SAFE_ENV).rssSource).toBeNull();
     expect(loadConfig({ ...SAFE_ENV, RSS_SOURCE_ENABLED: false }).rssSource).toBeNull();
     expect(loadConfig({ ...SAFE_ENV, RSS_SOURCE_ENABLED: true }).rssSource).toMatchObject({
-      endpoint: "https://www.wosgiftcodes.com/rss.php",
+      endpoint: "https://wosgiftcodes.com/rss.php",
       minPollSeconds: 1800,
     });
     expect(() => loadConfig({ ...SAFE_ENV, RSS_SOURCE_ENABLED: "on" })).toThrow(

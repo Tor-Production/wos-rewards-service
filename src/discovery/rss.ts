@@ -2,12 +2,20 @@ import { GIFT_CODE_MAX_LENGTH } from "../limits";
 import { deterministicUuid } from "../ingest/identity";
 
 /** This source is the maintainer-selected public RSS endpoint; item links are never fetched. */
-export const RSS_ENDPOINT = "https://www.wosgiftcodes.com/rss.php";
+export const RSS_ENDPOINT = "https://wosgiftcodes.com/rss.php";
 export const RSS_SOURCE = "wosgiftcodes-rss-staging";
 export const RSS_MAX_BODY_BYTES = 64 * 1024;
 export const RSS_MAX_ITEMS = 100;
 export const RSS_TIMEOUT_MS = 10_000;
 export const RSS_MIN_POLL_SECONDS = 30 * 60;
+
+const XML_NAMED_ENTITIES: Readonly<Record<string, string>> = Object.freeze({
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  apos: "'",
+  quot: '"',
+});
 
 export interface RssSourceConfig {
   readonly endpoint: typeof RSS_ENDPOINT;
@@ -25,6 +33,11 @@ export interface RssCodeCandidate {
 type RetryInfo = {
   readonly retryAfterSeconds: number | null;
   readonly retryAfterInvalid: boolean;
+};
+
+type ParsedRetryAfter = {
+  readonly seconds: number | null;
+  readonly invalid: boolean;
 };
 
 export type RssFetchResult =
@@ -69,11 +82,12 @@ export function loadRssSource(
 export async function fetchRss(
   config: RssSourceConfig,
   fetcher: typeof fetch = fetch,
-  now: Date = new Date(),
+  clock: () => Date = () => new Date(),
 ): Promise<RssFetchResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.timeoutMs);
   let readingBody = false;
+  let retry: ParsedRetryAfter = { seconds: null, invalid: false };
   try {
     const response = await fetcher(config.endpoint, {
       method: "GET",
@@ -81,7 +95,9 @@ export async function fetchRss(
       headers: { accept: "application/rss+xml" },
       signal: controller.signal,
     });
-    const retry = readRetryAfter(response.headers.get("retry-after"), now.getTime());
+    // Use response receipt as the lower bound for Retry-After date headers. The runtime
+    // applies any delay from its later post-body clock, so slow bodies can only extend it.
+    retry = readRetryAfter(response.headers.get("retry-after"), clock().getTime());
     const withRetry = <const T extends object>(result: T): T & RetryInfo => ({
       ...result,
       retryAfterSeconds: retry.seconds,
@@ -133,8 +149,8 @@ export async function fetchRss(
         : readingBody
           ? "body_read_error"
           : "transport_error",
-      retryAfterSeconds: null,
-      retryAfterInvalid: false,
+      retryAfterSeconds: retry.seconds,
+      retryAfterInvalid: retry.invalid,
     };
   } finally {
     clearTimeout(timer);
@@ -368,8 +384,9 @@ function decodeEntities(value: string): string | null {
     const end = value.indexOf(";", index + 1);
     if (end < 0 || end - index > 12) return null;
     const entity = value.slice(index + 1, end);
-    const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", apos: "'", quot: '"' };
-    let replacement = named[entity];
+    let replacement = Object.hasOwn(XML_NAMED_ENTITIES, entity)
+      ? XML_NAMED_ENTITIES[entity]
+      : undefined;
     if (replacement === undefined) {
       const numeric = /^#(?:x([\da-f]{1,6})|(\d{1,7}))$/i.exec(entity);
       if (!numeric) return null;
@@ -483,10 +500,7 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<Ui
   return body;
 }
 
-function readRetryAfter(
-  value: string | null,
-  now: number,
-): { seconds: number | null; invalid: boolean } {
+function readRetryAfter(value: string | null, now: number): ParsedRetryAfter {
   if (value === null) return { seconds: null, invalid: false };
   if (/^\d+$/.test(value)) {
     const seconds = Number(value);

@@ -241,8 +241,8 @@ unexpanded community fanout, and terminalizes only mutable pending items for tha
 their exact jobs. In-flight, held, terminal and frozen state is untouched. Reappearance
 restores source eligibility but does not create a second distribution operation.
 `0007` was applied to staging during Task 24. The first fetch did not initialize a baseline; the
-later bounded JSON-source smoke succeeded before the healthy source-disabled Worker was
-restored, as recorded in [PR #49](https://github.com/Tor-Production/wos-rewards-service/pull/49).
+Task 24 bounded JSON-source smoke evidence is documented in [issue #44's follow-up](https://github.com/Tor-Production/wos-rewards-service/issues/44#issuecomment-6018614307).
+PR #49 records an offline fix and states that no deployment or live request occurred.
 
 ### RSS source state and observations (migration 0008; disabled)
 
