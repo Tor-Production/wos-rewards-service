@@ -9,6 +9,7 @@ export const SCHEDULED_LANES = [
   "summary",
   "delivery",
   "community",
+  "rss",
 ] as const;
 
 export type ScheduledLane = (typeof SCHEDULED_LANES)[number];
@@ -71,5 +72,33 @@ export function logCommunityFetchOutcome(
     else console.warn(record);
   } catch {
     // Diagnostics must not alter the request gate, retry classification, or scheduled lanes.
+  }
+}
+
+/** One closed outcome per attempted RSS request; never accept response or error objects. */
+export type RssFetchOutcome =
+  | "ok"
+  | "access_denied"
+  | "rate_limited"
+  | "http_5xx"
+  | "http_other"
+  | "timeout"
+  | "transport_error"
+  | "body_read_error"
+  | "content_length_invalid"
+  | "content_length_oversize"
+  | "body_oversize"
+  | "content_type_invalid"
+  | "xml_invalid"
+  | "schema_invalid"
+  | "retry_after_invalid";
+
+export function logRssFetchOutcome(outcome: RssFetchOutcome, environment: "staging"): void {
+  const record = { event: "rss_fetch_outcome" as const, environment, outcome };
+  try {
+    if (outcome === "ok") console.info(record);
+    else console.warn(record);
+  } catch {
+    // Diagnostics must not alter the request gate or retry behavior.
   }
 }

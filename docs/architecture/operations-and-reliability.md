@@ -34,13 +34,15 @@ round-robin operation ordering, so expansion and summary do not share one slot.
 | Output | 9 | one ordered chunk, including claim, cooldown, result and completion recovery; zero requests by default, or one through an injected/explicitly enabled staging transport |
 | **Complete scheduled handler** | **39** | at most eight Queue sends and one enabled output request; no provider calls |
 
-The disabled community JSON source runs after these lanes with its own 12-statement
-reservation. Its first valid fetch records a baseline; later valid snapshots reconcile one
-code action per tick. The request slot is committed before HTTP and cannot occur more than
-once per 1,800 seconds, or before a longer server `Retry-After` delay. A community failure
-cannot spend the 39-statement reservation or interrupt the established lanes. This path is
-unreachable in checked-in configuration; Task 24's bounded staging smoke failed to initialize a
-baseline and restored the source-disabled Worker.
+The disabled community JSON source and RSS source run after these lanes, each with its own
+12-statement reservation. The first valid snapshot from either source records a baseline; later
+valid snapshots reconcile one code action per tick. Each request slot is committed before HTTP
+and cannot occur more often than once per 1,800 seconds, or before a longer server
+`Retry-After` delay. Either source failure is isolated from the 39-statement reservation and the
+established lanes. Both paths are unreachable in checked-in configuration. Task 24's first
+community fetch failed to initialize a baseline; its bounded smoke evidence is documented in
+[issue #44's follow-up](https://github.com/Tor-Production/wos-rewards-service/issues/44#issuecomment-6018614307).
+PR #49 records an offline fix and states that no deployment or live request occurred.
 
 Queue consumers process at most two messages per invocation, reserving 16 D1 statements
 per message (**32 total**), with at most two mock provider invocations. The DLQ reserves
@@ -321,7 +323,7 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
 
 - **Scheduled-lane failures:** every caught failure in the one-minute handler emits one
   warning-level structured record with this closed JSON schema:
-  `{"event":"scheduled_lane_failed","lane":"expansion|outbox|recovery|summary|delivery|community","environment":"staging","query_budget":6|8|9|10|12}`.
+  `{"event":"scheduled_lane_failed","lane":"expansion|outbox|recovery|summary|delivery|community|rss","environment":"staging","query_budget":6|8|9|10|12}`.
   The record is constructed at the log boundary from those allowlisted primitive values only;
   it never contains an exception, stack, SQL, payload, request, configuration object,
   identifier, code, raw message, credential, or session data. A throwing log sink is ignored so
@@ -334,8 +336,13 @@ prevent cleanup from removing or re-enabling the evidence. No query above writes
   failure, timeout/transport/body-read failure, declared-length/body limits, malformed JSON,
   schema rejection, and stale source timestamps. No status code, URL, header, body, code,
   exception, or response object is logged. Logging is best effort and never changes the durable
-  request gate or retry/stop behavior. These future diagnostics cannot identify Task 24's prior
-  failed fetch; that attempt predated the signal.
+  request gate or retry/stop behavior. These diagnostics cannot identify Task 24's first failed
+  fetch; that attempt predated the signal. The Task 24 bounded smoke evidence is recorded in
+  [issue #44's follow-up](https://github.com/Tor-Production/wos-rewards-service/issues/44#issuecomment-6018614307).
+  PR #49 records an offline fix and states that no deployment or live request occurred.
+- **RSS fetch outcomes:** each attempted RSS request emits `event="rss_fetch_outcome"`,
+  `environment="staging"`, and an allowlisted outcome. No URL, response body, code, or exception
+  text is logged; diagnostics never change the durable request gate or retry/stop behavior.
 - **Structured logs** with an explicit field allow-list: `environment`, `operation_id`,
   `operation_type`, `item_key`, `player_id`, `code`, `event_id` (correlation id), `status`,
   `reason_code`, `attempts`, `queue`, `delivery_id`, `chunk_index`, timings. The Task 09

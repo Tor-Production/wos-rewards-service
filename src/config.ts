@@ -18,6 +18,7 @@ import {
   loadCommunityJsonSource,
   type CommunityJsonSourceConfig,
 } from "./discovery/community-json";
+import { loadRssSource, type RssSourceConfig } from "./discovery/rss";
 
 import { STATE_MAX_DIGITS } from "./limits";
 
@@ -42,6 +43,7 @@ export interface AppConfig {
   readonly codeDiscoveryEnabled: boolean;
   readonly followSource: FollowSourceConfig | null;
   readonly communityJsonSource: CommunityJsonSourceConfig | null;
+  readonly rssSource: RssSourceConfig | null;
   readonly logLevel: LogLevel;
   readonly discordGuildId: string;
   readonly discordRegistrationChannelId: string;
@@ -142,6 +144,7 @@ export function loadConfig(raw: unknown): AppConfig {
   requireDisabled(source, "PRODUCTION_REDEMPTION_ENABLED", issues);
   const followSource = loadFollowSource(source, issues);
   const communityJsonSource = loadCommunityJsonSource(source, issues);
+  const rssSource = loadRssSource(source, issues);
   const discordGuildId = readDigitString(source, "DISCORD_GUILD_ID", 20, issues);
   const discordRegistrationChannelId = readDigitString(
     source,
@@ -272,9 +275,11 @@ export function loadConfig(raw: unknown): AppConfig {
     environment,
     providerMode,
     productionRedemptionEnabled: false,
-    codeDiscoveryEnabled: followSource !== null || communityJsonSource !== null,
+    codeDiscoveryEnabled:
+      followSource !== null || communityJsonSource !== null || rssSource !== null,
     followSource,
     communityJsonSource,
+    rssSource,
     logLevel,
     discordGuildId,
     discordRegistrationChannelId,
