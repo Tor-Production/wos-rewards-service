@@ -362,10 +362,13 @@ polling, discovery activation, or a game-provider call.
 
 For Task 25 / [issue #45](https://github.com/Tor-Production/wos-rewards-service/issues/45), the
 maintainer selected the exact HTTPS endpoint `https://wosgiftcodes.com/rss.php` for an offline
-staging/mock adapter. A later bounded no-redirect metadata request to that selected URL failed
-DNS resolution, so no canonical mapping to the `www` host was observed. The implementation uses
-the selected no-`www` URL; the earlier inspection of the `www` host does not establish that the
-selected URL redirects there. This source is not an official Whiteout Survival operator
+staging/mock adapter. A bounded unauthenticated GET to the selected URL on 2026-10-15 used a
+10-second timeout, a 64 KiB body cap, and manual redirects. It returned HTTP 200 with
+`Content-Type: application/rss+xml`; the application parser accepted the response in memory,
+and no redirect was followed. The response had no `Location` or `Content-Location` header. This
+direct response does not establish a canonical mapping to the `www` host; the earlier inspection
+of that host remains separate. The implementation uses the selected no-`www` URL. This source is
+not an official Whiteout Survival operator
 authorization and does not establish code validity, freshness, publication or expiry. It does
 not change #20/#21 or authorize a staging poll. `RSS_SOURCE_ENABLED` remains false in checked-in
 configuration.
