@@ -215,6 +215,23 @@ describe("disabled staging/mock RSS source", () => {
     expect(requests).toBe(2);
   });
 
+  it.each([
+    ["a future ISO timestamp", at(90).toISOString()],
+    ["a delay beyond the four-digit D1 timestamp range", "315576000000"],
+  ])("durably stops polling after Retry-After contains %s", async (_description, header) => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 429,
+          headers: { "Retry-After": header },
+        }),
+    );
+    await rssTick(0, [], fetcher);
+    expect(await state()).toMatchObject({ stopped: 1, pending_snapshot_json: null });
+    await rssTick(121, [], fetcher);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps Retry-After from a failed body and anchors the gate after response receipt", async () => {
     let responseAt = at(0);
     await runRssSource(

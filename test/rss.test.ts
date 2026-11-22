@@ -257,7 +257,11 @@ describe("RSS source contract", () => {
     });
   });
 
-  it("measures HTTP-date Retry-After from response receipt", async () => {
+  it.each([
+    "Thu, 08 Oct 2026 02:00:00 GMT",
+    "Thursday, 08-Oct-26 02:00:00 GMT",
+    "Thu Oct  8 02:00:00 2026",
+  ])("measures HTTP-date Retry-After from response receipt for %s", async (header) => {
     const config = { endpoint: RSS_ENDPOINT, timeoutMs: 1_000, minPollSeconds: 1_800 } as const;
     let responseAt = new Date("2026-10-08T00:00:00Z");
     const result = await fetchRss(
@@ -266,12 +270,39 @@ describe("RSS source contract", () => {
         responseAt = new Date("2026-10-08T00:01:00Z");
         return new Response(null, {
           status: 503,
-          headers: { "retry-after": "Thu, 08 Oct 2026 02:00:00 GMT" },
+          headers: { "retry-after": header },
         });
       },
       () => responseAt,
     );
     expect(result).toMatchObject({ kind: "transient_failure", retryAfterSeconds: 7_140 });
+  });
+
+  it.each([
+    ["Fri, 08 Oct 2026 02:00:00 GMT", null], // Wrong weekday.
+    ["Tue, 31 Nov 2026 02:00:00 GMT", null], // JavaScript rolls this into December.
+    ["Thu, 08 Oct 2026 02:00:00 UTC", null],
+    ["Sun, 31 Dec 1899 00:00:00 GMT", null],
+    ["Mon, 01 Jan 1900 00:00:00 GMT", 0],
+    ["Monday, 08-Nov-76 00:00:00 GMT", 0], // Beyond the 50-year cutoff, so 1976.
+    [
+      "Wednesday, 08-Jan-76 00:00:00 GMT", // Before the cutoff, so 2076.
+      (Date.parse("2076-01-08T00:00:00Z") - Date.parse("2026-10-08T00:00:00Z")) / 1_000,
+    ],
+    [
+      "Wed, 30 Jun 2027 23:59:60 GMT",
+      (Date.parse("2027-07-01T00:00:00Z") - Date.parse("2026-10-08T00:00:00Z")) / 1_000,
+    ],
+  ] as const)("validates Retry-After calendar semantics for %s", async (header, seconds) => {
+    const result = await fetchRss(
+      { endpoint: RSS_ENDPOINT, timeoutMs: 1_000, minPollSeconds: 1_800 },
+      async () => new Response(null, { status: 429, headers: { "Retry-After": header } }),
+      () => new Date("2026-10-08T00:00:00Z"),
+    );
+    expect(result).toMatchObject({
+      retryAfterSeconds: seconds,
+      retryAfterInvalid: seconds === null,
+    });
   });
 
   it("rejects oversized streams before consuming the whole response", async () => {

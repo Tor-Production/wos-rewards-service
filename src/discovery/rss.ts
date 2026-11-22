@@ -500,6 +500,42 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<Ui
   return body;
 }
 
+// RFC 9110 §5.6.7 accepts IMF-fixdate, RFC 850 and asctime. Convert the two
+// obsolete wire formats to IMF-fixdate, then round-trip to reject JS date normalization.
+function parseHttpDate(value: string, now: number): number {
+  // JavaScript represents the end-of-day leap second at the next midnight.
+  const leapSecond = value.includes("23:59:60");
+  const dateText = leapSecond ? value.replace("23:59:60", "23:59:59") : value;
+  const rfc850 =
+    /^(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday), (\d{2})-([A-Z][a-z]{2})-(\d{2}) (\d{2}:\d{2}:\d{2}) GMT$/.exec(
+      dateText,
+    );
+  let canonical = dateText;
+  if (rfc850) {
+    const cutoff = new Date(now);
+    cutoff.setUTCFullYear(cutoff.getUTCFullYear() + 50);
+    const cutoffYear = cutoff.getUTCFullYear();
+    const year = cutoffYear - ((cutoffYear - Number(rfc850[4])) % 100);
+    const format = (fullYear: number) =>
+      `${rfc850[1]!.slice(0, 3)}, ${rfc850[2]} ${rfc850[3]} ${fullYear} ${rfc850[5]} GMT`;
+    canonical = format(year);
+    // Pick the most recent matching century within the RFC's 50-year future window.
+    if (Date.parse(canonical) + (leapSecond ? 1_000 : 0) > cutoff.getTime()) {
+      canonical = format(year - 100);
+    }
+  } else {
+    const asctime =
+      /^([A-Z][a-z]{2}) ([A-Z][a-z]{2}) ( \d|\d{2}) (\d{2}:\d{2}:\d{2}) (\d{4})$/.exec(dateText);
+    if (asctime) {
+      canonical = `${asctime[1]}, ${asctime[3]!.trim().padStart(2, "0")} ${asctime[2]} ${asctime[5]} ${asctime[4]} GMT`;
+    }
+  }
+  if (canonical.length !== 29) return NaN;
+  const date = new Date(canonical);
+  if (date.getUTCFullYear() < 1900 || date.toUTCString() !== canonical) return NaN;
+  return date.getTime() + (leapSecond ? 1_000 : 0);
+}
+
 function readRetryAfter(value: string | null, now: number): ParsedRetryAfter {
   if (value === null) return { seconds: null, invalid: false };
   if (/^\d+$/.test(value)) {
@@ -508,8 +544,8 @@ function readRetryAfter(value: string | null, now: number): ParsedRetryAfter {
       ? { seconds, invalid: false }
       : { seconds: null, invalid: true };
   }
-  const at = Date.parse(value);
-  return Number.isFinite(at) && at > now
-    ? { seconds: Math.ceil((at - now) / 1_000), invalid: false }
+  const at = parseHttpDate(value, now);
+  return Number.isFinite(at)
+    ? { seconds: Math.max(0, Math.ceil((at - now) / 1_000)), invalid: false }
     : { seconds: null, invalid: true };
 }

@@ -81,8 +81,9 @@ export async function runRssSource(
   let invalidRetryDate = false;
   if (retryMillis !== null) {
     const retryDate = new Date(retryMillis);
-    if (!Number.isFinite(retryDate.getTime())) invalidRetryDate = true;
-    else nextFetchAt = retryDate.toISOString();
+    // D1 compares these UTC timestamps as text. Expanded years do not sort chronologically.
+    if (retryDate.getUTCFullYear() <= 9999) nextFetchAt = retryDate.toISOString();
+    else invalidRetryDate = true;
   }
   const stopped = result.kind === "access_denied" || result.retryAfterInvalid || invalidRetryDate;
   if (result.kind === "ok" && !stopped) {
