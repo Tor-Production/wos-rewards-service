@@ -7,6 +7,7 @@ import {
 } from "../discord/delivery";
 import { expandPage } from "../operations/distribution";
 import { runCommunityJsonSource } from "../discovery/community-json-runtime";
+import { runRssSource } from "../discovery/rss-runtime";
 import { recover } from "../operations/recovery";
 import { summaryPage } from "../operations/summary";
 import { dispatchOutbox } from "../outbox/dispatcher";
@@ -33,6 +34,7 @@ export async function scheduledWork(
     transport?: DiscordTransport;
     fetcher?: DiscordFetch;
     communityFetcher?: typeof fetch;
+    rssFetcher?: typeof fetch;
   } = {},
 ): Promise<void> {
   const config = loadConfig(env);
@@ -84,6 +86,18 @@ export async function scheduledWork(
     );
   } catch {
     logScheduledLaneFailure("community", 12, config.environment);
+  }
+  try {
+    // RSS has its own durable gate and budget; the checked-in flag stays disabled.
+    await runRssSource(
+      budgetDatabase(env.STAGING_DB, 12),
+      config,
+      clock(),
+      options.rssFetcher,
+      clock,
+    );
+  } catch {
+    logScheduledLaneFailure("rss", 12, config.environment);
   }
 }
 
