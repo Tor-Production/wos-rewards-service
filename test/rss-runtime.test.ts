@@ -94,6 +94,56 @@ describe("disabled staging/mock RSS source", () => {
     expect(await count("rss_source_state")).toBe(0);
   });
 
+  it("distributes a new code once when a delayed reconciler crosses baseline rollover", async () => {
+    const laterFeed = [{ code: "ROLLOVER23", guid: "synthetic-after-baseline" }];
+    await rssTick(0, []);
+    let crossedRollover = false;
+    const delayed = new Proxy(db, {
+      get(target, key) {
+        if (key === "prepare") {
+          return (sql: string) => {
+            const statement = target.prepare(sql);
+            if (!sql.startsWith("SELECT ") || !sql.includes("FROM rss_source_state WHERE"))
+              return statement;
+            return {
+              bind: (...values: unknown[]) => ({
+                first: async () => {
+                  const prior = await statement.bind(...values).first();
+                  // Other ticks finish the baseline and fetch the next snapshot before the claim.
+                  await rssTick(40, []);
+                  await rssTick(40, laterFeed);
+                  crossedRollover = true;
+                  return prior;
+                },
+              }),
+            };
+          };
+        }
+        const value: unknown = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    await runRssSource(
+      delayed,
+      config(),
+      at(40),
+      async () => feedResponse(laterFeed),
+      () => at(40),
+    );
+    expect(crossedRollover).toBe(true);
+    await rssTick(41, laterFeed);
+    await rssTick(42, laterFeed);
+    await rssTick(80, laterFeed);
+    await rssTick(81, laterFeed);
+
+    expect(await rssCode("ROLLOVER23")).toMatchObject({
+      baseline: 0,
+      operation_id: expect.any(String),
+    });
+    expect(await count("operations")).toBe(1);
+  });
+
   it("reserves one durable 30-minute slot across concurrent polls", async () => {
     let requests = 0;
     const fetcher = async () => {
@@ -191,6 +241,105 @@ describe("disabled staging/mock RSS source", () => {
     expect(await count("operations")).toBe(1);
   });
 
+  it.each([200, 503])(
+    "keeps actual RSS requests 30 minutes apart after HTTP %i without Retry-After",
+    async (status) => {
+      const firstRequest = at(0).getTime() + 5_000;
+      const nextRequest = firstRequest + 1_800_000;
+      let currentTime = firstRequest;
+      const requestedAt: number[] = [];
+      const poll = (tickTime: Date) =>
+        runRssSource(
+          db,
+          config(),
+          tickTime,
+          async () => {
+            requestedAt.push(currentTime);
+            return status === 200 ? feedResponse([]) : new Response(null, { status });
+          },
+          () => new Date(currentTime),
+        );
+
+      await poll(at(0));
+      currentTime = at(1).getTime();
+      await poll(at(1)); // Finish the initial snapshot on the successful response.
+      currentTime = at(30).getTime();
+      await poll(at(30));
+      currentTime = nextRequest;
+      await poll(new Date(currentTime));
+
+      expect(requestedAt).toEqual([firstRequest, nextRequest]);
+    },
+  );
+
+  it("retains a full polling gap if a request loses its lease before completion", async () => {
+    const requestTime = at(0).getTime() + 5_000;
+    let currentTime = requestTime;
+    const attemptedAt: number[] = [];
+    let reservedUntil = 0;
+    const fetcher = async () => {
+      attemptedAt.push(currentTime);
+      reservedUntil = Date.parse(String((await state())?.next_fetch_at));
+      currentTime = at(2).getTime(); // The response arrives after the initial lease expires.
+      return new Response(null, { status: 503 });
+    };
+    await runRssSource(db, config(), at(0), fetcher, () => new Date(currentTime));
+    currentTime = at(30).getTime();
+    await runRssSource(db, config(), at(30), fetcher, () => new Date(currentTime));
+
+    expect(attemptedAt).toEqual([requestTime]);
+    expect(reservedUntil - requestTime).toBeGreaterThanOrEqual(1_800_000);
+  });
+
+  it("does not start an RSS request on an expired lease", async () => {
+    const fetcher = vi.fn(async () => feedResponse([]));
+    await runRssSource(db, config(), at(0), fetcher, () => at(2));
+    expect(fetcher).not.toHaveBeenCalled();
+
+    await rssTick(32, [], fetcher);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains a longer Retry-After when a response arrives after its lease", async () => {
+    let clock = at(0);
+    await runRssSource(
+      db,
+      config(),
+      at(0),
+      async () => {
+        clock = at(2);
+        return new Response(null, { status: 429, headers: { "Retry-After": "7200" } });
+      },
+      () => clock,
+    );
+    expect(await state()).toMatchObject({ next_fetch_at: at(122).toISOString() });
+    const fetcher = vi.fn(async () => feedResponse([]));
+    await rssTick(121, [], fetcher);
+    expect(fetcher).not.toHaveBeenCalled();
+    await rssTick(122, [], fetcher);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a late response after another poll has acquired the source", async () => {
+    let clock = at(0);
+    await runRssSource(
+      db,
+      config(),
+      at(0),
+      async () => {
+        clock = at(40);
+        await rssTick(40, []);
+        return new Response(null, { status: 403 });
+      },
+      () => clock,
+    );
+    expect(await state()).toMatchObject({
+      stopped: 0,
+      pending_snapshot_json: "[]",
+      next_fetch_at: at(70).toISOString(),
+    });
+  });
+
   it("extends the durable poll gap for Retry-After and stops on an unparseable restriction", async () => {
     let requests = 0;
     const throttled = async () => {
@@ -284,6 +433,27 @@ describe("disabled staging/mock RSS source", () => {
         }),
     );
     expect(await state()).toMatchObject({ stopped: 1, next_fetch_at: at(30).toISOString() });
+  });
+
+  it("discards a feed with adjacent XML attributes before queuing a snapshot", async () => {
+    await rssTick(0, []);
+    await rssTick(1, []);
+    const xml = rssFeed([{ code: "ADJACENT23", guid: "synthetic-attrs" }]).replace(
+      '" xmlns:atom=',
+      '"xmlns:atom=',
+    );
+    await rssTick(
+      30,
+      [],
+      async () =>
+        new Response(xml, {
+          headers: { "content-type": "application/rss+xml" },
+        }),
+    );
+    expect(await state()).toMatchObject({ initialized: 1, pending_snapshot_json: null });
+    await rssTick(31, []);
+    expect(await rssCode("ADJACENT23")).toBeNull();
+    expect(await count("operations")).toBe(0);
   });
 
   it("leaves existing codes untouched after malformed network payloads", async () => {

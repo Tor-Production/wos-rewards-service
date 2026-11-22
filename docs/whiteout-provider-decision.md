@@ -367,7 +367,9 @@ staging/mock adapter. A bounded unauthenticated GET to the selected URL on 2026-
 `Content-Type: application/rss+xml`; the application parser accepted the response in memory,
 and no redirect was followed. The response had no `Location` or `Content-Location` header. This
 direct response does not establish a canonical mapping to the `www` host; the earlier inspection
-of that host remains separate. The implementation uses the selected no-`www` URL. This source is
+of that host remains separate. Support for conditional GETs on the selected URL remains
+unverified, including `ETag`, `Last-Modified`, and HTTP 304 responses.
+The implementation uses the selected no-`www` URL. This source is
 not an official Whiteout Survival operator
 authorization and does not establish code validity, freshness, publication or expiry. It does
 not change #20/#21 or authorize a staging poll. `RSS_SOURCE_ENABLED` remains false in checked-in

@@ -76,6 +76,18 @@ describe("RSS source contract", () => {
     expect(await parseRssFeed("x".repeat(RSS_MAX_BODY_BYTES + 1))).toBeNull();
   });
 
+  it.each(["", "\u00a0"])("rejects an invalid XML attribute separator %j", async (separator) => {
+    const xml = rssFeed().replace('" xmlns:atom', '"' + separator + "xmlns:atom");
+    expect(await parseRssFeed(xml)).toBeNull();
+  });
+
+  it("accepts XML attribute whitespace and immediate tag closures", async () => {
+    const xml = rssFeed()
+      .replace('" xmlns:atom=', '"\t\r\n xmlns:atom \t=\n')
+      .replace('" />', '"/>');
+    expect(await parseRssFeed(xml)).toEqual([]);
+  });
+
   it("rejects inherited-property entity names and accepts predefined and numeric references", async () => {
     const valid = rssFeed([{ code: "SYNTH23", guid: "synthetic-item-a" }]);
     for (const name of ["constructor", "toString", "__proto__"]) {

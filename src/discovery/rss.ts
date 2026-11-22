@@ -9,6 +9,7 @@ export const RSS_MAX_ITEMS = 100;
 export const RSS_TIMEOUT_MS = 10_000;
 export const RSS_MIN_POLL_SECONDS = 30 * 60;
 
+const XML_WHITESPACE = /[ \t\r\n]/;
 const XML_NAMED_ENTITIES: Readonly<Record<string, string>> = Object.freeze({
   amp: "&",
   lt: "<",
@@ -332,7 +333,8 @@ function parseXml(xml: string): XmlNode | null {
     const attributes: Record<string, string> = {};
     let selfClosing = false;
     for (;;) {
-      while (/\s/.test(xml[cursor] ?? "")) cursor++;
+      const separatorStart = cursor;
+      while (XML_WHITESPACE.test(xml[cursor] ?? "")) cursor++;
       if (xml[cursor] === ">") {
         cursor++;
         break;
@@ -342,14 +344,15 @@ function parseXml(xml: string): XmlNode | null {
         cursor += 2;
         break;
       }
+      if (cursor === separatorStart) return null;
       const attributeMatch = /^[A-Za-z_][A-Za-z0-9_.:-]*/.exec(xml.slice(cursor));
       if (!attributeMatch || Object.keys(attributes).length >= 8) return null;
       const attribute = attributeMatch[0];
       cursor += attribute.length;
-      while (/\s/.test(xml[cursor] ?? "")) cursor++;
+      while (XML_WHITESPACE.test(xml[cursor] ?? "")) cursor++;
       if (xml[cursor] !== "=") return null;
       cursor++;
-      while (/\s/.test(xml[cursor] ?? "")) cursor++;
+      while (XML_WHITESPACE.test(xml[cursor] ?? "")) cursor++;
       const quote = xml[cursor];
       if (quote !== "'" && quote !== '"') return null;
       const valueStart = ++cursor;
